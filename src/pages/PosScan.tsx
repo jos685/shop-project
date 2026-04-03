@@ -184,7 +184,6 @@ export default function PosScan() {
   const handleDetailsNext = () => {
     const qty   = parseInt(quantity) || 1;
     const total = (allocation?.product?.price || 0) * qty;
-    if (!customerPhone.trim()) { setError("Enter customer phone number."); return; }
     if (allocation && qty > allocation.remaining) { setError(`Only ${allocation.remaining} units available.`); return; }
     if (payMethod === "split") {
       const c = Number(cashAmount) || 0, m = Number(mpesaAmount) || 0;
@@ -500,8 +499,8 @@ export default function PosScan() {
 
             {/* Customer phone */}
             <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Customer Phone</label>
-              <input className="ki" type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="07XX XXX XXX" />
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Customer Phone <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
+              <input className="ki" type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="07XX XXX XXX — leave blank to skip" />
             </div>
 
             {/* Payment method */}
@@ -573,8 +572,8 @@ export default function PosScan() {
             {/* Method toggle */}
             <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
               {([
-                { key: "pin",   label: "🔑 Enter PIN",   },
-                { key: "badge", label: "📛 Scan Badge", },
+                { key: "badge", label: "📛 Scan Badge" },
+                { key: "pin",   label: "🔑 Enter PIN"  },
               ] as const).map(({ key, label }) => (
                 <button key={key} onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
                   style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 13, fontWeight: verifyMethod === key ? 600 : 400, background: verifyMethod === key ? "rgba(6,182,212,0.15)" : "transparent", color: verifyMethod === key ? theme.accent.cyan : theme.text.muted }}>
@@ -594,19 +593,20 @@ export default function PosScan() {
                       No agents assigned to this shop yet.
                     </div>
                   ) : (
-                    <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 8 }}>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                       {shopAgents.map(sa => {
                         const isSel = selectedAgent?.id === sa.id;
                         return (
                           <button key={sa.id} onClick={() => { setSelectedAgent(sa); setPin(""); setPinError(""); }}
-                            style={{ padding: "12px 10px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 7, transition: "all 0.15s" }}>
-                            <div style={{ width: 38, height: 38, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 14, color: isSel ? theme.accent.cyan : theme.text.muted }}>
+                            style={{ padding: "12px 14px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "row", alignItems: "center", gap: 12, transition: "all 0.15s", textAlign: "left" }}>
+                            <div style={{ width: 40, height: 40, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: isSel ? theme.accent.cyan : theme.text.muted, flexShrink: 0 }}>
                               {sa.avatar || sa.name.charAt(0).toUpperCase()}
                             </div>
-                            <div style={{ textAlign: "center" }}>
-                              <div style={{ fontSize: 12, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary }}>{sa.name}</div>
-                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>{sa.agent_code}</div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{sa.agent_code}</div>
                             </div>
+                            {isSel && <div style={{ width: 8, height: 8, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.6)", flexShrink: 0 }} />}
                           </button>
                         );
                       })}

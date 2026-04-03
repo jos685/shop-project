@@ -1,10 +1,7 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
-import { supabase } from "../lib/supabase";
-
-const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
 function useWindowWidth() {
   const [w, setW] = useState(window.innerWidth);
@@ -23,52 +20,14 @@ export default function PosDashboard() {
   const width = useWindowWidth();
   const isMobile = width < 640;
 
-  const [todayRevenue, setTodayRevenue] = useState(0);
-  const [todaySales,   setTodaySales]   = useState(0);
-  const [todayCash,    setTodayCash]    = useState(0);
-  const [todayMpesa,   setTodayMpesa]   = useState(0);
-  const [loading,      setLoading]      = useState(true);
-  const [showLogout,   setShowLogout]   = useState(false);
-  const [time,         setTime]         = useState(new Date());
+  const [showLogout, setShowLogout] = useState(false);
+  const [time,       setTime]       = useState(new Date());
 
   // Live clock
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(t);
   }, []);
-
-  const fetchData = useCallback(async () => {
-    if (!shop) return;
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-
-    const { data } = await supabase
-      .from("shop_transactions")
-      .select("amount, cash_amount, mpesa_amount")
-      .eq("shop_id", shop.id)
-      .gte("created_at", today.toISOString());
-
-    if (data) {
-      setTodaySales(data.length);
-      setTodayRevenue(data.reduce((s: number, t: any) => s + t.amount, 0));
-      setTodayCash(data.reduce((s: number, t: any) => s + (t.cash_amount  ?? 0), 0));
-      setTodayMpesa(data.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
-    }
-    setLoading(false);
-  }, [shop]);
-
-  useEffect(() => { fetchData(); }, [fetchData]);
-
-  // Realtime
-  useEffect(() => {
-    if (!shop) return;
-    const ch = supabase.channel("pos-dashboard-live")
-      .on("postgres_changes", {
-        event: "INSERT", schema: "public", table: "shop_transactions",
-        filter: `shop_id=eq.${shop.id}`,
-      }, fetchData)
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [shop, fetchData]);
 
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
@@ -131,34 +90,6 @@ export default function PosDashboard() {
               <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, marginTop: 3 }}>Tap to start a new transaction</div>
             </div>
           </button>
-        </div>
-
-        {/* ── Today stats ── */}
-        <div className="section" style={{ animationDelay: "0.1s" }}>
-          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Today's Summary</div>
-          {loading ? (
-            <div style={{ display: "flex", justifyContent: "center", padding: "24px 0" }}>
-              <div style={{ width: 22, height: 22, border: "3px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            </div>
-          ) : (
-            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: 10 }}>
-              {[
-                { label: "Sales",   value: String(todaySales),  color: theme.text.primary, icon: "🧾", sub: "transactions" },
-                { label: "Revenue", value: fmt(todayRevenue),   color: theme.accent.gold,  icon: "💰", sub: "total earned"  },
-                { label: "Cash",    value: fmt(todayCash),      color: "#34d399",           icon: "💵", sub: "cash payments" },
-                { label: "M-Pesa",  value: fmt(todayMpesa),     color: "#60a5fa",           icon: "📱", sub: "mobile money"  },
-              ].map(({ label, value, color, icon, sub }) => (
-                <div key={label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "16px 16px 14px" }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 10 }}>
-                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</div>
-                    <span style={{ fontSize: 13, opacity: 0.5 }}>{icon}</span>
-                  </div>
-                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 17 : 21, color, lineHeight: 1.1 }}>{value}</div>
-                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 5, opacity: 0.7 }}>{sub}</div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
 
         {/* ── Quick actions ── */}

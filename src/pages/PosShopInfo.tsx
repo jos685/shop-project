@@ -46,10 +46,17 @@ export default function PosShopInfo() {
   const width = useWindowWidth();
   const isMobile = width < 640;
 
-  const [stock,   setStock]   = useState<StockItem[]>([]);
-  const [agents,  setAgents]  = useState<ShopAgent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [tab,     setTab]     = useState<"stock" | "agents">("stock");
+  const [stock,        setStock]        = useState<StockItem[]>([]);
+  const [agents,       setAgents]       = useState<ShopAgent[]>([]);
+  const [loading,      setLoading]      = useState(true);
+  const [tab,          setTab]          = useState<"stock" | "agents">("stock");
+
+  // Today's sales stats
+  const [todaySales,   setTodaySales]   = useState(0);
+  const [todayRevenue, setTodayRevenue] = useState(0);
+  const [todayCash,    setTodayCash]    = useState(0);
+  const [todayMpesa,   setTodayMpesa]   = useState(0);
+  const [statsLoading, setStatsLoading] = useState(true);
 
   const fetchInfo = useCallback(async () => {
     if (!shop) return;
@@ -168,6 +175,36 @@ export default function PosShopInfo() {
 
   useEffect(() => { fetchInfo(); }, [fetchInfo]);
 
+  const fetchStats = useCallback(async () => {
+    if (!shop) return;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const { data } = await supabase
+      .from("shop_transactions")
+      .select("amount, cash_amount, mpesa_amount")
+      .eq("shop_id", shop.id)
+      .gte("created_at", today.toISOString());
+    if (data) {
+      setTodaySales(data.length);
+      setTodayRevenue(data.reduce((s: number, t: any) => s + t.amount, 0));
+      setTodayCash(data.reduce((s: number, t: any) => s + (t.cash_amount  ?? 0), 0));
+      setTodayMpesa(data.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
+    }
+    setStatsLoading(false);
+  }, [shop]);
+
+  useEffect(() => { fetchStats(); }, [fetchStats]);
+
+  useEffect(() => {
+    if (!shop) return;
+    const ch = supabase.channel("shop-info-stats-live")
+      .on("postgres_changes", {
+        event: "INSERT", schema: "public", table: "shop_transactions",
+        filter: `shop_id=eq.${shop.id}`,
+      }, fetchStats)
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [shop, fetchStats]);
+
   const totalStockValue     = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.remaining,  0);
   const totalAllocatedValue = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.allocated, 0);
 
@@ -190,10 +227,38 @@ export default function PosShopInfo() {
             {shop?.name} · {shop?.shop_code}
           </div>
         </div>
-        <button onClick={fetchInfo}
+        <button onClick={() => { fetchInfo(); fetchStats(); }}
           style={{ background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 9, padding: "8px 14px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer" }}>
           ↺ Refresh
         </button>
+      </div>
+
+      {/* ── Today's Summary ── */}
+      <div style={{ padding: isMobile ? "14px 16px" : "16px 40px", borderBottom: `1px solid ${theme.border.default}` }}>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 10 }}>Today's Summary</div>
+        {statsLoading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+            <div style={{ width: 20, height: 20, border: "3px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+            {[
+              { label: "Sales",   value: String(todaySales),  color: theme.text.primary, icon: "🧾", sub: "transactions" },
+              { label: "Revenue", value: fmt(todayRevenue),   color: theme.accent.gold,  icon: "💰", sub: "total earned"  },
+              { label: "Cash",    value: fmt(todayCash),      color: "#34d399",           icon: "💵", sub: "cash"          },
+              { label: "M-Pesa",  value: fmt(todayMpesa),     color: "#60a5fa",           icon: "📱", sub: "mobile"        },
+            ].map(({ label, value, color, icon, sub }) => (
+              <div key={label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</div>
+                  <span style={{ fontSize: 12, opacity: 0.5 }}>{icon}</span>
+                </div>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 14 : 17, color, lineHeight: 1.1 }}>{value}</div>
+                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4, opacity: 0.7 }}>{sub}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ── Tab bar ── */}
@@ -361,19 +426,8 @@ export default function PosShopInfo() {
                             </div>
                           </div>
 
-                          {/* PIN display */}
-                          <div style={{ background: "rgba(234,179,8,0.06)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 10, padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                            <div>
-                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.gold, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 4 }}>Your PIN</div>
-                              <div style={{ fontFamily: theme.font.mono, fontWeight: 800, fontSize: 28, letterSpacing: "0.3em", color: theme.text.primary }}>
-                                {sa.pin}
-                              </div>
-                            </div>
-                            <div style={{ fontSize: 32, opacity: 0.4 }}>🔐</div>
-                          </div>
-
                           <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6, padding: "0 2px" }}>
-                            Use this PIN on the terminal to authorise your sales. Do not share it with others.
+                            Agent PIN is hidden for security. Contact your supervisor if you need access.
                           </div>
                         </div>
                       );
