@@ -78,16 +78,21 @@ export default function PosDashboard() {
         <div className="section" style={{ animationDelay: "0.05s" }}>
           <button className="action-btn" onClick={() => navigate("/pos/scan")}
             style={{
-              width: "100%", padding: isMobile ? "28px 20px" : "36px 40px",
-              background: "linear-gradient(135deg, rgba(6,182,212,0.18), rgba(6,182,212,0.06))",
-              border: "1px solid rgba(6,182,212,0.3)", borderRadius: 20, cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center", gap: 18,
-              boxShadow: "0 8px 32px rgba(6,182,212,0.12)",
+              width: "100%",
+              minHeight: isMobile ? "42vh" : 260,
+              background: "linear-gradient(145deg, rgba(6,182,212,0.2), rgba(6,182,212,0.07))",
+              border: "1px solid rgba(6,182,212,0.35)", borderRadius: 24, cursor: "pointer",
+              display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+              gap: isMobile ? 18 : 20,
+              boxShadow: "0 8px 40px rgba(6,182,212,0.15), inset 0 1px 0 rgba(255,255,255,0.05)",
+              position: "relative", overflow: "hidden",
             }}>
-            <span style={{ fontSize: isMobile ? 42 : 52 }}>📷</span>
-            <div style={{ textAlign: "left" }}>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 28, color: theme.accent.cyan, letterSpacing: "-0.02em" }}>Scan & Sell</div>
-              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, marginTop: 3 }}>Tap to start a new transaction</div>
+            {/* subtle radial glow behind icon */}
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-60%)", width: 200, height: 200, borderRadius: "50%", background: "radial-gradient(circle, rgba(6,182,212,0.18) 0%, transparent 70%)", pointerEvents: "none" }} />
+            <span style={{ fontSize: isMobile ? 64 : 72, lineHeight: 1, position: "relative" }}>📷</span>
+            <div style={{ textAlign: "center", position: "relative" }}>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 28 : 34, color: theme.accent.cyan, letterSpacing: "-0.02em" }}>Scan & Sell</div>
+              <div style={{ color: theme.text.muted, fontSize: isMobile ? 13 : 14, fontFamily: theme.font.mono, marginTop: 6 }}>Tap to start a new transaction</div>
             </div>
           </button>
         </div>
