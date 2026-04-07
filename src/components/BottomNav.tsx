@@ -2,11 +2,11 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 
 const tabs = [
-  { path: "/pos",              icon: "▦",  label: "Dashboard"   },
-  { path: "/pos/scan",         icon: "📷", label: "Scan & Sell" },
-  { path: "/pos/transactions", icon: "🧾", label: "History"     },
-  { path: "/pos/requests",     icon: "📋", label: "Requests"    },
-  { path: "/pos/info",         icon: "📦", label: "Shop"        },
+  { path: "/pos",              icon: "▦",  label: "Dashboard" },
+  { path: "/pos/info",         icon: "📦", label: "Shop"      },
+  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell" },
+  { path: "/pos/requests",     icon: "📋", label: "Requests"  },
+  { path: "/pos/transactions", icon: "🧾", label: "History"   },
 ];
 
 export default function BottomNav() {

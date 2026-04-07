@@ -22,7 +22,12 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     // Restore session from localStorage on load
     try {
       const stored = localStorage.getItem(SESSION_KEY);
-      if (stored) setShop(JSON.parse(stored));
+      if (stored) {
+        const session = JSON.parse(stored);
+        // Discard old sessions that are missing owner_id — forces a fresh login
+        if (session?.owner_id) setShop(session);
+        else localStorage.removeItem(SESSION_KEY);
+      }
     } catch {}
     setLoading(false);
   }, []);
