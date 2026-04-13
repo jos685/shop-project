@@ -6,7 +6,7 @@ import QrScanner from "../components/QrScanner";
 import { supabase } from "../lib/supabase";
 
 type Step         = "scan" | "checkout" | "verify" | "success";
-type PayMethod    = "cash" | "mpesa" | "split";
+type PayMethod    = "cash" | "mpesa" | "split" | "credit";
 type VerifyMethod = "pin" | "badge";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
@@ -63,7 +63,9 @@ export default function PosScan() {
   const [addQty,        setAddQty]        = useState("1");
 
   // checkout
-  const [customerPhone, setCustomerPhone] = useState("");
+  const [customerName,    setCustomerName]    = useState("");
+  const [customerPhone,   setCustomerPhone]   = useState("");
+  const [initialPayment,  setInitialPayment]  = useState("");
   const [payMethod,     setPayMethod]     = useState<PayMethod>("cash");
   const [cashAmount,    setCashAmount]    = useState("");
   const [mpesaAmount,   setMpesaAmount]   = useState("");
@@ -222,6 +224,10 @@ export default function PosScan() {
 
   const handleCheckoutNext = () => {
     if (cart.length === 0) { setError("Add at least one product to the cart."); return; }
+    if (payMethod === "credit") {
+      if (!customerName.trim()) { setError("Customer name is required for credit sales."); return; }
+      if (!customerPhone.trim()) { setError("Customer phone is required for credit sales."); return; }
+    }
     if (payMethod === "split") {
       const c = Number(cashAmount) || 0, m = Number(mpesaAmount) || 0;
       if (!cashAmount || !mpesaAmount) { setError("Enter both Cash and M-Pesa amounts."); return; }
@@ -236,10 +242,7 @@ export default function PosScan() {
     if (cart.length === 0) return;
     setProcessing(true); setError("");
 
-    const cash  = payMethod === "cash"  ? grandTotal : payMethod === "mpesa" ? 0 : Number(cashAmount)  || 0;
-    const mpesa = payMethod === "mpesa" ? grandTotal : payMethod === "cash"  ? 0 : Number(mpesaAmount) || 0;
-
-    // Deduct stock for each item sequentially
+    // Deduct stock for every item regardless of payment method
     for (const item of cart) {
       const { error: stockErr } = await supabase.rpc("deduct_shop_stock", {
         p_shop_allocation_id: item.allocation.id,
@@ -254,23 +257,65 @@ export default function PosScan() {
       }
     }
 
-    // One transaction row per cart item; amounts split proportionally
+    // ── Credit / Pay Later ────────────────────────────────────────────
+    if (payMethod === "credit") {
+      const creditItems = cart.map(item => ({
+        allocation_id: item.allocation.id,
+        product_id:    item.allocation.product.id,
+        product_name:  item.allocation.product.name,
+        quantity:      item.quantity,
+        unit_price:    item.allocation.product.price,
+        subtotal:      item.allocation.product.price * item.quantity,
+      }));
+
+      const initPaid  = Math.max(0, Number(initialPayment) || 0);
+      const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
+
+      const { data: creditData, error: creditErr } = await supabase
+        .from("shop_credit_sales")
+        .insert({
+          shop_id:         shop?.id,
+          owner_id:        shop?.owner_id,
+          items:           creditItems,
+          amount:          grandTotal,
+          amount_paid:     initPaid,
+          customer_name:   customerName.trim(),
+          customer_phone:  customerPhone.trim(),
+          seller_agent_id: verifiedAgent.agent_id,
+          seller_name:     verifiedAgent.name,
+          status:          initStatus,
+        })
+        .select()
+        .single();
+
+      if (creditErr) { setProcessing(false); setError("Failed to record credit sale. Try again."); return; }
+      setSavedBatchRef((creditData?.id ?? "").slice(0, 8).toUpperCase());
+      setSelectedAgent(verifiedAgent);
+      setProcessing(false);
+      setStep("success");
+      return;
+    }
+
+    // ── Cash / M-Pesa / Split ─────────────────────────────────────────
+    const cash  = payMethod === "cash"  ? grandTotal : payMethod === "mpesa" ? 0 : Number(cashAmount)  || 0;
+    const mpesa = payMethod === "mpesa" ? grandTotal : payMethod === "cash"  ? 0 : Number(mpesaAmount) || 0;
+
     const txRows = cart.map(item => {
       const itemTotal = item.allocation.product.price * item.quantity;
       const ratio = grandTotal > 0 ? itemTotal / grandTotal : 0;
       return {
-        shop_id: shop?.id,
-        owner_id: shop?.owner_id,
+        shop_id:         shop?.id,
+        owner_id:        shop?.owner_id,
         seller_agent_id: verifiedAgent.agent_id,
-        product_id: item.allocation.product.id,
-        quantity: item.quantity,
-        amount: itemTotal,
-        customer_phone: customerPhone.trim(),
-        payment_method: payMethod,
-        cash_amount:  payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
-        mpesa_amount: payMethod === "mpesa" ? itemTotal : payMethod === "cash"  ? 0 : Math.round(mpesa * ratio),
-        mpesa_ref: (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
-        status: "ok",
+        product_id:      item.allocation.product.id,
+        quantity:        item.quantity,
+        amount:          itemTotal,
+        customer_phone:  customerPhone.trim(),
+        payment_method:  payMethod,
+        cash_amount:     payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
+        mpesa_amount:    payMethod === "mpesa" ? itemTotal : payMethod === "cash"  ? 0 : Math.round(mpesa * ratio),
+        mpesa_ref:       (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
+        status:          "ok",
       };
     });
 
@@ -306,7 +351,7 @@ export default function PosScan() {
     setStep("scan"); setMode("camera"); setManualSku("");
     setCart([]); setAddingProduct(null); setAddQty("1");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
-    setCustomerPhone(""); setPayMethod("cash");
+    setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
     setVerifyMethod("pin");
@@ -331,14 +376,12 @@ export default function PosScan() {
         .success-icon  { animation: successPop 0.5s ease forwards; }
         .shake         { animation: shake 0.35s ease; }
         .overlay-sheet { animation: slideUp 0.25s ease both; }
-        .ki { background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:12px;padding:13px 14px;color:#f9fafb;font-size:15px;font-family:'DM Mono',monospace;width:100%;box-sizing:border-box; }
-        .ki:focus { outline:none;border-color:rgba(6,182,212,0.5); }
-        .ki::placeholder { color:#374151; }
+        ${theme.kiCss.replace(/border-radius:10px/g, "border-radius:12px").replace(/font-size:14px/g, "font-size:15px").replace(/padding:11px 13px/g, "padding:13px 14px")}
         .abtn { border:none;cursor:pointer;font-family:'Syne',sans-serif;font-weight:800;font-size:16px;border-radius:14px;padding:16px;width:100%;transition:opacity 0.15s,transform 0.1s; }
         .abtn:active { transform:scale(0.98); }
         .abtn:disabled { opacity:0.45;cursor:not-allowed; }
-        .pin-digit { width:${isMobile ? "46px" : "52px"};height:${isMobile ? "58px" : "64px"};border:2px solid rgba(255,255,255,0.1);border-radius:12px;display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-size:26px;font-weight:700;transition:all 0.15s; }
-        .pin-digit.filled { border-color:rgba(6,182,212,0.5);background:rgba(6,182,212,0.08); }
+        .pin-digit { width:${isMobile ? "46px" : "52px"};height:${isMobile ? "58px" : "64px"};border:2px solid ${theme.border.default};border-radius:12px;display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-size:26px;font-weight:700;transition:all 0.15s; }
+        .pin-digit.filled { border-color:${theme.accent.cyan}80;background:${theme.accent.cyan}14; }
         .back-btn:hover { background:rgba(255,255,255,0.08) !important; }
         .cart-row:hover { background:rgba(255,255,255,0.03) !important; }
       `}</style>
@@ -572,19 +615,36 @@ export default function PosScan() {
               + Add more products
             </button>
 
+            {/* Customer name — required for credit, optional otherwise */}
+            <div>
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                Customer Name {payMethod === "credit"
+                  ? <span style={{ color: theme.accent.red }}>*</span>
+                  : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+              </label>
+              <input className="ki" type="text" value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="e.g. John Kamau" />
+            </div>
+
             {/* Customer phone */}
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                Customer Phone <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
+                Customer Phone {payMethod === "credit"
+                  ? <span style={{ color: theme.accent.red }}>*</span>
+                  : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
               </label>
-              <input className="ki" type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="07XX XXX XXX — leave blank to skip" />
+              <input className="ki" type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="07XX XXX XXX" />
             </div>
 
             {/* Payment method */}
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: theme.accent.gold }] as const).map(({ key, icon, label, col }) => (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                {([
+                  { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
+                  { key: "mpesa",  icon: "📱", label: "M-Pesa",    col: theme.accent.cyan  },
+                  { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
+                  { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
+                ] as const).map(({ key, icon, label, col }) => (
                   <button key={key} onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
                     style={{ padding: "12px 8px", border: `1px solid ${payMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: payMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
                     <span style={{ fontSize: 20 }}>{icon}</span>
@@ -593,6 +653,28 @@ export default function PosScan() {
                 ))}
               </div>
             </div>
+
+            {/* Credit notice + initial payment */}
+            {payMethod === "credit" && (
+              <>
+                <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
+                  📝 Stock will be deducted now. Payment will be tracked separately under the Credit tab in Shop.
+                </div>
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                    Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
+                  </label>
+                  <input className="ki" type="number" value={initialPayment}
+                    onChange={e => setInitialPayment(e.target.value)}
+                    placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
+                  {Number(initialPayment) > 0 && (
+                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#34d399", marginTop: 6 }}>
+                      Balance after payment: {fmt(Math.max(0, grandTotal - Number(initialPayment)))}
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
 
             {payMethod === "split" && (
               <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
@@ -645,7 +727,8 @@ export default function PosScan() {
               ))}
               <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : "⚡ Split"}{customerPhone ? ` · ${customerPhone}` : ""}
+                  {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
+                  {payMethod === "credit" && customerName ? ` · ${customerName}` : customerPhone ? ` · ${customerPhone}` : ""}
                 </div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>{fmt(grandTotal)}</div>
               </div>
@@ -737,7 +820,7 @@ export default function PosScan() {
                     {processing && (
                       <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, background: "rgba(255,255,255,0.04)", borderRadius: 14, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14 }}>
                         <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                        Processing {cart.length} item{cart.length !== 1 ? "s" : ""}...
+                        {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
                       </div>
                     )}
                   </div>
@@ -771,18 +854,28 @@ export default function PosScan() {
         {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
         {step === "success" && (
           <div className="section" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, paddingTop: 16, textAlign: "center" }}>
-            <div className="success-icon" style={{ width: 86, height: 86, borderRadius: "50%", background: "rgba(52,211,153,0.15)", border: "2px solid #34d399", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 38 }}>✓</div>
+            <div className="success-icon" style={{ width: 86, height: 86, borderRadius: "50%", background: payMethod === "credit" ? "rgba(248,113,113,0.15)" : "rgba(52,211,153,0.15)", border: `2px solid ${payMethod === "credit" ? "#f87171" : "#34d399"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 38 }}>
+              {payMethod === "credit" ? "📝" : "✓"}
+            </div>
             <div>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26 }}>Sale Recorded!</div>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26 }}>
+                {payMethod === "credit" ? "Credit Sale Recorded!" : "Sale Recorded!"}
+              </div>
               <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 4 }}>
-                {cart.length} item{cart.length !== 1 ? "s" : ""} synced to owner dashboard
+                {payMethod === "credit"
+                  ? (() => { const ip = Math.max(0, Number(initialPayment) || 0); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
+                  : `${cart.length} item${cart.length !== 1 ? "s" : ""} synced to owner dashboard`}
               </div>
             </div>
             <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, padding: "20px 22px", width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 10 }}>
-              {/* Receipt ref */}
+              {/* Ref row */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: `1px solid ${theme.border.default}` }}>
-                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Receipt Ref</span>
-                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.cyan }}>TXN-{savedBatchRef}</span>
+                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {payMethod === "credit" ? "Credit Ref" : "Receipt Ref"}
+                </span>
+                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: payMethod === "credit" ? theme.accent.red : theme.accent.cyan }}>
+                  {payMethod === "credit" ? "CR-" : "TXN-"}{savedBatchRef}
+                </span>
               </div>
               {/* Items */}
               {cart.map(item => (
@@ -792,17 +885,53 @@ export default function PosScan() {
                 </div>
               ))}
               {/* Summary rows */}
-              {[
-                { label: "Seller",   value: selectedAgent?.name ?? "—" },
-                { label: "Payment",  value: payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : "⚡ Split" },
-                { label: "Customer", value: customerPhone || "—" },
-                { label: "Total",    value: fmt(grandTotal), highlight: true },
-              ].map(({ label, value, highlight }) => (
-                <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: highlight ? `1px solid ${theme.border.default}` : "none", paddingTop: highlight ? 10 : 0, marginTop: highlight ? 4 : 0 }}>
-                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-                  <span style={{ fontSize: highlight ? 20 : 13, fontFamily: highlight ? theme.font.display : theme.font.mono, fontWeight: highlight ? 800 : 500, color: highlight ? theme.accent.gold : theme.text.primary }}>{value}</span>
-                </div>
-              ))}
+              {payMethod === "credit" ? (
+                <>
+                  {[
+                    { label: "Seller",   value: selectedAgent?.name ?? "—" },
+                    { label: "Customer", value: customerName || "—" },
+                    { label: "Phone",    value: customerPhone || "—" },
+                    { label: "Payment",  value: "📝 Pay Later" },
+                  ].map(({ label, value }) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+                      <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 500, color: theme.text.primary }}>{value}</span>
+                    </div>
+                  ))}
+                  {(() => {
+                    const ip  = Math.max(0, Number(initialPayment) || 0);
+                    const bal = grandTotal - ip;
+                    return (
+                      <>
+                        {ip > 0 && (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Paid Upfront</span>
+                            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 600, color: "#34d399" }}>{fmt(ip)}</span>
+                          </div>
+                        )}
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${theme.border.default}`, paddingTop: 10, marginTop: 4 }}>
+                          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Balance Due</span>
+                          <span style={{ fontSize: 20, fontFamily: theme.font.display, fontWeight: 800, color: bal <= 0 ? "#34d399" : theme.accent.red }}>{bal <= 0 ? "Paid ✓" : fmt(bal)}</span>
+                        </div>
+                      </>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  {[
+                    { label: "Seller",   value: selectedAgent?.name ?? "—" },
+                    { label: "Payment",  value: payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : "⚡ Split" },
+                    { label: "Customer", value: customerPhone || "—" },
+                    { label: "Total",    value: fmt(grandTotal), highlight: true },
+                  ].map(({ label, value, highlight }) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: highlight ? `1px solid ${theme.border.default}` : "none", paddingTop: highlight ? 10 : 0, marginTop: highlight ? 4 : 0 }}>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
+                      <span style={{ fontSize: highlight ? 20 : 13, fontFamily: highlight ? theme.font.display : theme.font.mono, fontWeight: highlight ? 800 : 500, color: highlight ? theme.accent.gold : theme.text.primary }}>{value}</span>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
             <button className="abtn" onClick={handleReset}
               style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", maxWidth: 320 }}>
@@ -815,7 +944,7 @@ export default function PosScan() {
       {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
       {addingProduct && (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
+          style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
           onClick={e => { if (e.target === e.currentTarget) { setAddingProduct(null); setError(""); } }}>
           <div className="overlay-sheet" style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Product info */}

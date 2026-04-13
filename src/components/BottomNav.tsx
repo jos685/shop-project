@@ -1,5 +1,6 @@
 import { useLocation, useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
+import { useTheme } from "../context/ThemeContext";
 
 const tabs = [
   { path: "/pos",              icon: "▦",  label: "Dashboard" },
@@ -13,6 +14,7 @@ export default function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { shop } = useShopAuth();
+  const { theme } = useTheme();
 
   if (!shop) return null;
 
@@ -26,10 +28,12 @@ export default function BottomNav() {
       `}</style>
       <div style={{
         position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 50,
-        background: "rgba(8,12,18,0.97)",
+        background: theme.bg.nav,
         backdropFilter: "blur(16px)",
-        borderTop: "1px solid rgba(6,182,212,0.18)",
-        boxShadow: "0 -4px 32px rgba(0,0,0,0.6), 0 -1px 0 rgba(6,182,212,0.12)",
+        borderTop: `1px solid ${theme.border.nav}`,
+        boxShadow: theme.isDark
+          ? "0 -4px 32px rgba(0,0,0,0.6), 0 -1px 0 rgba(6,182,212,0.12)"
+          : "0 -4px 24px rgba(0,0,0,0.08), 0 -1px 0 rgba(2,132,199,0.1)",
         display: "flex",
         alignItems: "center",
         paddingBottom: "env(safe-area-inset-bottom, 0px)",
@@ -111,8 +115,8 @@ export default function BottomNav() {
                   width: 36,
                   height: 28,
                   borderRadius: 8,
-                  background: "rgba(6,182,212,0.15)",
-                  boxShadow: "0 0 12px rgba(6,182,212,0.25)",
+                  background: theme.isDark ? "rgba(6,182,212,0.15)" : "rgba(2,132,199,0.1)",
+                  boxShadow: theme.isDark ? "0 0 12px rgba(6,182,212,0.25)" : "0 0 8px rgba(2,132,199,0.15)",
                 }} />
               )}
               <span style={{
@@ -129,7 +133,7 @@ export default function BottomNav() {
                 fontWeight: isActive ? 700 : 400,
                 letterSpacing: "0.05em",
                 textTransform: "uppercase",
-                color: isActive ? "#22d3ee" : "#4b5563",
+                color: isActive ? theme.accent.cyan : theme.text.muted,
                 position: "relative",
               }}>
                 {tab.label}

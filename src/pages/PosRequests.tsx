@@ -197,14 +197,14 @@ export default function PosRequests() {
       {/* ── New Request Form (bottom sheet) ── */}
       {showForm && (
         <div
-          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", backdropFilter: "blur(6px)", zIndex: 100, display: "flex", alignItems: "flex-end" }}
+          style={{ position: "fixed", inset: 0, background: theme.bg.overlay, backdropFilter: "blur(6px)", zIndex: 100, display: "flex", alignItems: "flex-end" }}
           onClick={() => { setShowForm(false); resetForm(); }}>
           <div
-            style={{ width: "100%", background: "#0d1117", borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", animation: "slideUp 0.25s ease", maxHeight: "90vh", overflowY: "auto" }}
+            style={{ width: "100%", background: theme.bg.modal, borderRadius: "20px 20px 0 0", padding: "24px 20px 40px", animation: "slideUp 0.25s ease", maxHeight: "90vh", overflowY: "auto" }}
             onClick={e => e.stopPropagation()}>
 
             {/* Handle */}
-            <div style={{ width: 36, height: 4, borderRadius: 2, background: "rgba(255,255,255,0.15)", margin: "0 auto 20px" }} />
+            <div style={{ width: 36, height: 4, borderRadius: 2, background: theme.border.default, margin: "0 auto 20px" }} />
 
             <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, marginBottom: 20 }}>New Request</div>
 
@@ -229,13 +229,13 @@ export default function PosRequests() {
                 <select
                   value={productId}
                   onChange={e => setProductId(e.target.value)}
-                  style={{ width: "100%", background: "#0d1117", border: "1px solid rgba(255,255,255,0.15)", borderRadius: 10, padding: "12px 14px", color: "#f9fafb", fontFamily: theme.font.mono, fontSize: 13, outline: "none" } as React.CSSProperties}>
-                  <option value="" style={{ background: "#0d1117", color: "#9ca3af" }}>Select a product...</option>
+                  style={{ width: "100%", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" } as React.CSSProperties}>
+                  <option value="" style={{ background: theme.bg.card, color: theme.text.muted }}>Select a product...</option>
                   {products.map(p => (
-                    <option key={p.id} value={p.id} style={{ background: "#0d1117", color: "#f9fafb" }}>{p.name}{p.sku ? ` (${p.sku})` : ""}</option>
+                    <option key={p.id} value={p.id} style={{ background: theme.bg.card, color: theme.text.primary }}>{p.name}{p.sku ? ` (${p.sku})` : ""}</option>
                   ))}
                   {type === "demand_report" && (
-                    <option value="__other__" style={{ background: "#0d1117", color: "#f9fafb" }}>Other (not in my stock)</option>
+                    <option value="__other__" style={{ background: theme.bg.card, color: theme.text.primary }}>Other (not in my stock)</option>
                   )}
                 </select>
               </div>
@@ -251,7 +251,7 @@ export default function PosRequests() {
                   type="number" min="1" value={quantity}
                   onChange={e => setQuantity(e.target.value)}
                   placeholder="Enter quantity..."
-                  style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+                  style={{ width: "100%", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
               </div>
             )}
 
@@ -270,7 +270,7 @@ export default function PosRequests() {
                   type === "demand_report" ? "e.g. At least 10 customers asked for this today..." :
                   "Type your message here..."
                 }
-                style={{ width: "100%", background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", resize: "none", boxSizing: "border-box", lineHeight: 1.6 }} />
+                style={{ width: "100%", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", resize: "none", boxSizing: "border-box", lineHeight: 1.6 }} />
             </div>
 
             {formError && (

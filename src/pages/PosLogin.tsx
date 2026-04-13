@@ -61,12 +61,12 @@ export default function PosLogin() {
         @keyframes pulse    { 0%,100%{opacity:1;transform:scale(1)} 50%{opacity:0.6;transform:scale(0.97)} }
         .kiosk-card { animation: fadeUp 0.5s ease both; }
         .shake { animation: shake 0.4s ease; }
-        .kiosk-input { 
-          background: rgba(255,255,255,0.04);
-          border: 1px solid rgba(255,255,255,0.08);
+        .kiosk-input {
+          background: ${theme.bg.input};
+          border: 1px solid ${theme.border.default};
           border-radius: 12px;
           padding: 16px 18px;
-          color: #f9fafb;
+          color: ${theme.text.primary};
           font-size: 16px;
           font-family: 'DM Mono', monospace;
           width: 100%;
@@ -74,8 +74,8 @@ export default function PosLogin() {
           letter-spacing: 0.08em;
           transition: border-color 0.2s;
         }
-        .kiosk-input:focus { outline: none; border-color: rgba(6,182,212,0.5); background: rgba(6,182,212,0.04); }
-        .kiosk-input::placeholder { color: #374151; letter-spacing: 0.04em; }
+        .kiosk-input:focus { outline: none; border-color: ${theme.accent.cyan}80; background: ${theme.accent.cyan}08; }
+        .kiosk-input::placeholder { color: ${theme.text.muted}; letter-spacing: 0.04em; }
         .kiosk-btn {
           width: 100%;
           padding: 18px;
@@ -105,30 +105,30 @@ export default function PosLogin() {
             margin: "0 auto 18px",
             boxShadow: "0 0 40px rgba(234,179,8,0.25)",
           }}>S</div>
-          <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 28, color: "#f9fafb", letterSpacing: "-0.03em" }}>
+          <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 800, fontSize: 28, color: theme.text.primary, letterSpacing: "-0.03em" }}>
             SalesTrack
           </div>
-          <div style={{ color: "#4b5563", fontSize: 13, fontFamily: "'DM Mono', monospace", marginTop: 6, letterSpacing: "0.1em", textTransform: "uppercase" }}>
+          <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: "'DM Mono', monospace", marginTop: 6, letterSpacing: "0.1em", textTransform: "uppercase" }}>
             Point of Sale Terminal
           </div>
         </div>
 
         {/* Card */}
         <div style={{
-          background: "#0d1117",
-          border: "1px solid rgba(255,255,255,0.07)",
+          background: theme.bg.modal,
+          border: `1px solid ${theme.border.default}`,
           borderRadius: 22,
           padding: "36px 32px",
-          boxShadow: "0 24px 80px rgba(0,0,0,0.5)",
+          boxShadow: theme.isDark ? "0 24px 80px rgba(0,0,0,0.5)" : "0 24px 60px rgba(0,0,0,0.12)",
         }}>
           <div style={{ fontFamily: "'Syne', sans-serif", fontWeight: 700, fontSize: 18, marginBottom: 6 }}>Shop Sign In</div>
-          <div style={{ color: "#4b5563", fontSize: 12, fontFamily: "'DM Mono', monospace", marginBottom: 28, lineHeight: 1.6 }}>
+          <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: "'DM Mono', monospace", marginBottom: 28, lineHeight: 1.6 }}>
             Enter your credentials to access the terminal
           </div>
 
           <form onSubmit={handleLogin} style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div>
-              <label style={{ color: "#6b7280", fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
+              <label style={{ color: theme.text.secondary, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Business Code
               </label>
               <input
@@ -143,7 +143,7 @@ export default function PosLogin() {
             </div>
 
             <div>
-              <label style={{ color: "#6b7280", fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
+              <label style={{ color: theme.text.secondary, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Shop ID
               </label>
               <input
@@ -158,7 +158,7 @@ export default function PosLogin() {
             </div>
 
             <div>
-              <label style={{ color: "#6b7280", fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
+              <label style={{ color: theme.text.secondary, fontSize: 11, fontFamily: "'DM Mono', monospace", letterSpacing: "0.1em", textTransform: "uppercase", display: "block", marginBottom: 8 }}>
                 Password
               </label>
               <div style={{ position: "relative" }}>

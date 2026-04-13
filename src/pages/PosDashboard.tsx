@@ -123,9 +123,9 @@ export default function PosDashboard() {
 
       {/* ── Logout confirm ── */}
       {showLogout && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.8)", backdropFilter: "blur(8px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+        <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, backdropFilter: "blur(8px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
           onClick={() => setShowLogout(false)}>
-          <div style={{ background: "#0d1117", border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "32px 28px", maxWidth: 360, width: "100%", animation: "slideIn 0.2s ease", textAlign: "center" }}
+          <div style={{ background: theme.bg.modal, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "32px 28px", maxWidth: 360, width: "100%", animation: "slideIn 0.2s ease", textAlign: "center" }}
             onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: 38, marginBottom: 14 }}>🔒</div>
             <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 20, marginBottom: 8 }}>Close Terminal?</div>
