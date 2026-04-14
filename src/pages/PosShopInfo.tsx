@@ -374,7 +374,7 @@ export default function PosShopInfo() {
     const amount = parseFloat(payAmount);
     if (!amount || amount <= 0) { setPayError("Enter a valid payment amount."); return; }
     const balance = payTarget.amount - payTarget.amount_paid;
-    if (amount > balance + 1) { setPayError(`Amount cannot exceed balance of ${fmt(balance)}.`); return; }
+    if (amount > balance) { setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`); return; }
     setPayProcessing(true);
 
     const { error: insErr } = await supabase.from("shop_credit_payments").insert({
@@ -968,8 +968,18 @@ export default function PosShopInfo() {
             {/* Amount */}
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount Paid (KSh)</label>
-              <input className="ki" type="number" value={payAmount} onChange={e => { setPayAmount(e.target.value); setPayError(""); }}
-                placeholder={`Max ${fmt(payTarget.amount - payTarget.amount_paid)}`} />
+              <input className="ki" type="number" value={payAmount}
+                onChange={e => {
+                  const val = e.target.value;
+                  setPayAmount(val);
+                  const balance = payTarget.amount - payTarget.amount_paid;
+                  if (Number(val) > balance) {
+                    setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`);
+                  } else {
+                    setPayError("");
+                  }
+                }}
+                placeholder={`Balance: ${fmt(payTarget.amount - payTarget.amount_paid)}`} />
             </div>
 
             {/* Payment method */}
