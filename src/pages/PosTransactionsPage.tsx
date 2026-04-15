@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -22,6 +22,8 @@ interface LocalTransaction {
 
 type DateFilter = "today" | "week" | "month" | "all";
 
+const PAGE_SIZE = 25;
+
 const FILTER_LABELS: Record<DateFilter, string> = {
   today: "Today",
   week:  "This Week",
@@ -44,54 +46,50 @@ export default function PosTransactionsPage() {
 
   const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
   const [loading, setLoading]           = useState(true);
+  const [loadingMore, setLoadingMore]   = useState(false);
+  const [hasMore, setHasMore]           = useState(false);
+  const [offset, setOffset]             = useState(0);
   const [filter, setFilter]             = useState<DateFilter>("today");
   const [search, setSearch]             = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
 
-  const fetchTransactions = useCallback(async () => {
-    if (!shop) return;
-    setLoading(true);
+  // Shared lookup maps so we don't re-fetch known products/agents on load-more
+  const productMapRef = useRef<Record<string, { name: string; sku: string }>>({});
+  const sellerMapRef  = useRef<Record<string, { name: string; code: string }>>({});
 
-    const startDate = getStartDate(filter);
-    let query = supabase
-      .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, created_at, product_id, seller_agent_id")
-      .eq("shop_id", shop.id)
-      .order("created_at", { ascending: false });
+  const enrichRows = useCallback(async (
+    txData: any[],
+    existingProductMap: Record<string, { name: string; sku: string }>,
+    existingSellerMap: Record<string, { name: string; code: string }>,
+  ): Promise<LocalTransaction[]> => {
+    if (!shop) return [];
 
-    if (startDate) query = query.gte("created_at", startDate.toISOString());
+    const newProductIds = [...new Set(txData.map((t: any) => t.product_id).filter((id: string) => id && !existingProductMap[id]))];
+    const newAgentIds   = [...new Set(txData.map((t: any) => t.seller_agent_id).filter((id: string) => id && !existingSellerMap[id]))];
 
-    const { data: txData, error } = await query;
-    if (error || !txData) { setLoading(false); return; }
-
-    const productIds = [...new Set(txData.map((t: any) => t.product_id).filter(Boolean))];
-    const agentIds   = [...new Set(txData.map((t: any) => t.seller_agent_id).filter(Boolean))];
-
-    let productMap: Record<string, { name: string; sku: string }> = {};
-    if (productIds.length > 0) {
+    if (newProductIds.length > 0) {
       const { data: allocData } = await supabase
         .from("shop_allocations")
         .select("product_id, product_name, product_sku")
         .eq("shop_id", shop.id)
-        .in("product_id", productIds);
+        .in("product_id", newProductIds);
       for (const a of allocData ?? []) {
-        if (a.product_name) productMap[a.product_id] = { name: a.product_name, sku: a.product_sku ?? "" };
+        if (a.product_name) existingProductMap[a.product_id] = { name: a.product_name, sku: a.product_sku ?? "" };
       }
     }
 
-    let sellerMap: Record<string, { name: string; code: string }> = {};
-    if (agentIds.length > 0) {
+    if (newAgentIds.length > 0) {
       const { data: agentData } = await supabase
         .from("shop_agents")
         .select("agent_id, agent_name, agent_code")
         .eq("shop_id", shop.id)
-        .in("agent_id", agentIds);
+        .in("agent_id", newAgentIds);
       for (const a of agentData ?? []) {
-        if (a.agent_name) sellerMap[a.agent_id] = { name: a.agent_name, code: a.agent_code ?? "" };
+        if (a.agent_name) existingSellerMap[a.agent_id] = { name: a.agent_name, code: a.agent_code ?? "" };
       }
     }
 
-    const enriched: LocalTransaction[] = txData.map((t: any) => ({
+    return txData.map((t: any) => ({
       id:             t.id,
       amount:         t.amount,
       quantity:       t.quantity,
@@ -99,15 +97,62 @@ export default function PosTransactionsPage() {
       cash_amount:    t.cash_amount,
       mpesa_amount:   t.mpesa_amount,
       created_at:     t.created_at,
-      product_name:   productMap[t.product_id]?.name  ?? "—",
-      product_sku:    productMap[t.product_id]?.sku   ?? "",
-      seller_name:    sellerMap[t.seller_agent_id]?.name ?? "Unknown",
-      seller_code:    sellerMap[t.seller_agent_id]?.code ?? "",
+      product_name:   existingProductMap[t.product_id]?.name  ?? "—",
+      product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
+      seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
+      seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
     }));
+  }, [shop]);
 
+  const fetchTransactions = useCallback(async () => {
+    if (!shop) return;
+    setLoading(true);
+    productMapRef.current = {};
+    sellerMapRef.current  = {};
+
+    const startDate = getStartDate(filter);
+    let query = supabase
+      .from("shop_transactions")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, created_at, product_id, seller_agent_id")
+      .eq("shop_id", shop.id)
+      .order("created_at", { ascending: false })
+      .range(0, PAGE_SIZE - 1);
+
+    if (startDate) query = query.gte("created_at", startDate.toISOString());
+
+    const { data: txData, error } = await query;
+    if (error || !txData) { setLoading(false); return; }
+
+    const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
     setTransactions(enriched);
+    setOffset(PAGE_SIZE);
+    setHasMore(txData.length === PAGE_SIZE);
     setLoading(false);
-  }, [shop, filter]);
+  }, [shop, filter, enrichRows]);
+
+  const loadMore = useCallback(async () => {
+    if (!shop || loadingMore) return;
+    setLoadingMore(true);
+
+    const startDate = getStartDate(filter);
+    let query = supabase
+      .from("shop_transactions")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, created_at, product_id, seller_agent_id")
+      .eq("shop_id", shop.id)
+      .order("created_at", { ascending: false })
+      .range(offset, offset + PAGE_SIZE - 1);
+
+    if (startDate) query = query.gte("created_at", startDate.toISOString());
+
+    const { data: txData, error } = await query;
+    if (error || !txData) { setLoadingMore(false); return; }
+
+    const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
+    setTransactions(prev => [...prev, ...enriched]);
+    setOffset(prev => prev + PAGE_SIZE);
+    setHasMore(txData.length === PAGE_SIZE);
+    setLoadingMore(false);
+  }, [shop, filter, offset, loadingMore, enrichRows]);
 
   useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
 
@@ -260,7 +305,9 @@ export default function PosTransactionsPage() {
         <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, overflow: "hidden", animation: "fadeUp 0.3s ease" }}>
           <div style={{ padding: "14px 18px", borderBottom: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 14 }}>Records</div>
-            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>{displayed.length} transactions</div>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+              {displayed.length} shown{hasMore ? " · more available" : ""}
+            </div>
           </div>
 
           {loading ? (
@@ -312,6 +359,31 @@ export default function PosTransactionsPage() {
                   })}
                 </div>
               ))}
+            </div>
+          )}
+
+          {/* Load more */}
+          {hasMore && !loading && (
+            <div style={{ padding: "14px 18px", borderTop: `1px solid ${theme.border.default}`, textAlign: "center" }}>
+              <button
+                onClick={loadMore}
+                disabled={loadingMore}
+                style={{
+                  padding: "10px 28px",
+                  background: "rgba(6,182,212,0.1)",
+                  border: "1px solid rgba(6,182,212,0.25)",
+                  borderRadius: 10,
+                  color: theme.accent.cyan,
+                  fontFamily: theme.font.mono,
+                  fontSize: 12,
+                  cursor: loadingMore ? "not-allowed" : "pointer",
+                  opacity: loadingMore ? 0.6 : 1,
+                  display: "inline-flex", alignItems: "center", gap: 8,
+                }}>
+                {loadingMore
+                  ? <><span style={{ width: 12, height: 12, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Loading...</>
+                  : `Load next ${PAGE_SIZE}`}
+              </button>
             </div>
           )}
         </div>

@@ -66,6 +66,7 @@ export default function PosScan() {
   const [customerName,    setCustomerName]    = useState("");
   const [customerPhone,   setCustomerPhone]   = useState("");
   const [initialPayment,  setInitialPayment]  = useState("");
+  const [initialPayMethod, setInitialPayMethod] = useState<"cash" | "mpesa">("cash");
   const [payMethod,     setPayMethod]     = useState<PayMethod>("cash");
   const [cashAmount,    setCashAmount]    = useState("");
   const [mpesaAmount,   setMpesaAmount]   = useState("");
@@ -84,6 +85,16 @@ export default function PosScan() {
   const [error,        setError]        = useState("");
   const [scanFeedback, setScanFeedback] = useState("");
   const [savedBatchRef, setSavedBatchRef] = useState("");
+  const [isOnline,     setIsOnline]     = useState(navigator.onLine);
+
+  // ── online/offline detection ──────────────────────────────────────────
+  useEffect(() => {
+    const on  = () => setIsOnline(true);
+    const off = () => setIsOnline(false);
+    window.addEventListener("online",  on);
+    window.addEventListener("offline", off);
+    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
+  }, []);
 
   // ── camera sync ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -98,15 +109,13 @@ export default function PosScan() {
   useEffect(() => {
     if (!shop) return;
     (async () => {
-      const [agentsRes, allocsRes, txRes] = await Promise.all([
+      const [agentsRes, allocsRes] = await Promise.all([
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
         supabase.from("shop_allocations")
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
-        supabase.from("shop_transactions")
-          .select("product_id, quantity").eq("shop_id", shop.id),
       ]);
 
       setShopAgents((agentsRes.data || []).map((r: any) => ({
@@ -114,15 +123,12 @@ export default function PosScan() {
         name: r.agent_name ?? "Agent", agent_code: r.agent_code ?? "", avatar: r.agent_avatar ?? "",
       })));
 
-      const soldMap: Record<string, number> = {};
-      for (const t of (txRes.data || [])) soldMap[t.product_id] = (soldMap[t.product_id] || 0) + (Number(t.quantity) || 1);
-
       setMyProducts(
         (allocsRes.data || [])
           .filter((a: any) => a.product_name)
           .map((a: any) => ({
             id: a.id, allocated: a.allocated,
-            remaining: Math.max(0, a.allocated - (soldMap[a.product_id] || 0)),
+            remaining: Math.max(0, a.remaining ?? 0),
             product_id: a.product_id,
             product: { id: a.product_id, name: a.product_name, sku: a.product_sku ?? "", price: Number(a.product_price ?? 0), unit: a.product_unit ?? "" },
           }))
@@ -137,27 +143,19 @@ export default function PosScan() {
     const inMem = myProducts.find(a => a.product.sku.toUpperCase() === sku.toUpperCase());
     if (inMem) return inMem;
 
-    const [allocRes, txRes] = await Promise.all([
-      supabase.from("shop_allocations")
-        .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
-        .eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single(),
-      supabase.from("shop_transactions")
-        .select("quantity").eq("shop_id", shop.id)
-        .eq("product_id", (await supabase.from("shop_allocations")
-          .select("product_id").eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single()
-        ).data?.product_id ?? ""),
-    ]);
+    const { data } = await supabase.from("shop_allocations")
+      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+      .eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single();
 
-    if (!allocRes.data?.product_name) return null;
-    const sold = (txRes.data || []).reduce((s: number, t: any) => s + (Number(t.quantity) || 1), 0);
+    if (!data?.product_name) return null;
     return {
-      id: allocRes.data.id, allocated: allocRes.data.allocated,
-      remaining: Math.max(0, allocRes.data.allocated - sold),
-      product_id: allocRes.data.product_id,
+      id: data.id, allocated: data.allocated,
+      remaining: Math.max(0, data.remaining ?? 0),
+      product_id: data.product_id,
       product: {
-        id: allocRes.data.product_id, name: allocRes.data.product_name,
-        sku: allocRes.data.product_sku ?? "", price: Number(allocRes.data.product_price ?? 0),
-        unit: allocRes.data.product_unit ?? "",
+        id: data.product_id, name: data.product_name,
+        sku: data.product_sku ?? "", price: Number(data.product_price ?? 0),
+        unit: data.product_unit ?? "",
       },
     };
   }, [shop, myProducts]);
@@ -240,6 +238,11 @@ export default function PosScan() {
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
     if (cart.length === 0) return;
+    if (!navigator.onLine) {
+      setError("You are offline. Please check your connection and try again.");
+      setProcessing(false);
+      return;
+    }
     setProcessing(true); setError("");
 
     // Deduct stock for every item regardless of payment method
@@ -289,6 +292,19 @@ export default function PosScan() {
         .single();
 
       if (creditErr) { setProcessing(false); setError("Failed to record credit sale. Try again."); return; }
+
+      // Record the initial payment as a history entry if one was made
+      if (initPaid > 0 && creditData?.id) {
+        await supabase.from("shop_credit_payments").insert({
+          credit_sale_id: creditData.id,
+          shop_id:        shop?.id,
+          owner_id:       shop?.owner_id,
+          amount:         initPaid,
+          payment_method: initialPayMethod,
+          mpesa_ref:      null,
+        });
+      }
+
       setSavedBatchRef((creditData?.id ?? "").slice(0, 8).toUpperCase());
       setSelectedAgent(verifiedAgent);
       setProcessing(false);
@@ -351,7 +367,7 @@ export default function PosScan() {
     setStep("scan"); setMode("camera"); setManualSku("");
     setCart([]); setAddingProduct(null); setAddQty("1");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
-    setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setPayMethod("cash");
+    setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
     setVerifyMethod("pin");
@@ -365,6 +381,22 @@ export default function PosScan() {
 
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
+
+      {/* Offline banner */}
+      {!isOnline && (
+        <div style={{
+          position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
+          background: "#dc2626",
+          color: "#fff",
+          padding: "10px 16px",
+          display: "flex", alignItems: "center", gap: 10,
+          fontFamily: "monospace", fontSize: 13, fontWeight: 600,
+          boxShadow: "0 2px 12px rgba(220,38,38,0.4)",
+        }}>
+          <span style={{ fontSize: 16 }}>⚡</span>
+          No internet connection — sales cannot be processed until you reconnect.
+        </div>
+      )}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
         @keyframes fadeUp     { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
@@ -668,9 +700,19 @@ export default function PosScan() {
                     onChange={e => setInitialPayment(e.target.value)}
                     placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
                   {Number(initialPayment) > 0 && (
-                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#34d399", marginTop: 6 }}>
-                      Balance after payment: {fmt(Math.max(0, grandTotal - Number(initialPayment)))}
-                    </div>
+                    <>
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        {([{ key: "cash", icon: "💵", label: "Cash" }, { key: "mpesa", icon: "📱", label: "M-Pesa" }] as const).map(({ key, icon, label }) => (
+                          <button key={key} onClick={() => setInitialPayMethod(key)}
+                            style={{ flex: 1, padding: "8px", border: `1px solid ${initialPayMethod === key ? theme.accent.green + "80" : theme.border.default}`, borderRadius: 10, background: initialPayMethod === key ? theme.accent.green + "18" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, color: initialPayMethod === key ? theme.accent.green : theme.text.muted }}>
+                            {icon} {label}
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6 }}>
+                        Balance after payment: {fmt(Math.max(0, grandTotal - Number(initialPayment)))}
+                      </div>
+                    </>
                   )}
                 </div>
               </>

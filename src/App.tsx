@@ -8,6 +8,7 @@ import PosShopInfo         from "./pages/PosShopInfo";
 import PosTransactionsPage from "./pages/PosTransactionsPage";
 import PosRequests         from "./pages/PosRequests";
 import BottomNav           from "./components/BottomNav";
+import ErrorBoundary       from "./components/ErrorBoundary";
 
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -67,12 +68,14 @@ function PosApp() {
 
 export default function App() {
   return (
-    <ThemeProvider>
-      <ShopAuthProvider>
-        <BrowserRouter>
-          <PosApp />
-        </BrowserRouter>
-      </ShopAuthProvider>
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <ShopAuthProvider>
+          <BrowserRouter>
+            <PosApp />
+          </BrowserRouter>
+        </ShopAuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }

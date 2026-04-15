@@ -150,15 +150,13 @@ export default function PosShopInfo() {
     if (!shop) return;
     setLoading(true);
     try {
-      const [allocRes, shopAgentsRaw, txRes] = await Promise.all([
+      const [allocRes, shopAgentsRaw] = await Promise.all([
         supabase.from("shop_allocations")
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
-        supabase.from("shop_transactions")
-          .select("product_id, quantity").eq("shop_id", shop.id),
       ]);
 
       let hydratedAgents: ShopAgent[] = (shopAgentsRaw.data || []).map((r: any) => ({
@@ -193,17 +191,11 @@ export default function PosShopInfo() {
         productMap[a.product_id] = { id: a.product_id, name: a.product_name, sku: a.product_sku ?? "", price: Number(a.product_price ?? 0), unit: a.product_unit ?? "" };
       }
 
-      const soldMap: Record<string, number> = {};
-      for (const t of (txRes.data || [])) {
-        if (!t.product_id) continue;
-        soldMap[t.product_id] = (soldMap[t.product_id] || 0) + (Number(t.quantity) || 1);
-      }
-
       setStock((allocRes.data || [])
         .filter((a: any) => !!productMap[a.product_id])
         .map((a: any) => ({
           id: a.id, allocated: a.allocated,
-          remaining: Math.max(0, a.allocated - (soldMap[a.product_id] || 0)),
+          remaining: Math.max(0, a.remaining ?? 0),
           product: productMap[a.product_id],
         })));
       setAgents(hydratedAgents);
