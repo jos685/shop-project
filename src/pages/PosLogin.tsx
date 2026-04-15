@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useShopAuth } from "../context/ShopAuthContext";
+import { useTheme } from "../context/ThemeContext";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -10,6 +11,8 @@ function getGreeting() {
 
 export default function PosLogin() {
   const { login } = useShopAuth();
+  const { theme, toggleTheme } = useTheme();
+  const dk = theme.isDark;
 
   const [businessCode, setBusinessCode] = useState("");
   const [shopCode,     setShopCode]     = useState("");
@@ -42,7 +45,6 @@ export default function PosLogin() {
 
         .est-page {
           min-height: 100vh;
-          background: #fef3e2;
           display: flex;
           align-items: center;
           justify-content: center;
@@ -172,7 +174,6 @@ export default function PosLogin() {
           flex-direction: column;
           justify-content: center;
           padding: 48px 52px;
-          background: #fffbf4;
           overflow-y: auto;
         }
 
@@ -215,21 +216,15 @@ export default function PosLogin() {
         .est-input {
           width: 100%;
           padding: 13px 16px;
-          background: #fff;
-          border: 1.5px solid #e7e5e4;
           border-radius: 12px;
+          border-style: solid;
+          border-width: 1.5px;
           font-size: 15px;
           font-family: 'Inter', sans-serif;
-          color: #1c1917;
           transition: border-color 0.18s, box-shadow 0.18s;
           outline: none;
         }
-        .est-input:focus {
-          border-color: #f97316;
-          box-shadow: 0 0 0 3px rgba(249,115,22,0.12);
-        }
-        .est-input::placeholder { color: #a8a29e; }
-        .est-input:disabled { opacity: 0.55; cursor: not-allowed; background: #fafaf9; }
+        .est-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
         .est-pw-wrap {
           position: relative;
@@ -374,6 +369,47 @@ export default function PosLogin() {
           .est-panel { padding: 28px 20px 24px; }
           .est-form-side { padding: 28px 20px 72px; }
         }
+
+        /* ── DARK MODE ── */
+        .est-page          { background: ${dk ? "#0c0a10" : "#fef3e2"}; }
+        .est-form-side     { background: ${dk ? "#131118" : "#fffbf4"}; }
+        .est-greeting-text { color: ${dk ? "#f1f0f5" : "#1c1917"}; }
+        .est-greeting-sub  { color: ${dk ? "#8b8699" : "#78716c"}; }
+        .est-label         { color: ${dk ? "#c2bdd1" : "#44403c"}; }
+        .est-input {
+          background: ${dk ? "#1e1c26" : "#ffffff"};
+          border-color: ${dk ? "#2e2b3a" : "#e7e5e4"};
+          color: ${dk ? "#f1f0f5" : "#1c1917"};
+        }
+        .est-input:focus {
+          border-color: #f97316;
+          box-shadow: 0 0 0 3px ${dk ? "rgba(249,115,22,0.22)" : "rgba(249,115,22,0.12)"};
+        }
+        .est-input::placeholder { color: ${dk ? "#5a5669" : "#a8a29e"}; }
+        .est-input:disabled     { background: ${dk ? "#181520" : "#fafaf9"}; }
+        .est-pw-toggle          { color: ${dk ? "#5a5669" : "#a8a29e"}; }
+        .est-pw-toggle:hover    { color: ${dk ? "#8b8699" : "#78716c"}; }
+        .est-form-footer        { border-top-color: ${dk ? "#2e2b3a" : "#f5f5f4"}; }
+        .est-form-footer-text   { color: ${dk ? "#5a5669" : "#a8a29e"}; }
+        .est-theme-btn {
+          position: absolute;
+          top: 18px; right: 18px;
+          width: 36px; height: 36px;
+          border-radius: 50%;
+          border: 1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"};
+          background: ${dk ? "#1e1c26" : "#fff"};
+          color: ${dk ? "#c2bdd1" : "#78716c"};
+          cursor: pointer;
+          display: flex; align-items: center; justify-content: center;
+          font-size: 16px;
+          transition: border-color 0.18s, background 0.18s, transform 0.1s;
+          box-shadow: ${dk ? "0 2px 8px rgba(0,0,0,0.4)" : "0 2px 8px rgba(0,0,0,0.07)"};
+          z-index: 10;
+        }
+        .est-theme-btn:hover {
+          border-color: #f97316;
+          transform: scale(1.08);
+        }
       `}</style>
 
       {/* ── LEFT PANEL ── */}
@@ -420,7 +456,19 @@ export default function PosLogin() {
       </div>
 
       {/* ── FORM SIDE ── */}
-      <div className="est-form-side">
+      <div className="est-form-side" style={{ position: "relative" }}>
+
+        {/* Theme toggle */}
+        <button
+          type="button"
+          className="est-theme-btn"
+          onClick={toggleTheme}
+          title={dk ? "Switch to light mode" : "Switch to dark mode"}
+          aria-label="Toggle theme"
+        >
+          {dk ? "☀️" : "🌙"}
+        </button>
+
         <div className="est-form-anim" style={{ maxWidth: 400, width: "100%", margin: "0 auto" }}>
 
           <span className="est-greeting-icon">{greeting.icon}</span>
