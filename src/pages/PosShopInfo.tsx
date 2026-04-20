@@ -152,7 +152,7 @@ export default function PosShopInfo() {
     try {
       const [allocRes, shopAgentsRaw] = await Promise.all([
         supabase.from("shop_allocations")
-          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, product:products(id, name, sku, price, unit)")
           .eq("shop_id", shop.id),
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
@@ -184,20 +184,26 @@ export default function PosShopInfo() {
         }
       }
 
-      const allocData = (allocRes.data || []) as any[];
-      const productMap: Record<string, any> = {};
-      for (const a of allocData) {
-        if (!a.product_id || !a.product_name) continue;
-        productMap[a.product_id] = { id: a.product_id, name: a.product_name, sku: a.product_sku ?? "", price: Number(a.product_price ?? 0), unit: a.product_unit ?? "" };
+      if (allocRes.error) {
+        console.error("shop_allocations error:", allocRes.error.message);
       }
 
-      setStock((allocRes.data || [])
-        .filter((a: any) => !!productMap[a.product_id])
-        .map((a: any) => ({
-          id: a.id, allocated: a.allocated,
-          remaining: Math.max(0, a.remaining ?? 0),
-          product: productMap[a.product_id],
-        })));
+      setStock(
+        (allocRes.data || [])
+          .filter((a: any) => !!a.product_id)
+          .map((a: any) => ({
+            id: a.id,
+            allocated: a.allocated,
+            remaining: Math.max(0, a.remaining ?? 0),
+            product: {
+              id:    a.product_id,
+              name:  a.product_name  || "—",
+              sku:   a.product_sku   || "",
+              price: Number(a.product_price || 0),
+              unit:  a.product_unit  || "",
+            },
+          }))
+      );
       setAgents(hydratedAgents);
     } catch (err) {
       console.error("ShopInfo fetchInfo error:", err);

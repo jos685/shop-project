@@ -125,14 +125,19 @@ export default function PosScan() {
 
       setMyProducts(
         (allocsRes.data || [])
-          .filter((a: any) => a.product_name)
+          .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
           .map((a: any) => ({
             id: a.id, allocated: a.allocated,
             remaining: Math.max(0, a.remaining ?? 0),
             product_id: a.product_id,
-            product: { id: a.product_id, name: a.product_name, sku: a.product_sku ?? "", price: Number(a.product_price ?? 0), unit: a.product_unit ?? "" },
+            product: {
+              id:    a.product_id,
+              name:  a.product_name  || "—",
+              sku:   a.product_sku   || "",
+              price: Number(a.product_price || 0),
+              unit:  a.product_unit  || "",
+            },
           }))
-          .filter((a: LocalAlloc) => a.remaining > 0)
       );
     })();
   }, [shop]);
@@ -147,15 +152,17 @@ export default function PosScan() {
       .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
       .eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single();
 
-    if (!data?.product_name) return null;
+    if (!data?.product_id) return null;
     return {
       id: data.id, allocated: data.allocated,
       remaining: Math.max(0, data.remaining ?? 0),
       product_id: data.product_id,
       product: {
-        id: data.product_id, name: data.product_name,
-        sku: data.product_sku ?? "", price: Number(data.product_price ?? 0),
-        unit: data.product_unit ?? "",
+        id: data.product_id,
+        name:  data.product_name  || "—",
+        sku:   data.product_sku   || "",
+        price: Number(data.product_price || 0),
+        unit:  data.product_unit  || "",
       },
     };
   }, [shop, myProducts]);
