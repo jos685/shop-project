@@ -152,12 +152,26 @@ export default function PosShopInfo() {
     try {
       const [allocRes, shopAgentsRaw] = await Promise.all([
         supabase.from("shop_allocations")
-          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, product:products(id, name, sku, price, unit)")
+          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
       ]);
+
+      if (allocRes.error) console.error("shop_allocations error:", allocRes.error.message);
+
+      // Fetch products directly — the join to products silently fails for unauthenticated shop sessions
+      const productIds = (allocRes.data || []).map((a: any) => a.product_id).filter(Boolean);
+      let productsMap: Record<string, any> = {};
+      if (productIds.length > 0) {
+        const { data: prodsData, error: prodsError } = await supabase
+          .from("products")
+          .select("id, name, sku, price, unit")
+          .in("id", productIds);
+        if (prodsError) console.error("products fetch error:", prodsError.message);
+        for (const p of prodsData || []) productsMap[p.id] = p;
+      }
 
       let hydratedAgents: ShopAgent[] = (shopAgentsRaw.data || []).map((r: any) => ({
         id: r.id, pin: r.pin, active: r.active,
@@ -197,10 +211,10 @@ export default function PosShopInfo() {
             remaining: Math.max(0, a.remaining ?? 0),
             product: {
               id:    a.product_id,
-              name:  a.product_name  || "—",
-              sku:   a.product_sku   || "",
-              price: Number(a.product_price || 0),
-              unit:  a.product_unit  || "",
+              name:  productsMap[a.product_id]?.name  || a.product_name  || "—",
+              sku:   productsMap[a.product_id]?.sku   || a.product_sku   || "",
+              price: Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
+              unit:  productsMap[a.product_id]?.unit  || a.product_unit  || "",
             },
           }))
       );
@@ -968,14 +982,10 @@ export default function PosShopInfo() {
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount Paid (KSh)</label>
               <input className="ki" type="number" value={payAmount}
                 onChange={e => {
-                  const val = e.target.value;
-                  setPayAmount(val);
                   const balance = payTarget.amount - payTarget.amount_paid;
-                  if (Number(val) > balance) {
-                    setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`);
-                  } else {
-                    setPayError("");
-                  }
+                  const val = Number(e.target.value) || 0;
+                  setPayAmount(val > balance ? String(balance) : e.target.value);
+                  setPayError("");
                 }}
                 placeholder={`Balance: ${fmt(payTarget.amount - payTarget.amount_paid)}`} />
             </div>

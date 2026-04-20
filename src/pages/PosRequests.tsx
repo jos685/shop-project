@@ -89,19 +89,22 @@ export default function PosRequests() {
         .order("created_at", { ascending: false }),
       supabase
         .from("shop_allocations")
-        .select("product_id, product_name, product_sku")
+        .select("product_id")
         .eq("shop_id", shop.id),
     ]);
 
     setRequests((reqRes.data || []) as ShopRequest[]);
 
-    // Build unique product list from shop allocations
-    const seen = new Set<string>();
+    // Build unique product list by fetching directly from products table
+    const productIds = [...new Set((allocRes.data || []).map((a: any) => a.product_id).filter(Boolean))];
     const prods: StockProduct[] = [];
-    for (const a of (allocRes.data || []) as any[]) {
-      if (a.product_id && a.product_name && !seen.has(a.product_id)) {
-        seen.add(a.product_id);
-        prods.push({ id: a.product_id, name: a.product_name, sku: a.product_sku ?? "" });
+    if (productIds.length > 0) {
+      const { data: prodsData } = await supabase
+        .from("products")
+        .select("id, name, sku")
+        .in("id", productIds);
+      for (const p of prodsData ?? []) {
+        prods.push({ id: p.id, name: p.name, sku: p.sku ?? "" });
       }
     }
     setProducts(prods);

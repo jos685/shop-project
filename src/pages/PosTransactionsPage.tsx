@@ -68,13 +68,12 @@ export default function PosTransactionsPage() {
     const newAgentIds   = [...new Set(txData.map((t: any) => t.seller_agent_id).filter((id: string) => id && !existingSellerMap[id]))];
 
     if (newProductIds.length > 0) {
-      const { data: allocData } = await supabase
-        .from("shop_allocations")
-        .select("product_id, product_name, product_sku")
-        .eq("shop_id", shop.id)
-        .in("product_id", newProductIds);
-      for (const a of allocData ?? []) {
-        if (a.product_name) existingProductMap[a.product_id] = { name: a.product_name, sku: a.product_sku ?? "" };
+      const { data: prodsData } = await supabase
+        .from("products")
+        .select("id, name, sku")
+        .in("id", newProductIds);
+      for (const p of prodsData ?? []) {
+        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "" };
       }
     }
 

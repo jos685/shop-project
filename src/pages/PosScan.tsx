@@ -123,21 +123,32 @@ export default function PosScan() {
         name: r.agent_name ?? "Agent", agent_code: r.agent_code ?? "", avatar: r.agent_avatar ?? "",
       })));
 
+      const productIds = (allocsRes.data || []).map((a: any) => a.product_id).filter(Boolean);
+      let productsMap: Record<string, any> = {};
+      if (productIds.length > 0) {
+        const { data: prodsData } = await supabase
+          .from("products").select("id, name, sku, price, unit").in("id", productIds);
+        for (const p of prodsData || []) productsMap[p.id] = p;
+      }
+
       setMyProducts(
         (allocsRes.data || [])
           .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
-          .map((a: any) => ({
-            id: a.id, allocated: a.allocated,
-            remaining: Math.max(0, a.remaining ?? 0),
-            product_id: a.product_id,
-            product: {
-              id:    a.product_id,
-              name:  a.product_name  || "—",
-              sku:   a.product_sku   || "",
-              price: Number(a.product_price || 0),
-              unit:  a.product_unit  || "",
-            },
-          }))
+          .map((a: any) => {
+            const p = productsMap[a.product_id] || {};
+            return {
+              id: a.id, allocated: a.allocated,
+              remaining: Math.max(0, a.remaining ?? 0),
+              product_id: a.product_id,
+              product: {
+                id:    a.product_id,
+                name:  p.name  || a.product_name  || "—",
+                sku:   p.sku   || a.product_sku   || "",
+                price: Number(p.price ?? a.product_price ?? 0),
+                unit:  p.unit  || a.product_unit  || "",
+              },
+            };
+          })
       );
     })();
   }, [shop]);
@@ -153,16 +164,18 @@ export default function PosScan() {
       .eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single();
 
     if (!data?.product_id) return null;
+    const { data: prod } = await supabase
+      .from("products").select("id, name, sku, price, unit").eq("id", data.product_id).single();
     return {
       id: data.id, allocated: data.allocated,
       remaining: Math.max(0, data.remaining ?? 0),
       product_id: data.product_id,
       product: {
-        id: data.product_id,
-        name:  data.product_name  || "—",
-        sku:   data.product_sku   || "",
-        price: Number(data.product_price || 0),
-        unit:  data.product_unit  || "",
+        id:    data.product_id,
+        name:  prod?.name  || data.product_name  || "—",
+        sku:   prod?.sku   || data.product_sku   || "",
+        price: Number(prod?.price ?? data.product_price ?? 0),
+        unit:  prod?.unit  || data.product_unit  || "",
       },
     };
   }, [shop, myProducts]);
@@ -278,7 +291,7 @@ export default function PosScan() {
         subtotal:      item.allocation.product.price * item.quantity,
       }));
 
-      const initPaid  = Math.max(0, Number(initialPayment) || 0);
+      const initPaid  = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
       const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
 
       const { data: creditData, error: creditErr } = await supabase
@@ -704,7 +717,10 @@ export default function PosScan() {
                     Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
                   </label>
                   <input className="ki" type="number" value={initialPayment}
-                    onChange={e => setInitialPayment(e.target.value)}
+                    onChange={e => {
+                      const val = Number(e.target.value) || 0;
+                      setInitialPayment(val > grandTotal ? String(grandTotal) : e.target.value);
+                    }}
                     placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
                   {Number(initialPayment) > 0 && (
                     <>
@@ -717,7 +733,7 @@ export default function PosScan() {
                         ))}
                       </div>
                       <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6 }}>
-                        Balance after payment: {fmt(Math.max(0, grandTotal - Number(initialPayment)))}
+                        Balance after payment: {fmt(Math.max(0, grandTotal - Math.min(Number(initialPayment), grandTotal)))}
                       </div>
                     </>
                   )}
@@ -912,7 +928,7 @@ export default function PosScan() {
               </div>
               <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 4 }}>
                 {payMethod === "credit"
-                  ? (() => { const ip = Math.max(0, Number(initialPayment) || 0); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
+                  ? (() => { const ip = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
                   : `${cart.length} item${cart.length !== 1 ? "s" : ""} synced to owner dashboard`}
               </div>
             </div>
