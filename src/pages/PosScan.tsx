@@ -34,6 +34,7 @@ interface LocalAgent {
 interface CartItem {
   allocation: LocalAlloc;
   quantity: number;
+  sellPrice: number;
 }
 
 const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
@@ -61,6 +62,7 @@ export default function PosScan() {
   const [cart,          setCart]          = useState<CartItem[]>([]);
   const [addingProduct, setAddingProduct] = useState<LocalAlloc | null>(null);
   const [addQty,        setAddQty]        = useState("1");
+  const [addSellPrice,  setAddSellPrice]  = useState("");
 
   // checkout
   const [customerName,    setCustomerName]    = useState("");
@@ -86,6 +88,7 @@ export default function PosScan() {
   const [scanFeedback, setScanFeedback] = useState("");
   const [savedBatchRef, setSavedBatchRef] = useState("");
   const [isOnline,     setIsOnline]     = useState(navigator.onLine);
+  const [commissionConfig, setCommissionConfig] = useState<{ enabled: boolean; rate: number }>({ enabled: false, rate: 0 });
 
   // ── online/offline detection ──────────────────────────────────────────
   useEffect(() => {
@@ -109,14 +112,16 @@ export default function PosScan() {
   useEffect(() => {
     if (!shop) return;
     (async () => {
-      const [agentsRes, allocsRes] = await Promise.all([
+      const [agentsRes, allocsRes, commRes] = await Promise.all([
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
         supabase.from("shop_allocations")
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
+        supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
       ]);
+      setCommissionConfig((commRes.data as any)?.[0] ?? { enabled: false, rate: 0 });
 
       setShopAgents((agentsRes.data || []).map((r: any) => ({
         id: r.id, pin: r.pin, active: r.active, agent_id: r.agent_id,
@@ -188,6 +193,7 @@ export default function PosScan() {
     }
     const existing = cart.find(i => i.allocation.product_id === alloc.product_id);
     setAddQty(existing ? String(existing.quantity) : "1");
+    setAddSellPrice(existing ? String(existing.sellPrice) : String(alloc.product.price));
     setAddingProduct(alloc);
     setError("");
   };
@@ -215,17 +221,23 @@ export default function PosScan() {
   const handleAddToCart = () => {
     if (!addingProduct) return;
     const qty = Math.max(1, parseInt(addQty) || 1);
+    const sp  = Number(addSellPrice) || addingProduct.product.price;
     if (qty > addingProduct.remaining) {
       setError(`Only ${addingProduct.remaining} units available.`);
       return;
     }
+    if (sp < addingProduct.product.price) {
+      setError(`Sell price cannot be less than ${fmt(addingProduct.product.price)}.`);
+      return;
+    }
     setCart(prev => {
       const existing = prev.find(i => i.allocation.product_id === addingProduct.product_id);
-      if (existing) return prev.map(i => i.allocation.product_id === addingProduct.product_id ? { ...i, quantity: qty } : i);
-      return [...prev, { allocation: addingProduct, quantity: qty }];
+      if (existing) return prev.map(i => i.allocation.product_id === addingProduct.product_id ? { ...i, quantity: qty, sellPrice: sp } : i);
+      return [...prev, { allocation: addingProduct, quantity: qty, sellPrice: sp }];
     });
     setAddingProduct(null);
     setAddQty("1");
+    setAddSellPrice("");
     setError("");
   };
 
@@ -238,7 +250,7 @@ export default function PosScan() {
   };
 
   // ── checkout ──────────────────────────────────────────────────────────
-  const grandTotal = cart.reduce((s, i) => s + i.allocation.product.price * i.quantity, 0);
+  const grandTotal = cart.reduce((s, i) => s + i.sellPrice * i.quantity, 0);
 
   const handleCheckoutNext = () => {
     if (cart.length === 0) { setError("Add at least one product to the cart."); return; }
@@ -336,22 +348,32 @@ export default function PosScan() {
     const cash  = payMethod === "cash"  ? grandTotal : payMethod === "mpesa" ? 0 : Number(cashAmount)  || 0;
     const mpesa = payMethod === "mpesa" ? grandTotal : payMethod === "cash"  ? 0 : Number(mpesaAmount) || 0;
 
+    const commRate = commissionConfig.enabled ? commissionConfig.rate : 0;
+
     const txRows = cart.map(item => {
-      const itemTotal = item.allocation.product.price * item.quantity;
-      const ratio = grandTotal > 0 ? itemTotal / grandTotal : 0;
+      const basePrice   = item.allocation.product.price;
+      const unitPrice   = item.sellPrice;
+      const itemTotal   = unitPrice * item.quantity;
+      const markup      = Math.max(0, unitPrice - basePrice);
+      const commEarned  = parseFloat((markup * item.quantity * commRate / 100).toFixed(2));
+      const ratio       = grandTotal > 0 ? itemTotal / grandTotal : 0;
       return {
-        shop_id:         shop?.id,
-        owner_id:        shop?.owner_id,
-        seller_agent_id: verifiedAgent.agent_id,
-        product_id:      item.allocation.product.id,
-        quantity:        item.quantity,
-        amount:          itemTotal,
-        customer_phone:  customerPhone.trim(),
-        payment_method:  payMethod,
-        cash_amount:     payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
-        mpesa_amount:    payMethod === "mpesa" ? itemTotal : payMethod === "cash"  ? 0 : Math.round(mpesa * ratio),
-        mpesa_ref:       (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
-        status:          "ok",
+        shop_id:           shop?.id,
+        owner_id:          shop?.owner_id,
+        seller_agent_id:   verifiedAgent.agent_id,
+        product_id:        item.allocation.product.id,
+        quantity:          item.quantity,
+        amount:            itemTotal,
+        customer_phone:    customerPhone.trim(),
+        payment_method:    payMethod,
+        cash_amount:       payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
+        mpesa_amount:      payMethod === "mpesa" ? itemTotal : payMethod === "cash"  ? 0 : Math.round(mpesa * ratio),
+        mpesa_ref:         (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
+        status:            "ok",
+        unit_price:        unitPrice,
+        base_price:        basePrice,
+        commission_rate:   commRate,
+        commission_earned: commEarned,
       };
     });
 
@@ -385,7 +407,7 @@ export default function PosScan() {
 
   const handleReset = () => {
     setStep("scan"); setMode("camera"); setManualSku("");
-    setCart([]); setAddingProduct(null); setAddQty("1");
+    setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
     setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
@@ -625,13 +647,18 @@ export default function PosScan() {
                 Cart — {cart.length} item{cart.length !== 1 ? "s" : ""}
               </div>
               {cart.map((item, idx) => {
-                const itemTotal = item.allocation.product.price * item.quantity;
+                const itemTotal = item.sellPrice * item.quantity;
                 return (
                   <div key={item.allocation.product_id} className="cart-row" style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12, transition: "background 0.15s" }}>
                     <div style={{ width: 36, height: 36, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>📦</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
                       <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.allocation.product.name}</div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{fmt(item.allocation.product.price)} each</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                        {fmt(item.sellPrice)} each
+                        {item.sellPrice > item.allocation.product.price && (
+                          <span style={{ color: "#34d399", marginLeft: 5 }}>+{fmt(item.sellPrice - item.allocation.product.price)} markup</span>
+                        )}
+                      </div>
                     </div>
                     {/* Qty stepper */}
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -946,7 +973,7 @@ export default function PosScan() {
               {cart.map(item => (
                 <div key={item.allocation.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                   <span style={{ fontSize: 12, color: theme.text.secondary }}>{item.quantity}× {item.allocation.product.name}</span>
-                  <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.primary }}>{fmt(item.allocation.product.price * item.quantity)}</span>
+                  <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.primary }}>{fmt(item.sellPrice * item.quantity)}</span>
                 </div>
               ))}
               {/* Summary rows */}
@@ -1043,11 +1070,35 @@ export default function PosScan() {
               </div>
             </div>
 
+            {/* Sell Price */}
+            <div>
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                Sell Price
+                <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>min {fmt(addingProduct.product.price)}</span>
+              </label>
+              <input className="ki" type="number"
+                value={addSellPrice}
+                onChange={e => { setAddSellPrice(e.target.value); setError(""); }}
+                min={addingProduct.product.price}
+                step="1"
+              />
+              {Number(addSellPrice) > addingProduct.product.price && (
+                <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
+                  <span style={{ color: "#34d399" }}>Markup: {fmt((Number(addSellPrice) - addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)))}</span>
+                  {commissionConfig.enabled && (
+                    <span style={{ color: theme.accent.cyan }}>
+                      Commission: {fmt(parseFloat(((Number(addSellPrice) - addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)) * commissionConfig.rate / 100).toFixed(2)))}
+                    </span>
+                  )}
+                </div>
+              )}
+            </div>
+
             {/* Subtotal preview */}
             <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
               <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>
-                {fmt(addingProduct.product.price * (Math.max(1, parseInt(addQty) || 1)))}
+                {fmt((Number(addSellPrice) || addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)))}
               </span>
             </div>
 

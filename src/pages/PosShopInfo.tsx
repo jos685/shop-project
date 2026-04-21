@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useLocation } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { supabase } from "../lib/supabase";
@@ -74,6 +75,7 @@ type ActiveTab = "stock" | "agents" | "expenses" | "credit";
 export default function PosShopInfo() {
   const { shop } = useShopAuth();
   const { theme } = useTheme();
+  const location = useLocation();
   const width = useWindowWidth();
   const isMobile = width < 640;
 
@@ -81,6 +83,16 @@ export default function PosShopInfo() {
   const [agents,       setAgents]       = useState<ShopAgent[]>([]);
   const [loading,      setLoading]      = useState(true);
   const [tab,          setTab]          = useState<ActiveTab>("stock");
+
+  // Deep-link from dashboard: navigate("/pos/info", { state: { tab: "credit" } })
+  useEffect(() => {
+    const state = location.state as { tab?: string } | null;
+    if (state?.tab && ["stock", "agents", "expenses", "credit"].includes(state.tab)) {
+      setTab(state.tab as ActiveTab);
+      window.history.replaceState({}, "");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Today's stats
   const [todaySales,   setTodaySales]   = useState(0);
