@@ -283,8 +283,15 @@ export default function PosDashboard() {
             </div>
           </div>
           <button onClick={() => setShowLogout(true)}
-            style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 9, padding: "8px 12px", color: theme.accent.red, fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer" }}>
-            ⏻
+            style={{
+              background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)",
+              borderRadius: 9, padding: isMobile ? "8px 12px" : "8px 12px",
+              color: theme.accent.red, fontFamily: theme.font.mono,
+              fontSize: isMobile ? 12 : 13, cursor: "pointer",
+              display: "flex", alignItems: "center", gap: 5, fontWeight: 600,
+            }}>
+            <span style={{ fontSize: isMobile ? 14 : 15 }}>⏻</span>
+            {isMobile && <span>Logout</span>}
           </button>
         </div>
       </div>

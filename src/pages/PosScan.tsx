@@ -89,6 +89,8 @@ export default function PosScan() {
   const [savedBatchRef, setSavedBatchRef] = useState("");
   const [isOnline,     setIsOnline]     = useState(navigator.onLine);
   const [commissionConfig, setCommissionConfig] = useState<{ enabled: boolean; rate: number }>({ enabled: false, rate: 0 });
+  const [businessName,  setBusinessName]  = useState("");
+  const [receiptStatus, setReceiptStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
 
   // ── online/offline detection ──────────────────────────────────────────
   useEffect(() => {
@@ -112,7 +114,7 @@ export default function PosScan() {
   useEffect(() => {
     if (!shop) return;
     (async () => {
-      const [agentsRes, allocsRes, commRes] = await Promise.all([
+      const [agentsRes, allocsRes, commRes, profileRes] = await Promise.all([
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
@@ -120,8 +122,10 @@ export default function PosScan() {
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
         supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
+        supabase.from("profiles").select("business_name").eq("id", shop.owner_id).single(),
       ]);
       setCommissionConfig((commRes.data as any)?.[0] ?? { enabled: false, rate: 0 });
+      setBusinessName((profileRes.data as any)?.business_name ?? shop.name);
 
       setShopAgents((agentsRes.data || []).map((r: any) => ({
         id: r.id, pin: r.pin, active: r.active, agent_id: r.agent_id,
@@ -191,9 +195,10 @@ export default function PosScan() {
       setTimeout(() => setScanFeedback(""), 2500);
       return;
     }
-    const existing = cart.find(i => i.allocation.product_id === alloc.product_id);
+    const existing   = cart.find(i => i.allocation.product_id === alloc.product_id);
+    const canEdit    = commissionConfig.enabled && commissionConfig.rate > 0;
     setAddQty(existing ? String(existing.quantity) : "1");
-    setAddSellPrice(existing ? String(existing.sellPrice) : String(alloc.product.price));
+    setAddSellPrice(canEdit && existing ? String(existing.sellPrice) : String(alloc.product.price));
     setAddingProduct(alloc);
     setError("");
   };
@@ -220,13 +225,14 @@ export default function PosScan() {
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
     if (!addingProduct) return;
-    const qty = Math.max(1, parseInt(addQty) || 1);
-    const sp  = Number(addSellPrice) || addingProduct.product.price;
+    const qty      = Math.max(1, parseInt(addQty) || 1);
+    const canEdit  = commissionConfig.enabled && commissionConfig.rate > 0;
+    const sp       = canEdit ? (Number(addSellPrice) || addingProduct.product.price) : addingProduct.product.price;
     if (qty > addingProduct.remaining) {
       setError(`Only ${addingProduct.remaining} units available.`);
       return;
     }
-    if (sp < addingProduct.product.price) {
+    if (canEdit && sp < addingProduct.product.price) {
       setError(`Sell price cannot be less than ${fmt(addingProduct.product.price)}.`);
       return;
     }
@@ -341,6 +347,34 @@ export default function PosScan() {
       setSelectedAgent(verifiedAgent);
       setProcessing(false);
       setStep("success");
+
+      // Fire credit receipt asynchronously — best effort
+      if (customerPhone.trim()) {
+        const paid    = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
+        const balance = grandTotal - paid;
+        setReceiptStatus("sending");
+        supabase.functions.invoke("send-receipt", {
+          body: {
+            phone:           customerPhone.trim(),
+            business_name:   businessName,
+            agent_name:      verifiedAgent.name,
+            customer_name:   customerName.trim() || null,
+            items:           cart.map(item => ({
+              name:       item.allocation.product.name,
+              quantity:   item.quantity,
+              unit_price: item.allocation.product.price,
+              total:      item.allocation.product.price * item.quantity,
+            })),
+            total_amount:    grandTotal,
+            payment_method:  "credit",
+            initial_payment: paid,
+            balance_due:     balance,
+          },
+        }).then(({ data: rd, error: re }) => {
+          setReceiptStatus((re || !(rd as any)?.sent) ? "failed" : "sent");
+        });
+      }
+
       return;
     }
 
@@ -355,7 +389,7 @@ export default function PosScan() {
       const unitPrice   = item.sellPrice;
       const itemTotal   = unitPrice * item.quantity;
       const markup      = Math.max(0, unitPrice - basePrice);
-      const commEarned  = parseFloat((markup * item.quantity * commRate / 100).toFixed(2));
+      const commEarned  = Math.round(markup * item.quantity * commRate / 100);
       const ratio       = grandTotal > 0 ? itemTotal / grandTotal : 0;
       return {
         shop_id:           shop?.id,
@@ -385,6 +419,29 @@ export default function PosScan() {
     setSelectedAgent(verifiedAgent);
     setProcessing(false);
     setStep("success");
+
+    // Fire receipt asynchronously — sale is already saved, this is best-effort
+    if (customerPhone.trim()) {
+      setReceiptStatus("sending");
+      supabase.functions.invoke("send-receipt", {
+        body: {
+          phone:          customerPhone.trim(),
+          business_name:  businessName,
+          agent_name:     verifiedAgent.name,
+          items:          cart.map(item => ({
+            name:       item.allocation.product.name,
+            quantity:   item.quantity,
+            unit_price: item.sellPrice,
+            total:      item.sellPrice * item.quantity,
+          })),
+          total_amount:   grandTotal,
+          payment_method: payMethod,
+          mpesa_ref:      mpesaRef.trim() || null,
+        },
+      }).then(({ data: rd, error: re }) => {
+        setReceiptStatus((re || !(rd as any)?.sent) ? "failed" : "sent");
+      });
+    }
   };
 
   // ── Badge QR verify ───────────────────────────────────────────────────
@@ -412,7 +469,7 @@ export default function PosScan() {
     setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
-    setVerifyMethod("pin");
+    setVerifyMethod("pin"); setReceiptStatus("idle");
   };
 
   const goBack = () => {
@@ -958,6 +1015,18 @@ export default function PosScan() {
                   ? (() => { const ip = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
                   : `${cart.length} item${cart.length !== 1 ? "s" : ""} synced to owner dashboard`}
               </div>
+              {/* Silent receipt status */}
+              {receiptStatus !== "idle" && (
+                <div style={{ marginTop: 8, fontSize: 11, fontFamily: theme.font.mono, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  color: receiptStatus === "sent" ? "#34d399" : receiptStatus === "failed" ? "#f87171" : theme.text.muted }}>
+                  {receiptStatus === "sending" && (
+                    <span style={{ width: 10, height: 10, border: "1.5px solid rgba(255,255,255,0.2)", borderTopColor: theme.text.muted, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                  )}
+                  {receiptStatus === "sent"    && "✓ Receipt sent"}
+                  {receiptStatus === "failed"  && "⚠ Receipt could not be delivered"}
+                  {receiptStatus === "sending" && "Sending receipt..."}
+                </div>
+              )}
             </div>
             <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, padding: "20px 22px", width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 10 }}>
               {/* Ref row */}
@@ -1071,28 +1140,49 @@ export default function PosScan() {
             </div>
 
             {/* Sell Price */}
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                Sell Price
-                <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>min {fmt(addingProduct.product.price)}</span>
-              </label>
-              <input className="ki" type="number"
-                value={addSellPrice}
-                onChange={e => { setAddSellPrice(e.target.value); setError(""); }}
-                min={addingProduct.product.price}
-                step="1"
-              />
-              {Number(addSellPrice) > addingProduct.product.price && (
-                <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
-                  <span style={{ color: "#34d399" }}>Markup: {fmt((Number(addSellPrice) - addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)))}</span>
-                  {commissionConfig.enabled && (
-                    <span style={{ color: theme.accent.cyan }}>
-                      Commission: {fmt(parseFloat(((Number(addSellPrice) - addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)) * commissionConfig.rate / 100).toFixed(2)))}
-                    </span>
+            {(() => {
+              const canEdit = commissionConfig.enabled && commissionConfig.rate > 0;
+              const sp      = Number(addSellPrice) || addingProduct.product.price;
+              const qty     = Math.max(1, parseInt(addQty) || 1);
+              const markup  = canEdit ? Math.max(0, sp - addingProduct.product.price) : 0;
+              return (
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                    Sell Price
+                    {!canEdit && (
+                      <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>fixed</span>
+                    )}
+                  </label>
+                  {canEdit ? (
+                    <>
+                      <input className="ki" type="number"
+                        value={addSellPrice}
+                        onChange={e => { setAddSellPrice(e.target.value); setError(""); }}
+                        min={addingProduct.product.price}
+                        step="1"
+                      />
+                      {markup > 0 && (
+                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
+                          <span style={{ color: "#34d399" }}>Markup: {fmt(markup * qty)}</span>
+                          <span style={{ color: theme.accent.cyan }}>
+                            Commission: {fmt(Math.round(markup * qty * commissionConfig.rate / 100))}
+                          </span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div style={{
+                      padding: "12px 14px", background: "rgba(255,255,255,0.03)",
+                      border: `1px solid ${theme.border.default}`, borderRadius: 12,
+                      fontFamily: theme.font.mono, fontSize: 15, fontWeight: 600,
+                      color: theme.text.primary,
+                    }}>
+                      {fmt(addingProduct.product.price)}
+                    </div>
                   )}
                 </div>
-              )}
-            </div>
+              );
+            })()}
 
             {/* Subtotal preview */}
             <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
