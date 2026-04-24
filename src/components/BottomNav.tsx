@@ -1,20 +1,33 @@
+import { useState, useEffect } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 
 const tabs = [
-  { path: "/pos",              icon: "▦",  label: "Dashboard" },
-  { path: "/pos/info",         icon: "📦", label: "Shop"      },
-  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell" },
-  { path: "/pos/requests",     icon: "📋", label: "Requests"  },
-  { path: "/pos/transactions", icon: "🧾", label: "History"   },
+  { path: "/pos",              icon: "▦",  label: "Dashboard", short: "Home"  },
+  { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop"  },
+  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan"  },
+  { path: "/pos/requests",     icon: "📋", label: "Requests",  short: "Reqs"  },
+  { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns"  },
 ];
+
+function useWindowWidth() {
+  const [w, setW] = useState(window.innerWidth);
+  useEffect(() => {
+    const h = () => setW(window.innerWidth);
+    window.addEventListener("resize", h);
+    return () => window.removeEventListener("resize", h);
+  }, []);
+  return w;
+}
 
 export default function BottomNav() {
   const location = useLocation();
   const navigate = useNavigate();
   const { shop } = useShopAuth();
   const { theme } = useTheme();
+  const width = useWindowWidth();
+  const compact = width < 400;
 
   if (!shop) return null;
 
@@ -80,7 +93,7 @@ export default function BottomNav() {
                   color: isActive ? "#fff" : "#67e8f9",
                   textTransform: "uppercase",
                 }}>
-                  {tab.label}
+                  {compact ? tab.short : tab.label}
                 </span>
               </button>
             );
@@ -136,7 +149,7 @@ export default function BottomNav() {
                 color: isActive ? theme.accent.cyan : theme.text.muted,
                 position: "relative",
               }}>
-                {tab.label}
+                {compact ? tab.short : tab.label}
               </span>
               {/* Active dot indicator */}
               {isActive && (
