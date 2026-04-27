@@ -1,6 +1,8 @@
 import { useState } from "react";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useLoginSecurity } from "../lib/useLoginSecurity";
+import { sanitizeCode, sanitizePassword } from "../lib/sanitize";
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -13,6 +15,7 @@ export default function PosLogin() {
   const { login } = useShopAuth();
   const { theme, toggleTheme } = useTheme();
   const dk = theme.isDark;
+  const security = useLoginSecurity();
 
   const [businessCode, setBusinessCode] = useState("");
   const [shopCode,     setShopCode]     = useState("");
@@ -20,20 +23,36 @@ export default function PosLogin() {
   const [showPw,       setShowPw]       = useState(false);
   const [loading,      setLoading]      = useState(false);
   const [error,        setError]        = useState("");
+  const [shake,        setShake]        = useState(false);
 
   const greeting = getGreeting();
 
+  const triggerShake = () => { setShake(true); setTimeout(() => setShake(false), 400); };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (security.isLocked) return;
+    if (!security.canAttempt()) return;
     if (!businessCode.trim() || !shopCode.trim() || !password.trim()) {
       setError("Please fill in all fields before signing in.");
+      triggerShake();
       return;
     }
     setLoading(true);
     setError("");
     const err = await login(businessCode, shopCode, password);
-    if (err) { setError(err); setLoading(false); }
+    if (err) {
+      security.onFailure();
+      setError(err);
+      setLoading(false);
+      triggerShake();
+    } else {
+      security.onSuccess();
+    }
   };
+
+  const attemptsLeft = Math.max(0, 5 - security.failures);
+  const isLocked     = security.isLocked;
 
   return (
     <div className="est-page">
@@ -483,11 +502,13 @@ export default function PosLogin() {
                 id="biz-code"
                 className="est-input"
                 value={businessCode}
-                onChange={e => { setBusinessCode(e.target.value.toUpperCase()); setError(""); }}
+                onChange={e => { setBusinessCode(sanitizeCode(e.target.value, 24)); setError(""); }}
                 placeholder="e.g. ACME-001"
                 autoComplete="off"
                 autoCapitalize="characters"
-                disabled={loading}
+                spellCheck={false}
+                maxLength={24}
+                disabled={loading || isLocked}
               />
             </div>
 
@@ -497,11 +518,13 @@ export default function PosLogin() {
                 id="shop-id"
                 className="est-input"
                 value={shopCode}
-                onChange={e => { setShopCode(e.target.value.toUpperCase()); setError(""); }}
+                onChange={e => { setShopCode(sanitizeCode(e.target.value, 24)); setError(""); }}
                 placeholder="e.g. SHP-0001"
                 autoComplete="off"
                 autoCapitalize="characters"
-                disabled={loading}
+                spellCheck={false}
+                maxLength={24}
+                disabled={loading || isLocked}
               />
             </div>
 
@@ -513,10 +536,11 @@ export default function PosLogin() {
                   className="est-input"
                   type={showPw ? "text" : "password"}
                   value={password}
-                  onChange={e => { setPassword(e.target.value); setError(""); }}
+                  onChange={e => { setPassword(sanitizePassword(e.target.value)); setError(""); }}
                   placeholder="Enter your password"
-                  autoComplete="off"
-                  disabled={loading}
+                  autoComplete="current-password"
+                  maxLength={128}
+                  disabled={loading || isLocked}
                 />
                 <button
                   type="button"
@@ -524,45 +548,100 @@ export default function PosLogin() {
                   onClick={() => setShowPw(p => !p)}
                   tabIndex={-1}
                   aria-label={showPw ? "Hide password" : "Show password"}
+                  disabled={isLocked}
                 >
                   {showPw ? "🙈" : "👁️"}
                 </button>
               </div>
             </div>
 
-            {error && (
-              <div className={`est-error est-shake`}>
+            {/* Attempt warning — shown after 2+ failures */}
+            {security.failures >= 2 && !isLocked && (
+              <div style={{
+                display: "flex", alignItems: "flex-start", gap: 10,
+                background: dk ? "rgba(234,179,8,0.08)" : "#fffbeb",
+                border: "1.5px solid rgba(234,179,8,0.35)",
+                borderRadius: 12, padding: "11px 14px", marginBottom: 4,
+              }}>
+                <span style={{ fontSize: 15, flexShrink: 0 }}>⚠️</span>
+                <span style={{ fontSize: 12, color: "#d97706", lineHeight: 1.5 }}>
+                  {attemptsLeft} attempt{attemptsLeft !== 1 ? "s" : ""} remaining before a 30-second lockout.
+                </span>
+              </div>
+            )}
+
+            {error && !isLocked && (
+              <div className={`est-error${shake ? " est-shake" : ""}`}>
                 <span className="est-error-icon">⚠️</span>
                 <span className="est-error-msg">{error}</span>
               </div>
             )}
 
-            <button
-              type="submit"
-              className="est-btn"
-              disabled={loading}
-              style={{
-                background: loading
-                  ? "#fed7aa"
-                  : "linear-gradient(135deg, #f97316, #ea580c)",
-                color: loading ? "#c2410c" : "#fff",
-              }}
-            >
-              {loading ? (
-                <>
-                  <span style={{
-                    width: 18, height: 18, borderRadius: "50%",
-                    border: "2.5px solid rgba(194,65,12,0.25)",
-                    borderTopColor: "#c2410c",
-                    display: "inline-block",
-                    animation: "est-spin 0.7s linear infinite",
-                  }} />
-                  Signing you in…
-                </>
-              ) : (
-                <>Open My Terminal →</>
-              )}
-            </button>
+            {/* Lockout banner */}
+            {isLocked && (
+              <div style={{
+                display: "flex", alignItems: "center", gap: 12,
+                background: dk ? "rgba(239,68,68,0.08)" : "#fff5f5",
+                border: "1.5px solid rgba(239,68,68,0.3)",
+                borderRadius: 12, padding: "14px 16px", marginBottom: 4,
+              }}>
+                <span style={{ fontSize: 22, flexShrink: 0 }}>🔒</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: "Inter, sans-serif" }}>
+                    Too many failed attempts
+                  </div>
+                  <div style={{ fontSize: 12, color: "#f87171", marginTop: 2, fontFamily: "Inter, sans-serif" }}>
+                    Access locked. Try again in {security.countdown}s
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Login button — shows countdown ring when locked */}
+            <div style={{ position: "relative", marginTop: 8 }}>
+              <button
+                type="submit"
+                className="est-btn"
+                disabled={loading || isLocked}
+                aria-disabled={isLocked}
+                style={{
+                  background: isLocked
+                    ? (dk ? "#2a1f1f" : "#fef2f2")
+                    : loading
+                      ? "#fed7aa"
+                      : "linear-gradient(135deg, #f97316, #ea580c)",
+                  color: isLocked ? "#ef4444" : loading ? "#c2410c" : "#fff",
+                  border: isLocked ? "1.5px solid rgba(239,68,68,0.35)" : "none",
+                  cursor: isLocked ? "not-allowed" : "pointer",
+                }}
+              >
+                {isLocked ? (
+                  <>
+                    <span style={{
+                      width: 18, height: 18, borderRadius: "50%",
+                      border: "2.5px solid rgba(239,68,68,0.2)",
+                      borderTopColor: "#ef4444",
+                      display: "inline-block",
+                      animation: "est-spin 1s linear infinite",
+                    }} />
+                    Locked — {security.countdown}s
+                  </>
+                ) : loading ? (
+                  <>
+                    <span style={{
+                      width: 18, height: 18, borderRadius: "50%",
+                      border: "2.5px solid rgba(194,65,12,0.25)",
+                      borderTopColor: "#c2410c",
+                      display: "inline-block",
+                      animation: "est-spin 0.7s linear infinite",
+                    }} />
+                    Signing you in…
+                  </>
+                ) : (
+                  <>Open My Terminal →</>
+                )}
+              </button>
+            </div>
 
           </form>
 

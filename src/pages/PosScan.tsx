@@ -1,9 +1,10 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import QrScanner from "../components/QrScanner";
 import { supabase } from "../lib/supabase";
+import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
 
 type Step         = "scan" | "checkout" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
@@ -46,23 +47,26 @@ export default function PosScan() {
   const navigate  = useNavigate();
   const width     = useWindowWidth();
   const isMobile  = width < 640;
+  const isDesktop = width >= 1024;
 
   // ── flow state ────────────────────────────────────────────────────────
   const [step,         setStep]         = useState<Step>("scan");
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("pin");
 
   // scan
-  const [mode,         setMode]         = useState<"camera" | "manual">("camera");
-  const [cameraActive, setCameraActive] = useState(true);
-  const [badgeActive,  setBadgeActive]  = useState(false);
-  const [manualSku,    setManualSku]    = useState("");
-  const [myProducts,   setMyProducts]   = useState<LocalAlloc[]>([]);
+  const [mode,           setMode]           = useState<"camera" | "manual">("camera");
+  const [cameraActive,   setCameraActive]   = useState(true);
+  const [badgeActive,    setBadgeActive]    = useState(false);
+  const [manualSku,      setManualSku]      = useState("");
+  const [myProducts,     setMyProducts]     = useState<LocalAlloc[]>([]);
+  const [productSearch,  setProductSearch]  = useState("");
 
   // cart
-  const [cart,          setCart]          = useState<CartItem[]>([]);
-  const [addingProduct, setAddingProduct] = useState<LocalAlloc | null>(null);
-  const [addQty,        setAddQty]        = useState("1");
-  const [addSellPrice,  setAddSellPrice]  = useState("");
+  const [cart,           setCart]           = useState<CartItem[]>([]);
+  const [cartRestored,   setCartRestored]   = useState(false);
+  const [addingProduct,  setAddingProduct]  = useState<LocalAlloc | null>(null);
+  const [addQty,         setAddQty]         = useState("1");
+  const [addSellPrice,   setAddSellPrice]   = useState("");
 
   // checkout
   const [customerName,    setCustomerName]    = useState("");
@@ -81,6 +85,56 @@ export default function PosScan() {
   const [pinError,      setPinError]      = useState("");
   const [pinShake,      setPinShake]      = useState(false);
   const [badgeError,    setBadgeError]    = useState("");
+
+  // PIN lockout
+  const PIN_MAX_FAILS  = 5;
+  const PIN_LOCK_MS    = 30_000;
+  const [pinFails,     setPinFails]     = useState(0);
+  const [pinCountdown, setPinCountdown] = useState(0);
+  const pinLockRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const startPinLock = useCallback((until: number) => {
+    if (pinLockRef.current) clearInterval(pinLockRef.current);
+    const tick = () => {
+      const rem = Math.ceil((until - Date.now()) / 1000);
+      if (rem <= 0) { setPinCountdown(0); if (pinLockRef.current) clearInterval(pinLockRef.current); }
+      else setPinCountdown(rem);
+    };
+    tick();
+    pinLockRef.current = setInterval(tick, 500);
+  }, []);
+
+  useEffect(() => () => { if (pinLockRef.current) clearInterval(pinLockRef.current); }, []);
+
+  // ── Cart persistence ──────────────────────────────────────────────────
+  const cartKey = shop ? `pos_cart_${shop.id}` : null;
+
+  // Restore saved cart once shop loads
+  useEffect(() => {
+    if (!cartKey) return;
+    try {
+      const raw = localStorage.getItem(cartKey);
+      if (!raw) return;
+      const saved: CartItem[] = JSON.parse(raw);
+      if (saved.length > 0) { setCart(saved); setCartRestored(true); }
+    } catch {}
+  }, [cartKey]);
+
+  // Dismiss the restored banner after 4 s
+  useEffect(() => {
+    if (!cartRestored) return;
+    const t = setTimeout(() => setCartRestored(false), 4000);
+    return () => clearTimeout(t);
+  }, [cartRestored]);
+
+  // Persist cart whenever it changes
+  useEffect(() => {
+    if (!cartKey) return;
+    if (cart.length === 0) { localStorage.removeItem(cartKey); return; }
+    try { localStorage.setItem(cartKey, JSON.stringify(cart)); } catch {}
+  }, [cart, cartKey]);
+
+  const pinIsLocked = pinCountdown > 0;
 
   // misc
   const [processing,   setProcessing]   = useState(false);
@@ -283,19 +337,29 @@ export default function PosScan() {
     }
     setProcessing(true); setError("");
 
-    // Deduct stock for every item regardless of payment method
+    // Deduct stock for every item regardless of payment method.
+    // Track successfully deducted items so we can roll back on partial failure.
+    const deducted: { id: string; quantity: number; name: string }[] = [];
     for (const item of cart) {
       const { error: stockErr } = await supabase.rpc("deduct_shop_stock", {
         p_shop_allocation_id: item.allocation.id,
         p_quantity: item.quantity,
       });
       if (stockErr) {
+        // Roll back already-deducted items
+        for (const d of deducted) {
+          await supabase.rpc("deduct_shop_stock", {
+            p_shop_allocation_id: d.id,
+            p_quantity: -d.quantity,
+          });
+        }
         setProcessing(false);
         setError(stockErr.message.includes("Insufficient")
-          ? `Not enough stock for ${item.allocation.product.name}.`
-          : `Failed to deduct stock for ${item.allocation.product.name}.`);
+          ? `Not enough stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`
+          : `Failed to deduct stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`);
         return;
       }
+      deducted.push({ id: item.allocation.id, quantity: item.quantity, name: item.allocation.product.name });
     }
 
     // ── Credit / Pay Later ────────────────────────────────────────────
@@ -329,7 +393,15 @@ export default function PosScan() {
         .select()
         .single();
 
-      if (creditErr) { setProcessing(false); setError("Failed to record credit sale. Try again."); return; }
+      if (creditErr) {
+        // Roll back stock deductions since the credit record failed
+        for (const d of deducted) {
+          await supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity });
+        }
+        setProcessing(false);
+        setError("Failed to record credit sale. Stock has been restored — please try again.");
+        return;
+      }
 
       // Record the initial payment as a history entry if one was made
       if (initPaid > 0 && creditData?.id) {
@@ -412,7 +484,15 @@ export default function PosScan() {
     });
 
     const { data, error: txErr } = await supabase.from("shop_transactions").insert(txRows).select();
-    if (txErr) { setProcessing(false); setError("Transaction failed. Try again."); return; }
+    if (txErr) {
+      // Roll back all stock deductions since the transaction record failed
+      for (const d of deducted) {
+        await supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity });
+      }
+      setProcessing(false);
+      setError("Transaction failed. Stock has been restored — please try again.");
+      return;
+    }
 
     const firstId = (data?.[0]?.id ?? "").slice(0, 8).toUpperCase();
     setSavedBatchRef(firstId);
@@ -463,13 +543,17 @@ export default function PosScan() {
   };
 
   const handleReset = () => {
-    setStep("scan"); setMode("camera"); setManualSku("");
+    setStep("scan"); setMode("camera"); setManualSku(""); setProductSearch("");
     setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
     setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
-    setVerifyMethod("pin"); setReceiptStatus("idle");
+    setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false);
+    if (cartKey) localStorage.removeItem(cartKey);
+    // Reset PIN lockout for the next sale
+    setPinFails(0); setPinCountdown(0);
+    if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
   };
 
   const goBack = () => {
@@ -588,11 +672,24 @@ export default function PosScan() {
         )}
       </div>
 
-      <div style={{ padding: isMobile ? "14px 14px 90px" : "24px 40px 90px", maxWidth: 680, margin: "0 auto" }}>
+      <div style={{ padding: isMobile ? "14px 14px 90px" : "20px 32px 90px", maxWidth: isDesktop ? 1100 : 720, margin: "0 auto" }}>
 
         {/* ══════════════════ STEP 1: SCAN ══════════════════ */}
         {step === "scan" && (
           <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+            {/* Cart restored banner */}
+            {cartRestored && (
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 12, padding: "10px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+                  <span>🛒</span>
+                  Cart restored — {cart.length} item{cart.length !== 1 ? "s" : ""} from your last session
+                </div>
+                <button onClick={() => { setCart([]); setCartRestored(false); }}
+                  style={{ background: "none", border: "none", color: theme.text.muted, fontSize: 16, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>✕</button>
+              </div>
+            )}
+
             <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
               {(["camera", "manual"] as const).map(m => (
                 <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
@@ -623,8 +720,10 @@ export default function PosScan() {
                 <div>
                   <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Enter SKU manually</label>
                   <div style={{ display: "flex", gap: 8 }}>
-                    <input className="ki" value={manualSku} onChange={e => { setManualSku(e.target.value.toUpperCase()); setError(""); }}
+                    <input className="ki" value={manualSku}
+                      onChange={e => { setManualSku(sanitizeSku(e.target.value)); setError(""); }}
                       placeholder="e.g. SAM-EAR-A10" style={{ flex: 1 }}
+                      maxLength={40} spellCheck={false}
                       onKeyDown={e => e.key === "Enter" && handleManualLookup()} />
                     <button onClick={handleManualLookup}
                       style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, border: "none", borderRadius: 12, padding: "0 16px", color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>
@@ -634,51 +733,71 @@ export default function PosScan() {
                 </div>
                 {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
 
+                {/* Inventory search */}
+                {myProducts.length > 0 && (
+                  <div style={{ position: "relative" }}>
+                    <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
+                    <input className="ki" value={productSearch}
+                      onChange={e => setProductSearch(e.target.value)}
+                      placeholder="Filter by name or SKU…"
+                      style={{ paddingLeft: 36 }} />
+                  </div>
+                )}
+
                 {myProducts.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
                     <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
                     <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
                   </div>
-                ) : (
-                  <div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-                      Available ({myProducts.length})
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {myProducts.map(alloc => {
-                        const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
-                        const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
-                        const inCart = cart.find(i => i.allocation.product_id === alloc.product_id);
-                        return (
-                          <button key={alloc.id} onClick={() => handleProductFound(alloc)}
-                            style={{ padding: "13px 14px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 13, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, textAlign: "left", transition: "border-color 0.15s" }}
-                            onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
-                            onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
-                            <div style={{ width: 40, height: 40, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📦</div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 14, fontWeight: 600, color: theme.text.primary, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
-                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 5 }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
-                              <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 3, height: 3 }}>
-                                <div style={{ width: `${pct}%`, height: "100%", borderRadius: 3, background: sc }} />
-                              </div>
-                            </div>
-                            <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                              <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 10, padding: "6px 10px", textAlign: "center", minWidth: 46 }}>
-                                <div style={{ fontSize: 17, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
-                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 2 }}>{alloc.product.unit}</div>
-                              </div>
-                              {inCart && (
-                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 6, padding: "2px 7px" }}>
-                                  ×{inCart.quantity} in cart
+                ) : (() => {
+                  const q = productSearch.toLowerCase();
+                  const filtered = q
+                    ? myProducts.filter(a => a.product.name.toLowerCase().includes(q) || a.product.sku.toLowerCase().includes(q))
+                    : myProducts;
+                  return (
+                    <div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+                        {q ? `${filtered.length} of ${myProducts.length} products` : `Available (${myProducts.length})`}
+                      </div>
+                      {filtered.length === 0 && (
+                        <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>No products match "{productSearch}"</div>
+                      )}
+                      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+                        {filtered.map(alloc => {
+                          const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
+                          const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
+                          const inCart = cart.find(i => i.allocation.product_id === alloc.product_id);
+                          return (
+                            <button key={alloc.id} onClick={() => handleProductFound(alloc)}
+                              style={{ padding: "13px 14px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 13, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, textAlign: "left", transition: "border-color 0.15s" }}
+                              onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
+                              onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
+                              <div style={{ width: 40, height: 40, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📦</div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 14, fontWeight: 600, color: theme.text.primary, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
+                                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 5 }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+                                <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 3, height: 3 }}>
+                                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: 3, background: sc }} />
                                 </div>
-                              )}
-                            </div>
-                          </button>
-                        );
-                      })}
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
+                                <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 10, padding: "6px 10px", textAlign: "center", minWidth: 46 }}>
+                                  <div style={{ fontSize: 17, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 2 }}>{alloc.product.unit}</div>
+                                </div>
+                                {inCart && (
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 6, padding: "2px 7px" }}>
+                                    ×{inCart.quantity} in cart
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
             )}
 
@@ -697,306 +816,369 @@ export default function PosScan() {
 
         {/* ══════════════════ STEP 2: CHECKOUT ══════════════════ */}
         {step === "checkout" && (
-          <div className="section" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Cart items */}
-            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, overflow: "hidden" }}>
-              <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}`, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                Cart — {cart.length} item{cart.length !== 1 ? "s" : ""}
-              </div>
-              {cart.map((item, idx) => {
-                const itemTotal = item.sellPrice * item.quantity;
-                return (
-                  <div key={item.allocation.product_id} className="cart-row" style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12, transition: "background 0.15s" }}>
-                    <div style={{ width: 36, height: 36, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>📦</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.allocation.product.name}</div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                        {fmt(item.sellPrice)} each
-                        {item.sellPrice > item.allocation.product.price && (
-                          <span style={{ color: "#34d399", marginLeft: 5 }}>+{fmt(item.sellPrice - item.allocation.product.price)} markup</span>
-                        )}
+          <div className="section" style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 20, alignItems: "flex-start" }}>
+
+            {/* LEFT COLUMN — Cart */}
+            <div style={{ flex: isMobile ? "unset" : "0 0 44%", display: "flex", flexDirection: "column", gap: 14, position: isMobile ? "static" : "sticky", top: 80, width: isMobile ? "100%" : "auto" }}>
+              {/* Cart items */}
+              <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, overflow: "hidden" }}>
+                <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}`, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                  Cart — {cart.length} item{cart.length !== 1 ? "s" : ""}
+                </div>
+                {cart.map((item, idx) => {
+                  const itemTotal = item.sellPrice * item.quantity;
+                  return (
+                    <div key={item.allocation.product_id} className="cart-row" style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12, transition: "background 0.15s" }}>
+                      <div style={{ width: 36, height: 36, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>📦</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.allocation.product.name}</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                          {fmt(item.sellPrice)} each
+                          {item.sellPrice > item.allocation.product.price && (
+                            <span style={{ color: "#34d399", marginLeft: 5 }}>+{fmt(item.sellPrice - item.allocation.product.price)} markup</span>
+                          )}
+                        </div>
                       </div>
+                      {/* Qty stepper */}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <button
+                          onClick={() => {
+                            if (item.quantity <= 1) handleRemoveFromCart(item.allocation.product_id);
+                            else handleUpdateCartQty(item.allocation.product_id, item.quantity - 1);
+                          }}
+                          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {item.quantity <= 1 ? "✕" : "−"}
+                        </button>
+                        <span style={{ fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600, minWidth: 22, textAlign: "center" }}>{item.quantity}</span>
+                        <button
+                          onClick={() => { if (item.quantity < item.allocation.remaining) handleUpdateCartQty(item.allocation.product_id, item.quantity + 1); }}
+                          disabled={item.quantity >= item.allocation.remaining}
+                          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: theme.accent.cyan, cursor: item.quantity >= item.allocation.remaining ? "not-allowed" : "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", opacity: item.quantity >= item.allocation.remaining ? 0.35 : 1 }}>
+                          +
+                        </button>
+                      </div>
+                      <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>{fmt(itemTotal)}</div>
                     </div>
-                    {/* Qty stepper */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                      <button
-                        onClick={() => {
-                          if (item.quantity <= 1) handleRemoveFromCart(item.allocation.product_id);
-                          else handleUpdateCartQty(item.allocation.product_id, item.quantity - 1);
-                        }}
-                        style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                        {item.quantity <= 1 ? "✕" : "−"}
-                      </button>
-                      <span style={{ fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600, minWidth: 22, textAlign: "center" }}>{item.quantity}</span>
-                      <button
-                        onClick={() => { if (item.quantity < item.allocation.remaining) handleUpdateCartQty(item.allocation.product_id, item.quantity + 1); }}
-                        disabled={item.quantity >= item.allocation.remaining}
-                        style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: theme.accent.cyan, cursor: item.quantity >= item.allocation.remaining ? "not-allowed" : "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", opacity: item.quantity >= item.allocation.remaining ? 0.35 : 1 }}>
-                        +
-                      </button>
+                  );
+                })}
+                <div style={{ padding: "13px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.02)" }}>
+                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>Grand Total</span>
+                  <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold }}>{fmt(grandTotal)}</span>
+                </div>
+              </div>
+
+              {/* Add more */}
+              <button onClick={() => { setStep("scan"); setError(""); }}
+                style={{ background: "transparent", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 12, padding: "12px 16px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                + Add more products
+              </button>
+            </div>
+
+            {/* RIGHT COLUMN — Customer info + payment */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+              {/* Customer name — required for credit, optional otherwise */}
+              <div>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                  Customer Name {payMethod === "credit"
+                    ? <span style={{ color: theme.accent.red }}>*</span>
+                    : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                </label>
+                <input className="ki" type="text" value={customerName}
+                  onChange={e => setCustomerName(sanitizeText(e.target.value, 80))}
+                  placeholder="e.g. John Kamau" maxLength={80} />
+              </div>
+
+              {/* Customer phone */}
+              <div>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                  Customer Phone {payMethod === "credit"
+                    ? <span style={{ color: theme.accent.red }}>*</span>
+                    : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                </label>
+                <input className="ki" type="tel" value={customerPhone}
+                  onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
+                  placeholder="07XX XXX XXX" maxLength={15} />
+              </div>
+
+              {/* Payment method */}
+              <div>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  {([
+                    { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
+                    { key: "mpesa",  icon: "📱", label: "M-Pesa",    col: theme.accent.cyan  },
+                    { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
+                    { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
+                  ] as const).map(({ key, icon, label, col }) => (
+                    <button key={key} onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
+                      style={{ padding: "12px 8px", border: `1px solid ${payMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: payMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
+                      <span style={{ fontSize: 20 }}>{icon}</span>
+                      <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: payMethod === key ? col : theme.text.muted }}>{label}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Credit notice + initial payment */}
+              {payMethod === "credit" && (
+                <>
+                  <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
+                    📝 Stock will be deducted now. Payment will be tracked separately under the Credit tab in Shop.
+                  </div>
+                  <div>
+                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                      Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
+                    </label>
+                    <input className="ki" type="number" value={initialPayment}
+                      onChange={e => {
+                        const clean = sanitizeAmount(e.target.value);
+                        const val   = Number(clean) || 0;
+                        setInitialPayment(val > grandTotal ? String(grandTotal) : clean);
+                      }}
+                      placeholder={`e.g. 500 of ${fmt(grandTotal)}`}
+                      min="0" max={grandTotal} />
+                    {Number(initialPayment) > 0 && (
+                      <>
+                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                          {([{ key: "cash", icon: "💵", label: "Cash" }, { key: "mpesa", icon: "📱", label: "M-Pesa" }] as const).map(({ key, icon, label }) => (
+                            <button key={key} onClick={() => setInitialPayMethod(key)}
+                              style={{ flex: 1, padding: "8px", border: `1px solid ${initialPayMethod === key ? theme.accent.green + "80" : theme.border.default}`, borderRadius: 10, background: initialPayMethod === key ? theme.accent.green + "18" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, color: initialPayMethod === key ? theme.accent.green : theme.text.muted }}>
+                              {icon} {label}
+                            </button>
+                          ))}
+                        </div>
+                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6 }}>
+                          Balance after payment: {fmt(Math.max(0, grandTotal - Math.min(Number(initialPayment), grandTotal)))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                </>
+              )}
+
+              {payMethod === "split" && (
+                <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚡ Split — Total: {fmt(grandTotal)}</div>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                    <div>
+                      <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
+                      <input className="ki" type="number" value={cashAmount}
+                        onChange={e => { const v = sanitizeAmount(e.target.value); setCashAmount(v); setMpesaAmount(String(Math.max(0, grandTotal - (Number(v) || 0)))); }}
+                        placeholder="0" min="0" />
                     </div>
-                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>{fmt(itemTotal)}</div>
+                    <div>
+                      <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                      <input className="ki" type="number" value={mpesaAmount}
+                        onChange={e => { const v = sanitizeAmount(e.target.value); setMpesaAmount(v); setCashAmount(String(Math.max(0, grandTotal - (Number(v) || 0)))); }}
+                        placeholder="0" min="0" />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {(payMethod === "mpesa" || payMethod === "split") && (
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>M-Pesa Ref (optional)</label>
+                  <input className="ki" value={mpesaRef}
+                    onChange={e => setMpesaRef(sanitizeCode(e.target.value, 20))}
+                    placeholder="e.g. QHX7K3LM2P" maxLength={20} spellCheck={false} />
+                </div>
+              )}
+
+              {/* Commission preview */}
+              {commissionConfig.enabled && commissionConfig.rate > 0 && cart.length > 0 && (() => {
+                const commission = cart.reduce((s, item) =>
+                  s + Math.max(0, item.sellPrice - item.allocation.product.price) * item.quantity, 0
+                ) * commissionConfig.rate;
+                if (commission <= 0) return null;
+                return (
+                  <div style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>💰 Your commission on this sale</div>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#34d399" }}>{fmt(Math.round(commission))}</div>
                   </div>
                 );
-              })}
-              <div style={{ padding: "13px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.02)" }}>
-                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>Grand Total</span>
-                <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold }}>{fmt(grandTotal)}</span>
-              </div>
+              })()}
+
+              {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
+
+              <button className="abtn" onClick={handleCheckoutNext}
+                style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff" }}>
+                Next — Authorise Sale →
+              </button>
             </div>
-
-            {/* Add more */}
-            <button onClick={() => { setStep("scan"); setError(""); }}
-              style={{ background: "transparent", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 12, padding: "12px 16px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-              + Add more products
-            </button>
-
-            {/* Customer name — required for credit, optional otherwise */}
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                Customer Name {payMethod === "credit"
-                  ? <span style={{ color: theme.accent.red }}>*</span>
-                  : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
-              </label>
-              <input className="ki" type="text" value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="e.g. John Kamau" />
-            </div>
-
-            {/* Customer phone */}
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                Customer Phone {payMethod === "credit"
-                  ? <span style={{ color: theme.accent.red }}>*</span>
-                  : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
-              </label>
-              <input className="ki" type="tel" value={customerPhone} onChange={e => setCustomerPhone(e.target.value)} placeholder="07XX XXX XXX" />
-            </div>
-
-            {/* Payment method */}
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {([
-                  { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
-                  { key: "mpesa",  icon: "📱", label: "M-Pesa",    col: theme.accent.cyan  },
-                  { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
-                  { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
-                ] as const).map(({ key, icon, label, col }) => (
-                  <button key={key} onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
-                    style={{ padding: "12px 8px", border: `1px solid ${payMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: payMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
-                    <span style={{ fontSize: 20 }}>{icon}</span>
-                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: payMethod === key ? col : theme.text.muted }}>{label}</span>
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Credit notice + initial payment */}
-            {payMethod === "credit" && (
-              <>
-                <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
-                  📝 Stock will be deducted now. Payment will be tracked separately under the Credit tab in Shop.
-                </div>
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                    Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
-                  </label>
-                  <input className="ki" type="number" value={initialPayment}
-                    onChange={e => {
-                      const val = Number(e.target.value) || 0;
-                      setInitialPayment(val > grandTotal ? String(grandTotal) : e.target.value);
-                    }}
-                    placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
-                  {Number(initialPayment) > 0 && (
-                    <>
-                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                        {([{ key: "cash", icon: "💵", label: "Cash" }, { key: "mpesa", icon: "📱", label: "M-Pesa" }] as const).map(({ key, icon, label }) => (
-                          <button key={key} onClick={() => setInitialPayMethod(key)}
-                            style={{ flex: 1, padding: "8px", border: `1px solid ${initialPayMethod === key ? theme.accent.green + "80" : theme.border.default}`, borderRadius: 10, background: initialPayMethod === key ? theme.accent.green + "18" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, color: initialPayMethod === key ? theme.accent.green : theme.text.muted }}>
-                            {icon} {label}
-                          </button>
-                        ))}
-                      </div>
-                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6 }}>
-                        Balance after payment: {fmt(Math.max(0, grandTotal - Math.min(Number(initialPayment), grandTotal)))}
-                      </div>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-
-            {payMethod === "split" && (
-              <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚡ Split — Total: {fmt(grandTotal)}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <div>
-                    <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
-                    <input className="ki" type="number" value={cashAmount}
-                      onChange={e => { setCashAmount(e.target.value); setMpesaAmount(String(Math.max(0, grandTotal - (Number(e.target.value) || 0)))); }}
-                      placeholder="0" />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                    <input className="ki" type="number" value={mpesaAmount}
-                      onChange={e => { setMpesaAmount(e.target.value); setCashAmount(String(Math.max(0, grandTotal - (Number(e.target.value) || 0)))); }}
-                      placeholder="0" />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {(payMethod === "mpesa" || payMethod === "split") && (
-              <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>M-Pesa Ref (optional)</label>
-                <input className="ki" value={mpesaRef} onChange={e => setMpesaRef(e.target.value.toUpperCase())} placeholder="e.g. QHX7K3LM2P" />
-              </div>
-            )}
-
-            {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
-
-            <button className="abtn" onClick={handleCheckoutNext}
-              style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff" }}>
-              Next — Authorise Sale →
-            </button>
           </div>
         )}
 
         {/* ══════════════════ STEP 3: VERIFY ══════════════════ */}
         {step === "verify" && (
-          <div className="section" style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-            {/* Cart summary */}
-            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
-              {cart.map(item => (
-                <div key={item.allocation.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
-                    {item.quantity}× {item.allocation.product.name}
+          <div className="section" style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 20, alignItems: "flex-start" }}>
+
+            {/* LEFT COLUMN — Cart summary (sticky on desktop) */}
+            <div style={{ flex: isMobile ? "unset" : "0 0 36%", display: "flex", flexDirection: "column", gap: 14, position: isMobile ? "static" : "sticky", top: 80, width: isMobile ? "100%" : "auto" }}>
+              <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Order Summary</div>
+                {cart.map(item => (
+                  <div key={item.allocation.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
+                      {item.quantity}× {item.allocation.product.name}
+                    </div>
+                    <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>{fmt(item.sellPrice * item.quantity)}</div>
                   </div>
-                  <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>{fmt(item.allocation.product.price * item.quantity)}</div>
+                ))}
+                <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
+                    {payMethod === "credit" && customerName ? ` · ${customerName}` : customerPhone ? ` · ${customerPhone}` : ""}
+                  </div>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>{fmt(grandTotal)}</div>
                 </div>
-              ))}
-              <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
-                  {payMethod === "credit" && customerName ? ` · ${customerName}` : customerPhone ? ` · ${customerPhone}` : ""}
-                </div>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>{fmt(grandTotal)}</div>
               </div>
             </div>
 
-            {/* Method toggle */}
-            <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
-              {([{ key: "badge", label: "📛 Scan Badge" }, { key: "pin", label: "🔑 Enter PIN" }] as const).map(({ key, label }) => (
-                <button key={key} onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
-                  style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 13, fontWeight: verifyMethod === key ? 600 : 400, background: verifyMethod === key ? "rgba(6,182,212,0.15)" : "transparent", color: verifyMethod === key ? theme.accent.cyan : theme.text.muted }}>
-                  {label}
-                </button>
-              ))}
-            </div>
+            {/* RIGHT COLUMN — Verify method + agent + PIN */}
+            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+              {/* Method toggle */}
+              <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
+                {([{ key: "badge", label: "📛 Scan Badge" }, { key: "pin", label: "🔑 Enter PIN" }] as const).map(({ key, label }) => (
+                  <button key={key} onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
+                    style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 13, fontWeight: verifyMethod === key ? 600 : 400, background: verifyMethod === key ? "rgba(6,182,212,0.15)" : "transparent", color: verifyMethod === key ? theme.accent.cyan : theme.text.muted }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
 
-            {/* ── PIN method ── */}
-            {verifyMethod === "pin" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is selling?</label>
-                  {shopAgents.length === 0 ? (
-                    <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, padding: 14, background: "rgba(255,255,255,0.02)", borderRadius: 10, border: `1px solid ${theme.border.default}` }}>
-                      No agents assigned to this shop yet.
-                    </div>
-                  ) : (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {shopAgents.map(sa => {
-                        const isSel = selectedAgent?.id === sa.id;
-                        return (
-                          <button key={sa.id} onClick={() => { setSelectedAgent(sa); setPin(""); setPinError(""); }}
-                            style={{ padding: "12px 14px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "row", alignItems: "center", gap: 12, transition: "all 0.15s", textAlign: "left" }}>
-                            <div style={{ width: 40, height: 40, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: isSel ? theme.accent.cyan : theme.text.muted, flexShrink: 0 }}>
-                              {sa.avatar || sa.name.charAt(0).toUpperCase()}
-                            </div>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
-                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{sa.agent_code}</div>
-                            </div>
-                            {isSel && <div style={{ width: 8, height: 8, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.6)", flexShrink: 0 }} />}
+              {/* ── PIN method ── */}
+              {verifyMethod === "pin" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <div>
+                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is selling?</label>
+                    {shopAgents.length === 0 ? (
+                      <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, padding: 14, background: "rgba(255,255,255,0.02)", borderRadius: 10, border: `1px solid ${theme.border.default}` }}>
+                        No agents assigned to this shop yet.
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {shopAgents.map(sa => {
+                          const isSel = selectedAgent?.id === sa.id;
+                          return (
+                            <button key={sa.id} onClick={() => { setSelectedAgent(sa); setPin(""); setPinError(""); }}
+                              style={{ padding: "12px 14px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "row", alignItems: "center", gap: 12, transition: "all 0.15s", textAlign: "left" }}>
+                              <div style={{ width: 40, height: 40, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: isSel ? theme.accent.cyan : theme.text.muted, flexShrink: 0 }}>
+                                {sa.avatar || sa.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
+                                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{sa.agent_code}</div>
+                              </div>
+                              {isSel && <div style={{ width: 8, height: 8, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.6)", flexShrink: 0 }} />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {selectedAgent && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                      <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 12, textAlign: "center" }}>
+                        PIN for {selectedAgent.name}
+                      </label>
+
+                      {/* PIN lockout banner */}
+                      {pinIsLocked && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 12, padding: "12px 16px", marginBottom: 14 }}>
+                          <span style={{ fontSize: 20 }}>🔒</span>
+                          <div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
+                            <div style={{ fontSize: 12, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Attempt warning */}
+                      {!pinIsLocked && pinFails >= 3 && (
+                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 10, padding: "9px 14px", marginBottom: 12, textAlign: "center" }}>
+                          ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
+                        </div>
+                      )}
+
+                      <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 16, opacity: pinIsLocked ? 0.35 : 1 }}>
+                        {[0, 1, 2, 3].map(i => (
+                          <div key={i} className={`pin-digit ${i < pin.length ? "filled" : ""}`}>
+                            {i < pin.length ? "●" : ""}
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, maxWidth: 300, margin: "0 auto", width: "100%" }}>
+                        {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map(k => (
+                          <button key={k} disabled={!k || processing || pinIsLocked}
+                            onClick={() => {
+                              if (pinIsLocked) return;
+                              if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); }
+                              else if (k && pin.length < 4) {
+                                const newPin = pin + k;
+                                setPin(newPin);
+                                if (newPin.length === 4 && selectedAgent) {
+                                  if (newPin !== selectedAgent.pin) {
+                                    const next = pinFails + 1;
+                                    setPinFails(next);
+                                    if (next >= PIN_MAX_FAILS) {
+                                      const until = Date.now() + PIN_LOCK_MS;
+                                      startPinLock(until);
+                                    }
+                                    setPinError("Incorrect PIN. Try again.");
+                                    setPinShake(true);
+                                    setTimeout(() => { setPinShake(false); setPin(""); }, 400);
+                                  } else {
+                                    setPinError("");
+                                    setPinFails(0); setPinCountdown(0);
+                                    handleSubmitSale(selectedAgent);
+                                  }
+                                }
+                              }
+                            }}
+                            style={{ height: isMobile ? 54 : 60, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 12, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 20 : 22, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1, transition: "background 0.1s" }}>
+                            {k}
                           </button>
-                        );
-                      })}
+                        ))}
+                      </div>
+                      {pinError && !pinIsLocked && (
+                        <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", marginTop: 12, textAlign: "center" }}>
+                          ⚠ {pinError}
+                        </div>
+                      )}
+                      {processing && (
+                        <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, background: "rgba(255,255,255,0.04)", borderRadius: 14, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14 }}>
+                          <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                          {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
+              )}
 
-                {selectedAgent && (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 12, textAlign: "center" }}>
-                      PIN for {selectedAgent.name}
-                    </label>
-                    <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 16 }}>
-                      {[0, 1, 2, 3].map(i => (
-                        <div key={i} className={`pin-digit ${i < pin.length ? "filled" : ""}`}>
-                          {i < pin.length ? "●" : ""}
-                        </div>
-                      ))}
-                    </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, maxWidth: isMobile ? "100%" : 300, margin: "0 auto", width: "100%" }}>
-                      {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map(k => (
-                        <button key={k} disabled={!k || processing}
-                          onClick={() => {
-                            if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); }
-                            else if (k && pin.length < 4) {
-                              const newPin = pin + k;
-                              setPin(newPin);
-                              if (newPin.length === 4 && selectedAgent) {
-                                if (newPin !== selectedAgent.pin) {
-                                  setPinError("Incorrect PIN. Try again.");
-                                  setPinShake(true);
-                                  setTimeout(() => { setPinShake(false); setPin(""); }, 400);
-                                } else {
-                                  setPinError("");
-                                  handleSubmitSale(selectedAgent);
-                                }
-                              }
-                            }
-                          }}
-                          style={{ height: isMobile ? 54 : 60, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 12, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 20 : 22, fontWeight: 600, cursor: k ? "pointer" : "default", transition: "background 0.1s" }}>
-                          {k}
-                        </button>
-                      ))}
-                    </div>
-                    {pinError && (
-                      <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", marginTop: 12, textAlign: "center" }}>
-                        ⚠ {pinError}
-                      </div>
-                    )}
-                    {processing && (
-                      <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, background: "rgba(255,255,255,0.04)", borderRadius: 14, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14 }}>
-                        <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                        {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
-                      </div>
-                    )}
+              {/* ── Badge method ── */}
+              {verifyMethod === "badge" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 12, padding: "12px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6 }}>
+                    📛 Ask the selling agent to hold their <strong style={{ color: theme.text.primary }}>QR badge</strong> up to the camera to verify the sale.
                   </div>
-                )}
-              </div>
-            )}
-
-            {/* ── Badge method ── */}
-            {verifyMethod === "badge" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 12, padding: "12px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6 }}>
-                  📛 Ask the selling agent to hold their <strong style={{ color: theme.text.primary }}>QR badge</strong> up to the camera to verify the sale.
+                  {badgeError && (
+                    <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                      ⚠ {badgeError}
+                    </div>
+                  )}
+                  <QrScanner active={badgeActive} onScanSuccess={handleBadgeScan} />
+                  {processing && (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "14px", background: "rgba(6,182,212,0.06)", borderRadius: 12, fontSize: 13, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+                      <span style={{ width: 16, height: 16, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+                      Processing sale...
+                    </div>
+                  )}
                 </div>
-                {badgeError && (
-                  <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-                    ⚠ {badgeError}
-                  </div>
-                )}
-                <QrScanner active={badgeActive} onScanSuccess={handleBadgeScan} />
-                {processing && (
-                  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "14px", background: "rgba(6,182,212,0.06)", borderRadius: 12, fontSize: 13, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-                    <span style={{ width: 16, height: 16, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                    Processing sale...
-                  </div>
-                )}
-              </div>
-            )}
+              )}
+            </div>
           </div>
         )}
 
@@ -1157,7 +1339,7 @@ export default function PosScan() {
                     <>
                       <input className="ki" type="number"
                         value={addSellPrice}
-                        onChange={e => { setAddSellPrice(e.target.value); setError(""); }}
+                        onChange={e => { setAddSellPrice(sanitizeAmount(e.target.value)); setError(""); }}
                         min={addingProduct.product.price}
                         step="1"
                       />

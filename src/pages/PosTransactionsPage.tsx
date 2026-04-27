@@ -13,11 +13,16 @@ interface LocalTransaction {
   payment_method: string;
   cash_amount: number | null;
   mpesa_amount: number | null;
+  mpesa_ref: string | null;
   created_at: string;
   product_name: string | null;
   product_sku: string | null;
   seller_name: string | null;
   seller_code: string | null;
+  customer_phone: string | null;
+  unit_price: number | null;
+  receipt_sent: boolean | null;
+  receipt_phone: string | null;
 }
 
 type DateFilter = "today" | "week" | "month" | "all";
@@ -52,9 +57,23 @@ export default function PosTransactionsPage() {
   const [filter, setFilter]             = useState<DateFilter>("today");
   const [search, setSearch]             = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
+  const [expanded, setExpanded]         = useState<string | null>(null);
+  const [resendingId, setResendingId]   = useState<string | null>(null);
+  const [businessName, setBusinessName] = useState("");
 
   const productMapRef = useRef<Record<string, { name: string; sku: string }>>({});
   const sellerMapRef  = useRef<Record<string, { name: string; code: string }>>({});
+
+  // ── Fetch business name once ──────────────────────────────────────────
+  useEffect(() => {
+    if (!shop?.owner_id) return;
+    supabase
+      .from("profiles")
+      .select("business_name")
+      .eq("id", shop.owner_id)
+      .single()
+      .then(({ data }) => { if (data?.business_name) setBusinessName(data.business_name); });
+  }, [shop?.owner_id]);
 
   const enrichRows = useCallback(async (
     txData: any[],
@@ -94,11 +113,16 @@ export default function PosTransactionsPage() {
       payment_method: t.payment_method,
       cash_amount:    t.cash_amount,
       mpesa_amount:   t.mpesa_amount,
+      mpesa_ref:      t.mpesa_ref ?? null,
       created_at:     t.created_at,
       product_name:   existingProductMap[t.product_id]?.name  ?? "—",
       product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
       seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
+      customer_phone: t.customer_phone ?? null,
+      unit_price:     t.unit_price ?? null,
+      receipt_sent:   t.receipt_sent ?? null,
+      receipt_phone:  t.receipt_phone ?? null,
     }));
   }, [shop]);
 
@@ -111,7 +135,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, created_at, product_id, seller_agent_id")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(0, PAGE_SIZE - 1);
@@ -135,7 +159,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, created_at, product_id, seller_agent_id")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -165,6 +189,41 @@ export default function PosTransactionsPage() {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchTransactions]);
 
+  // ── Resend receipt ────────────────────────────────────────────────────
+  async function handleResend(tx: LocalTransaction) {
+    const phone = tx.receipt_phone ?? tx.customer_phone ?? "";
+    if (!phone) return;
+    setResendingId(tx.id);
+    try {
+      const { data } = await supabase.functions.invoke("send-receipt", {
+        body: {
+          phone,
+          business_name:  businessName || shop?.name || "Business",
+          agent_name:     tx.seller_name ?? "Agent",
+          items: [{
+            name:       tx.product_name ?? "Product",
+            quantity:   tx.quantity,
+            unit_price: tx.unit_price ?? (tx.quantity > 0 ? Math.round(tx.amount / tx.quantity) : 0),
+            total:      tx.amount,
+          }],
+          total_amount:   tx.amount,
+          payment_method: tx.payment_method ?? "cash",
+          mpesa_ref:      tx.mpesa_ref ?? undefined,
+        },
+      });
+      const sent = !!data?.sent;
+      await supabase
+        .from("shop_transactions")
+        .update({ receipt_sent: sent, receipt_phone: phone })
+        .eq("id", tx.id);
+      setTransactions(prev =>
+        prev.map(t => t.id === tx.id ? { ...t, receipt_sent: sent, receipt_phone: phone } : t)
+      );
+    } finally {
+      setResendingId(null);
+    }
+  }
+
   const methodBadge = (method: string) => {
     if (method === "cash")  return { icon: "💵", color: "#34d399", label: "Cash"   };
     if (method === "mpesa") return { icon: "📱", color: "#60a5fa", label: "M-Pesa" };
@@ -175,9 +234,11 @@ export default function PosTransactionsPage() {
     const matchesMethod = methodFilter === "all" || tx.payment_method === methodFilter;
     const q = search.toLowerCase();
     const matchesSearch = !q
-      || (tx.product_name ?? "").toLowerCase().includes(q)
-      || (tx.seller_name  ?? "").toLowerCase().includes(q)
-      || (tx.product_sku  ?? "").toLowerCase().includes(q);
+      || (tx.product_name   ?? "").toLowerCase().includes(q)
+      || (tx.seller_name    ?? "").toLowerCase().includes(q)
+      || (tx.product_sku    ?? "").toLowerCase().includes(q)
+      || (tx.customer_phone ?? "").toLowerCase().includes(q)
+      || (tx.mpesa_ref      ?? "").toLowerCase().includes(q);
     return matchesMethod && matchesSearch;
   });
 
@@ -197,16 +258,26 @@ export default function PosTransactionsPage() {
 
   const grouped = groupByDate(displayed);
 
+  // Receipt badge config
+  const receiptBadge = (tx: LocalTransaction) => {
+    if (tx.receipt_sent === true)  return { label: "📱 Receipt Sent",   color: "#34d399", bg: "rgba(52,211,153,0.10)",  border: "rgba(52,211,153,0.25)"  };
+    if (tx.receipt_sent === false) return { label: "📵 Receipt Failed", color: "#fbbf24", bg: "rgba(234,179,8,0.10)",   border: "rgba(234,179,8,0.25)"   };
+    if (tx.customer_phone)         return { label: "📄 No Receipt",     color: "rgba(255,255,255,0.3)", bg: "rgba(255,255,255,0.04)", border: "rgba(255,255,255,0.08)" };
+    return null;
+  };
+
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
-        @keyframes fadeUp { from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)} }
-        @keyframes spin   { to{transform:rotate(360deg)} }
-        .tx-row { transition: background 0.12s; }
+        @keyframes fadeUp  { from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)} }
+        @keyframes spin    { to{transform:rotate(360deg)} }
+        @keyframes slideDown { from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)} }
+        .tx-row { transition: background 0.12s; cursor: pointer; }
         .tx-row:hover { background: rgba(6,182,212,0.04) !important; }
         .filter-pill { transition: all 0.15s; cursor: pointer; }
         .filter-pill:hover { opacity: 0.85; }
+        .expand-panel { animation: slideDown 0.18s ease; }
       `}</style>
 
       {/* Header */}
@@ -255,7 +326,7 @@ export default function PosTransactionsPage() {
           <div style={{ flex: 1, position: "relative" }}>
             <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
             <input
-              placeholder="Search product or seller..."
+              placeholder="Product, seller, phone, M-Pesa ref…"
               value={search}
               onChange={e => setSearch(e.target.value)}
               style={{
@@ -321,32 +392,155 @@ export default function PosTransactionsPage() {
             <div>
               {Object.entries(grouped).map(([date, txns]) => (
                 <div key={date}>
+                  {/* Date group header */}
                   <div style={{ padding: "8px 18px", background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{date}</div>
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(txns.reduce((s, t) => s + t.amount, 0))}</div>
                   </div>
+
                   {txns.map((tx, i) => {
-                    const badge  = methodBadge(tx.payment_method);
-                    const isLast = i === txns.length - 1;
+                    const badge    = methodBadge(tx.payment_method);
+                    const rcpt     = receiptBadge(tx);
+                    const isLast   = i === txns.length - 1;
+                    const isOpen   = expanded === tx.id;
+                    const isSending = resendingId === tx.id;
+                    const phone    = tx.receipt_phone ?? tx.customer_phone;
+                    const canResend = !!phone && tx.receipt_sent !== true;
+
                     return (
-                      <div key={tx.id} className="tx-row"
-                        style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}` }}>
-                        <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
-                          {badge.icon}
-                        </div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
-                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                            {tx.seller_name} · {new Date(tx.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                      <div key={tx.id}>
+                        {/* Row */}
+                        <div
+                          className="tx-row"
+                          onClick={() => setExpanded(isOpen ? null : tx.id)}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 12,
+                            padding: "12px 18px",
+                            borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`,
+                            background: isOpen ? "rgba(6,182,212,0.03)" : undefined,
+                          }}>
+                          <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
+                            {badge.icon}
                           </div>
-                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>
-                            TXN-{tx.id.slice(0, 8).toUpperCase()}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                              {tx.seller_name} · {new Date(tx.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>
+                              TXN-{tx.id.slice(0, 8).toUpperCase()}
+                            </div>
+                            {/* Receipt badge */}
+                            {rcpt && (
+                              <div style={{ marginTop: 5 }}>
+                                <span style={{
+                                  fontSize: 9, fontFamily: theme.font.mono, fontWeight: 600,
+                                  color: rcpt.color, background: rcpt.bg,
+                                  border: `1px solid ${rcpt.border}`,
+                                  borderRadius: 20, padding: "2px 8px",
+                                }}>
+                                  {rcpt.label}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(tx.amount)}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{tx.quantity}× · {badge.label}</div>
+                            <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                           </div>
                         </div>
-                        <div style={{ textAlign: "right", flexShrink: 0 }}>
-                          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(tx.amount)}</div>
-                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{tx.quantity}× · {badge.label}</div>
-                        </div>
+
+                        {/* Expanded panel */}
+                        {isOpen && (
+                          <div
+                            className="expand-panel"
+                            style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+
+                            {/* Detail grid */}
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                              {([
+                                { label: "Transaction ID", value: "TXN-" + tx.id.slice(0, 8).toUpperCase(), full: true, mono: true },
+                                { label: "Product",        value: tx.product_name ?? "—" },
+                                { label: "SKU",            value: tx.product_sku  || "—", mono: true },
+                                { label: "Unit Price",     value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },
+                                { label: "Qty",            value: String(tx.quantity) },
+                                { label: "Total",          value: fmt(tx.amount), color: theme.accent.gold },
+                                { label: "Payment",        value: tx.payment_method === "mpesa" ? "📱 M-Pesa" : tx.payment_method === "split" ? "⚡ Split" : "💵 Cash" },
+                                ...(tx.cash_amount  && tx.cash_amount  > 0 ? [{ label: "Cash",      value: fmt(tx.cash_amount)  }] : []),
+                                ...(tx.mpesa_amount && tx.mpesa_amount > 0 ? [{ label: "M-Pesa",    value: fmt(tx.mpesa_amount) }] : []),
+                                ...(tx.mpesa_ref                            ? [{ label: "M-Pesa Ref", value: tx.mpesa_ref, mono: true }] : []),
+                                { label: "Seller",         value: tx.seller_name  ?? "—" },
+                                ...(tx.customer_phone ? [{ label: "Customer Phone", value: tx.customer_phone }] : []),
+                                {
+                                  label: "Receipt",
+                                  value: tx.receipt_sent === true
+                                    ? `📱 Sent to ${tx.receipt_phone ?? tx.customer_phone}`
+                                    : tx.receipt_sent === false
+                                      ? "📵 Failed to send"
+                                      : phone ? "📄 Not sent yet" : "— No phone on file",
+                                  full: true,
+                                  color: tx.receipt_sent === true ? "#34d399" : tx.receipt_sent === false ? "#fbbf24" : theme.text.muted,
+                                },
+                              ] as { label: string; value: string; full?: boolean; mono?: boolean; color?: string }[]).map(({ label, value, full, mono, color }) => (
+                                <div key={label} style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", gridColumn: full ? "1 / -1" : undefined }}>
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                                  <div style={{ fontSize: 12, fontWeight: 600, color: color ?? theme.text.primary, fontFamily: mono ? theme.font.mono : theme.font.body }}>{value}</div>
+                                </div>
+                              ))}
+                            </div>
+
+                            {/* Resend button */}
+                            {(canResend || tx.receipt_sent === true) && (
+                              <div onClick={e => e.stopPropagation()}>
+                                {tx.receipt_sent === true ? (
+                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span>📱</span>
+                                      <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>
+                                        Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong>
+                                      </span>
+                                    </div>
+                                    <button
+                                      onClick={() => handleResend(tx)}
+                                      disabled={isSending}
+                                      style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1 }}>
+                                      {isSending ? "Sending..." : "Resend"}
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    onClick={() => handleResend(tx)}
+                                    disabled={isSending}
+                                    style={{
+                                      width: "100%", padding: "12px 16px",
+                                      background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
+                                      border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
+                                      borderRadius: 10,
+                                      color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan,
+                                      fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
+                                      cursor: isSending ? "not-allowed" : "pointer",
+                                      opacity: isSending ? 0.6 : 1,
+                                      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+                                    }}>
+                                    {isSending
+                                      ? <><span style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
+                                      : tx.receipt_sent === false
+                                        ? `📵 Retry Receipt → ${phone}`
+                                        : `📄 Send Receipt → ${phone}`}
+                                  </button>
+                                )}
+                              </div>
+                            )}
+
+                            {/* No phone on file */}
+                            {!phone && (
+                              <div style={{ padding: "10px 14px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
+                                No phone number recorded — receipt cannot be sent
+                              </div>
+                            )}
+                          </div>
+                        )}
                       </div>
                     );
                   })}

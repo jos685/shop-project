@@ -4,11 +4,11 @@ import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 
 const tabs = [
-  { path: "/pos",              icon: "▦",  label: "Dashboard", short: "Home"  },
-  { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop"  },
-  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan"  },
-  { path: "/pos/requests",     icon: "📋", label: "Requests",  short: "Reqs"  },
+  { path: "/pos",              icon: "🏠", label: "Dashboard", short: "Home"  },
   { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns"  },
+  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan"  },
+  { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop"  },
+  { path: "/pos/requests",     icon: "📋", label: "Hub",  short: "Reqs"  },
 ];
 
 function useWindowWidth() {

@@ -59,7 +59,10 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         if (session?.owner_id) setShop(session);
         else localStorage.removeItem(SESSION_KEY);
       }
-    } catch {}
+    } catch (err) {
+      console.warn("Failed to restore session from localStorage:", err);
+      localStorage.removeItem(SESSION_KEY);
+    }
     setLoading(false);
   }, []);
 
