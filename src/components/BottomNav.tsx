@@ -8,7 +8,7 @@ const tabs = [
   { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns"  },
   { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan"  },
   { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop"  },
-  { path: "/pos/requests",     icon: "📋", label: "Hub",  short: "Reqs"  },
+  { path: "/pos/requests",     icon: "📋", label: "Hub",  short: "Hub"  },
 ];
 
 function useWindowWidth() {

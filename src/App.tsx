@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { ShopAuthProvider, useShopAuth } from "./context/ShopAuthContext";
+import { NetworkProvider } from "./context/NetworkContext";
 import PosLogin            from "./pages/PosLogin";
 import PosDashboard        from "./pages/PosDashboard";
 import PosScan             from "./pages/PosScan";
@@ -76,9 +77,11 @@ export default function App() {
     <ErrorBoundary>
       <ThemeProvider>
         <ShopAuthProvider>
-          <BrowserRouter>
-            <PosApp />
-          </BrowserRouter>
+          <NetworkProvider>
+            <BrowserRouter>
+              <PosApp />
+            </BrowserRouter>
+          </NetworkProvider>
         </ShopAuthProvider>
       </ThemeProvider>
     </ErrorBoundary>

@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useNetwork } from "../context/NetworkContext";
 import QrScanner from "../components/QrScanner";
 import { supabase } from "../lib/supabase";
+import { enqueue } from "../lib/offlineQueue";
 import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
 
 type Step         = "scan" | "checkout" | "verify" | "success";
@@ -44,6 +46,7 @@ const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise",
 export default function PosScan() {
   const { shop }  = useShopAuth();
   const { theme } = useTheme();
+  const { isOnline, pendingCount, refreshPendingCount } = useNetwork();
   const navigate  = useNavigate();
   const width     = useWindowWidth();
   const isMobile  = width < 640;
@@ -127,12 +130,14 @@ export default function PosScan() {
     return () => clearTimeout(t);
   }, [cartRestored]);
 
-  // Persist cart whenever it changes
+  // Persist cart whenever it changes — but never on the success screen so navigating
+  // away after a completed sale doesn't restore the old cart on next visit.
   useEffect(() => {
     if (!cartKey) return;
+    if (step === "success") { localStorage.removeItem(cartKey); return; }
     if (cart.length === 0) { localStorage.removeItem(cartKey); return; }
     try { localStorage.setItem(cartKey, JSON.stringify(cart)); } catch {}
-  }, [cart, cartKey]);
+  }, [cart, cartKey, step]);
 
   const pinIsLocked = pinCountdown > 0;
 
@@ -141,19 +146,10 @@ export default function PosScan() {
   const [error,        setError]        = useState("");
   const [scanFeedback, setScanFeedback] = useState("");
   const [savedBatchRef, setSavedBatchRef] = useState("");
-  const [isOnline,     setIsOnline]     = useState(navigator.onLine);
+  const [wasQueued,    setWasQueued]    = useState(false);
   const [commissionConfig, setCommissionConfig] = useState<{ enabled: boolean; rate: number }>({ enabled: false, rate: 0 });
   const [businessName,  setBusinessName]  = useState("");
   const [receiptStatus, setReceiptStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
-
-  // ── online/offline detection ──────────────────────────────────────────
-  useEffect(() => {
-    const on  = () => setIsOnline(true);
-    const off = () => setIsOnline(false);
-    window.addEventListener("online",  on);
-    window.addEventListener("offline", off);
-    return () => { window.removeEventListener("online", on); window.removeEventListener("offline", off); };
-  }, []);
 
   // ── camera sync ───────────────────────────────────────────────────────
   useEffect(() => {
@@ -165,8 +161,26 @@ export default function PosScan() {
   }, [step, verifyMethod]);
 
   // ── fetch agents + stock ──────────────────────────────────────────────
+  // Cache keys — scoped per shop so different shops don't share data.
+  const cacheKey = shop ? `pos_cache_${shop.id}` : null;
+
+  // Load from cache first so the UI is immediately populated when offline.
   useEffect(() => {
-    if (!shop) return;
+    if (!cacheKey) return;
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (!raw) return;
+      const { agents, products, commission, bizName } = JSON.parse(raw);
+      if (agents)     setShopAgents(agents);
+      if (products)   setMyProducts(products);
+      if (commission) setCommissionConfig(commission);
+      if (bizName)    setBusinessName(bizName);
+    } catch {}
+  }, [cacheKey]);
+
+  // Network fetch — skipped entirely when offline so we don't clobber the cache with empty data.
+  useEffect(() => {
+    if (!shop || !isOnline) return;
     (async () => {
       const [agentsRes, allocsRes, commRes, profileRes] = await Promise.all([
         supabase.from("shop_agents")
@@ -178,13 +192,17 @@ export default function PosScan() {
         supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
         supabase.from("profiles").select("business_name").eq("id", shop.owner_id).single(),
       ]);
-      setCommissionConfig((commRes.data as any)?.[0] ?? { enabled: false, rate: 0 });
-      setBusinessName((profileRes.data as any)?.business_name ?? shop.name);
 
-      setShopAgents((agentsRes.data || []).map((r: any) => ({
+      // Bail out if any primary fetch failed — don't overwrite good cached data with nothing.
+      if (agentsRes.error || allocsRes.error) return;
+
+      const commission = (commRes.data as any)?.[0] ?? { enabled: false, rate: 0 };
+      const bizName    = (profileRes.data as any)?.business_name ?? shop.name;
+
+      const agents = (agentsRes.data || []).map((r: any) => ({
         id: r.id, pin: r.pin, active: r.active, agent_id: r.agent_id,
         name: r.agent_name ?? "Agent", agent_code: r.agent_code ?? "", avatar: r.agent_avatar ?? "",
-      })));
+      }));
 
       const productIds = (allocsRes.data || []).map((a: any) => a.product_id).filter(Boolean);
       let productsMap: Record<string, any> = {};
@@ -194,33 +212,42 @@ export default function PosScan() {
         for (const p of prodsData || []) productsMap[p.id] = p;
       }
 
-      setMyProducts(
-        (allocsRes.data || [])
-          .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
-          .map((a: any) => {
-            const p = productsMap[a.product_id] || {};
-            return {
-              id: a.id, allocated: a.allocated,
-              remaining: Math.max(0, a.remaining ?? 0),
-              product_id: a.product_id,
-              product: {
-                id:    a.product_id,
-                name:  p.name  || a.product_name  || "—",
-                sku:   p.sku   || a.product_sku   || "",
-                price: Number(p.price ?? a.product_price ?? 0),
-                unit:  p.unit  || a.product_unit  || "",
-              },
-            };
-          })
-      );
+      const products = (allocsRes.data || [])
+        .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
+        .map((a: any) => {
+          const p = productsMap[a.product_id] || {};
+          return {
+            id: a.id, allocated: a.allocated,
+            remaining: Math.max(0, a.remaining ?? 0),
+            product_id: a.product_id,
+            product: {
+              id:    a.product_id,
+              name:  p.name  || a.product_name  || "—",
+              sku:   p.sku   || a.product_sku   || "",
+              price: Number(p.price ?? a.product_price ?? 0),
+              unit:  p.unit  || a.product_unit  || "",
+            },
+          };
+        });
+
+      setCommissionConfig(commission);
+      setBusinessName(bizName);
+      setShopAgents(agents);
+      setMyProducts(products);
+
+      // Persist to cache so the next offline session has fresh data.
+      if (cacheKey) {
+        try { localStorage.setItem(cacheKey, JSON.stringify({ agents, products, commission, bizName })); } catch {}
+      }
     })();
-  }, [shop]);
+  }, [shop, isOnline, cacheKey]);
 
   // ── product lookup ────────────────────────────────────────────────────
   const fetchAllocationBySku = useCallback(async (sku: string): Promise<LocalAlloc | null> => {
     if (!shop) return null;
     const inMem = myProducts.find(a => a.product.sku.toUpperCase() === sku.toUpperCase());
     if (inMem) return inMem;
+    if (!isOnline) return null;
 
     const { data } = await supabase.from("shop_allocations")
       .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
@@ -330,11 +357,62 @@ export default function PosScan() {
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
     if (cart.length === 0) return;
-    if (!navigator.onLine) {
-      setError("You are offline. Please check your connection and try again.");
-      setProcessing(false);
+
+    // Offline: queue the sale and proceed to success screen
+    if (!isOnline) {
+      enqueue({
+        shopId:        shop!.id,
+        ownerId:       shop!.owner_id,
+        type:          payMethod === "credit" ? "credit" : "regular",
+        cart: cart.map(item => ({
+          allocationId: item.allocation.id,
+          productId:    item.allocation.product.id,
+          productName:  item.allocation.product.name,
+          quantity:     item.quantity,
+          sellPrice:    item.sellPrice,
+          basePrice:    item.allocation.product.price,
+        })),
+        payMethod,
+        cashAmount:      Number(cashAmount)  || 0,
+        mpesaAmount:     Number(mpesaAmount) || 0,
+        mpesaRef:        mpesaRef.trim(),
+        customerName:    customerName.trim(),
+        customerPhone:   customerPhone.trim(),
+        initialPayment:  Number(initialPayment) || 0,
+        initialPayMethod,
+        verifiedAgent:   { agent_id: verifiedAgent.agent_id, name: verifiedAgent.name },
+        commissionConfig,
+        grandTotal,
+      });
+
+      // Deduct stock locally so agents can't oversell during offline mode.
+      setMyProducts(prev => {
+        const updated = prev.map(alloc => {
+          const sold = cart.find(i => i.allocation.id === alloc.id);
+          if (!sold) return alloc;
+          return { ...alloc, remaining: Math.max(0, alloc.remaining - sold.quantity) };
+        }).filter(alloc => alloc.remaining > 0);
+        // Persist updated stock to cache so it survives a page reload while still offline.
+        if (cacheKey) {
+          try {
+            const raw = localStorage.getItem(cacheKey);
+            if (raw) {
+              const cached = JSON.parse(raw);
+              localStorage.setItem(cacheKey, JSON.stringify({ ...cached, products: updated }));
+            }
+          } catch {}
+        }
+        return updated;
+      });
+
+      refreshPendingCount();
+      setWasQueued(true);
+      setSelectedAgent(verifiedAgent);
+      setSavedBatchRef("OFFLINE");
+      setStep("success");
       return;
     }
+
     setProcessing(true); setError("");
 
     // Deduct stock for every item regardless of payment method.
@@ -412,6 +490,28 @@ export default function PosScan() {
           amount:         initPaid,
           payment_method: initialPayMethod,
           mpesa_ref:      null,
+        });
+
+        // Record a single summary row in shop_transactions for the upfront payment.
+        // We use null product_id so the transactions page shows it as one "Credit Sale Payment"
+        // entry rather than splitting the amount proportionally across cart items.
+        await supabase.from("shop_transactions").insert({
+          shop_id:           shop?.id,
+          owner_id:          shop?.owner_id,
+          seller_agent_id:   verifiedAgent.agent_id,
+          product_id:        null,
+          quantity:          cart.reduce((s, i) => s + i.quantity, 0),
+          amount:            initPaid,
+          customer_phone:    customerPhone.trim(),
+          payment_method:    initialPayMethod,
+          cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
+          mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
+          mpesa_ref:         null,
+          status:            "credit_partial",
+          unit_price:        null,
+          base_price:        null,
+          commission_rate:   0,
+          commission_earned: 0,
         });
       }
 
@@ -549,7 +649,7 @@ export default function PosScan() {
     setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
-    setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false);
+    setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
     if (cartKey) localStorage.removeItem(cartKey);
     // Reset PIN lockout for the next sale
     setPinFails(0); setPinCountdown(0);
@@ -569,15 +669,22 @@ export default function PosScan() {
       {!isOnline && (
         <div style={{
           position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
-          background: "#dc2626",
-          color: "#fff",
+          background: "#92400e",
+          color: "#fef3c7",
           padding: "10px 16px",
-          display: "flex", alignItems: "center", gap: 10,
+          display: "flex", alignItems: "center", justifyContent: "space-between",
           fontFamily: "monospace", fontSize: 13, fontWeight: 600,
-          boxShadow: "0 2px 12px rgba(220,38,38,0.4)",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
         }}>
-          <span style={{ fontSize: 16 }}>⚡</span>
-          No internet connection — sales cannot be processed until you reconnect.
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span>⚡</span>
+            Offline — sales will be queued and synced when connection returns.
+          </div>
+          {pendingCount > 0 && (
+            <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 20, padding: "2px 10px", fontSize: 11 }}>
+              {pendingCount} queued
+            </span>
+          )}
         </div>
       )}
       <style>{`
@@ -624,7 +731,7 @@ export default function PosScan() {
                 {step === "scan"     ? "Scan or pick products to add to cart"                                         : ""}
                 {step === "checkout" ? `${cart.length} item${cart.length !== 1 ? "s" : ""} · ${fmt(grandTotal)}`     : ""}
                 {step === "verify"   ? "Verify identity to complete the sale"                                         : ""}
-                {step === "success"  ? "Transaction saved successfully"                                               : ""}
+                {step === "success"  ? (wasQueued ? "Queued — will sync when online" : "Transaction saved successfully") : ""}
               </div>
             </div>
           </div>
@@ -933,10 +1040,11 @@ export default function PosScan() {
                       onChange={e => {
                         const clean = sanitizeAmount(e.target.value);
                         const val   = Number(clean) || 0;
-                        setInitialPayment(val > grandTotal ? String(grandTotal) : clean);
+                        const cap   = Math.round(grandTotal);
+                        setInitialPayment(val > cap ? String(cap) : clean);
                       }}
                       placeholder={`e.g. 500 of ${fmt(grandTotal)}`}
-                      min="0" max={grandTotal} />
+                      min="0" max={Math.round(grandTotal)} />
                     {Number(initialPayment) > 0 && (
                       <>
                         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -985,20 +1093,7 @@ export default function PosScan() {
                 </div>
               )}
 
-              {/* Commission preview */}
-              {commissionConfig.enabled && commissionConfig.rate > 0 && cart.length > 0 && (() => {
-                const commission = cart.reduce((s, item) =>
-                  s + Math.max(0, item.sellPrice - item.allocation.product.price) * item.quantity, 0
-                ) * commissionConfig.rate;
-                if (commission <= 0) return null;
-                return (
-                  <div style={{ background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>💰 Your commission on this sale</div>
-                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#34d399" }}>{fmt(Math.round(commission))}</div>
-                  </div>
-                );
-              })()}
-
+          
               {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
 
               <button className="abtn" onClick={handleCheckoutNext}
@@ -1185,15 +1280,17 @@ export default function PosScan() {
         {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
         {step === "success" && (
           <div className="section" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, paddingTop: 16, textAlign: "center" }}>
-            <div className="success-icon" style={{ width: 86, height: 86, borderRadius: "50%", background: payMethod === "credit" ? "rgba(248,113,113,0.15)" : "rgba(52,211,153,0.15)", border: `2px solid ${payMethod === "credit" ? "#f87171" : "#34d399"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 38 }}>
-              {payMethod === "credit" ? "📝" : "✓"}
+            <div className="success-icon" style={{ width: 86, height: 86, borderRadius: "50%", background: wasQueued ? "rgba(251,191,36,0.15)" : payMethod === "credit" ? "rgba(248,113,113,0.15)" : "rgba(52,211,153,0.15)", border: `2px solid ${wasQueued ? "#fbbf24" : payMethod === "credit" ? "#f87171" : "#34d399"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 38 }}>
+              {wasQueued ? "⏳" : payMethod === "credit" ? "📝" : "✓"}
             </div>
             <div>
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26 }}>
-                {payMethod === "credit" ? "Credit Sale Recorded!" : "Sale Recorded!"}
+                {wasQueued ? "Sale Queued Offline" : payMethod === "credit" ? "Credit Sale Recorded!" : "Sale Recorded!"}
               </div>
               <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 4 }}>
-                {payMethod === "credit"
+                {wasQueued
+                  ? "Will sync automatically when your connection is restored."
+                  : payMethod === "credit"
                   ? (() => { const ip = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
                   : `${cart.length} item${cart.length !== 1 ? "s" : ""} synced to owner dashboard`}
               </div>
@@ -1214,10 +1311,10 @@ export default function PosScan() {
               {/* Ref row */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: `1px solid ${theme.border.default}` }}>
                 <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  {payMethod === "credit" ? "Credit Ref" : "Receipt Ref"}
+                  {wasQueued ? "Status" : payMethod === "credit" ? "Credit Ref" : "Receipt Ref"}
                 </span>
-                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: payMethod === "credit" ? theme.accent.red : theme.accent.cyan }}>
-                  {payMethod === "credit" ? "CR-" : "TXN-"}{savedBatchRef}
+                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: wasQueued ? "#fbbf24" : payMethod === "credit" ? theme.accent.red : theme.accent.cyan }}>
+                  {wasQueued ? "Pending sync" : payMethod === "credit" ? `CR-${savedBatchRef}` : `TXN-${savedBatchRef}`}
                 </span>
               </div>
               {/* Items */}

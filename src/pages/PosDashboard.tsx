@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useNetwork } from "../context/NetworkContext";
 import { supabase } from "../lib/supabase";
+import { getQueue } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -96,6 +98,7 @@ function HourlyChart({ data, theme }: { data: HourData[]; theme: any }) {
 export default function PosDashboard() {
   const { shop, logout } = useShopAuth();
   const { theme }        = useTheme();
+  const { pendingCount } = useNetwork();
   const navigate         = useNavigate();
   const width            = useWindowWidth();
   const isMobile         = width < 640;
@@ -118,6 +121,8 @@ export default function PosDashboard() {
   const [creditCount, setCreditCount] = useState(0);
   const [creditAmt,   setCreditAmt]   = useState(0);
   const [pendingReqs, setPendingReqs] = useState(0);
+  const [queuedCount, setQueuedCount] = useState(0);
+  const [queuedTotal, setQueuedTotal] = useState(0);
 
   useEffect(() => {
     const t = setInterval(() => setTime(new Date()), 1000);
@@ -126,6 +131,28 @@ export default function PosDashboard() {
 
   const fetchAll = useCallback(async () => {
     if (!shop) return;
+    if (!navigator.onLine) {
+      // Load stock from the same cache PosScan writes
+      try {
+        const raw = localStorage.getItem(`pos_cache_${shop.id}`);
+        if (raw) {
+          const { products } = JSON.parse(raw);
+          if (products?.length) {
+            const low = products.filter((a: any) => a.allocated > 0 && a.remaining / a.allocated < 0.2);
+            setStockCount(products.length);
+            setLowCount(low.length);
+            setStockRows(
+              [...products]
+                .sort((a: any, b: any) => (a.remaining / Math.max(a.allocated, 1)) - (b.remaining / Math.max(b.allocated, 1)))
+                .slice(0, 7)
+                .map((a: any) => ({ name: a.product?.name || "—", remaining: a.remaining, allocated: a.allocated }))
+            );
+          }
+        }
+      } catch {}
+      setLoading(false);
+      return;
+    }
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
     const [txRes, allocRes, creditRes, reqRes] = await Promise.all([
@@ -214,6 +241,12 @@ export default function PosDashboard() {
 
   useEffect(() => { fetchAll(); }, [fetchAll]);
 
+  useEffect(() => {
+    const q = getQueue();
+    setQueuedCount(q.length);
+    setQueuedTotal(q.reduce((s, sale) => s + sale.grandTotal, 0));
+  }, [pendingCount]);
+
   const payIcon  = (m: string) => m === "cash" ? "💵" : m === "mpesa" ? "📱" : m === "split" ? "⚡" : "📝";
   const timeAgo  = (iso: string) => {
     const m = Math.floor((Date.now() - new Date(iso).getTime()) / 60000);
@@ -243,6 +276,12 @@ export default function PosDashboard() {
       value: String(lowCount),
       sub: lowCount > 0 ? "Low stock" : "Stock OK",
       onClick: () => navigate("/pos/info", { state: { tab: "stock" } }) },
+    ...(queuedCount > 0
+      ? [{ key: "queued", icon: "⏳", label: "QUEUED", col: "#fbbf24",
+          value: String(queuedCount),
+          sub: fmt(queuedTotal) + " pending",
+          onClick: () => navigate("/pos/transactions") }]
+      : []),
   ];
 
   const spin = <div style={{ width: 20, height: 20, border: "2px solid rgba(255,255,255,0.1)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />;
@@ -297,6 +336,19 @@ export default function PosDashboard() {
       </div>
 
       <div style={{ padding: isMobile ? "16px 14px 110px" : "22px 28px 110px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* ── Offline notice ── */}
+        {!navigator.onLine && (
+          <div style={{ background: "rgba(146,64,14,0.15)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 14, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 20, flexShrink: 0 }}>⚡</span>
+            <div>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, color: "#fbbf24" }}>Offline Mode</div>
+              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                Live sales figures are unavailable. {queuedCount > 0 ? `${queuedCount} queued sale${queuedCount !== 1 ? "s" : ""} (${fmt(queuedTotal)}) will sync when connection returns.` : "Sales you make now will be queued."}
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* ── Scan & Sell hero ── */}
         <div className="section" style={{ animationDelay: "0.04s" }}>
@@ -447,7 +499,7 @@ export default function PosDashboard() {
           </div>
           {loading
             ? <div style={{ height: 80, display: "flex", alignItems: "center", justifyContent: "center" }}>{spin}</div>
-            : recentTxs.length === 0
+            : (recentTxs.length === 0 && queuedCount === 0)
               ? (
                 <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "26px 16px", textAlign: "center" }}>
                   <div style={{ fontSize: 26, opacity: 0.3, marginBottom: 8 }}>🧾</div>
@@ -456,6 +508,28 @@ export default function PosDashboard() {
               )
               : (
                 <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
+                  {/* Queued entries at the top */}
+                  {getQueue().slice(0, 4).map((q, i) => {
+                    const label  = q.cart.length === 1 ? q.cart[0].productName : `${q.cart[0].productName} +${q.cart.length - 1} more`;
+                    const isLast = i === Math.min(3, queuedCount - 1) && recentTxs.length === 0;
+                    return (
+                      <div key={q.id} className="tx-row" onClick={() => navigate("/pos/transactions")}
+                        style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, cursor: "pointer" }}>
+                        <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
+                          ⏳
+                        </div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 20, padding: "1px 6px" }}>QUEUED</span>
+                            <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{q.verifiedAgent.name} · {timeAgo(new Date(q.queuedAt).toISOString())}</span>
+                          </div>
+                        </div>
+                        <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 14, color: "#fbbf24", flexShrink: 0 }}>{fmt(q.grandTotal)}</div>
+                      </div>
+                    );
+                  })}
+                  {/* Live synced entries */}
                   {recentTxs.map((tx, i) => (
                     <div key={tx.id} className="tx-row"
                       style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: i < recentTxs.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>

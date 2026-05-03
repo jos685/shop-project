@@ -4,8 +4,10 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTheme } from "../context/ThemeContext";
 import { useShopAuth } from "../context/ShopAuthContext";
+import { useNetwork } from "../context/NetworkContext";
 import { supabase } from "../lib/supabase";
 import { sanitizeInteger, sanitizeText, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
+import { enqueueRequest, enqueueExpense, getMiscQueue, type QueuedRequest, type QueuedExpense } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -127,11 +129,22 @@ function statusBadge(status: RequestStatus) {
 export default function PosRequests() {
   const { theme } = useTheme();
   const { shop } = useShopAuth();
+  const { isOnline, pendingCount: offlineQueueCount, refreshPendingCount } = useNetwork();
   const width = useWindowWidth();
   const isMobile = width < 640;
   const isTablet = width < 1024;
 
   const [activeTab, setActiveTab] = useState<ActiveTab>("requests");
+
+  // Offline queued misc items (requests + expenses)
+  const [queuedItems, setQueuedItems] = useState<(QueuedRequest | QueuedExpense)[]>([]);
+  useEffect(() => {
+    const all = getMiscQueue();
+    setQueuedItems(all.map(i => {
+      const { kind: _k, ...rest } = i as any;
+      return rest as QueuedRequest | QueuedExpense;
+    }));
+  }, [offlineQueueCount]);
 
   // ── Requests state ────────────────────────────────────────────────────
   const [requests, setRequests]     = useState<ShopRequest[]>([]);
@@ -382,7 +395,7 @@ export default function PosRequests() {
 
     setSubmitting(true);
     const selectedProduct = products.find(p => p.id === productId);
-    const { error } = await supabase.from("shop_requests").insert({
+    const payload = {
       owner_id:     shop.owner_id,
       shop_id:      shop.id,
       type,
@@ -391,7 +404,26 @@ export default function PosRequests() {
       quantity:     needsQty && quantity ? parseInt(quantity) : null,
       message:      message.trim(),
       status:       "pending",
-    });
+    };
+
+    if (!isOnline) {
+      enqueueRequest({
+        shopId: shop.id, ownerId: shop.owner_id,
+        requestType: type,
+        productId:   payload.product_id,
+        productName: payload.product_name,
+        quantity:    payload.quantity,
+        message:     payload.message,
+      });
+      refreshPendingCount();
+      setSuccessMsg("Request queued — will send when connection returns ✓");
+      setSubmitting(false);
+      resetForm();
+      setTimeout(() => { setShowForm(false); setSuccessMsg(""); }, 2000);
+      return;
+    }
+
+    const { error } = await supabase.from("shop_requests").insert(payload);
     if (error) { setFormError(`Failed to send: ${error.message}`); setSubmitting(false); return; }
     setSuccessMsg("Request sent to your owner ✓");
     setSubmitting(false);
@@ -405,6 +437,18 @@ export default function PosRequests() {
     if (!amount || amount <= 0) { setExpError("Enter a valid amount."); return; }
     if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
     setExpProcessing(true);
+
+    if (!isOnline) {
+      enqueueExpense({
+        shopId: shop!.id, ownerId: shop!.owner_id, amount,
+        description: expDesc.trim(), loggedBy: agent.agent.id, loggedByName: agent.agent.name,
+      });
+      refreshPendingCount();
+      setLogOpen(false);
+      setExpAmount(""); setExpDesc(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
+      return;
+    }
+
     const { error } = await supabase.from("shop_expenses").insert({
       shop_id: shop?.id, owner_id: shop?.owner_id, amount,
       description: expDesc.trim(), logged_by: agent.agent.id, logged_by_name: agent.agent.name,
@@ -460,6 +504,7 @@ export default function PosRequests() {
   // ── Credit handlers ───────────────────────────────────────────────────
   const handleRecordPayment = async (_agent: ShopAgent) => {
     if (!payTarget) return;
+    if (!isOnline) { setPayError("Recording a credit payment requires an internet connection. Please reconnect and try again."); return; }
     const amount = parseFloat(payAmount);
     if (!amount || amount <= 0) { setPayError("Enter a valid payment amount."); return; }
     const balance = payTarget.amount - payTarget.amount_paid;
@@ -496,6 +541,7 @@ export default function PosRequests() {
 
   const handleMarkReturned = async (_agent: ShopAgent) => {
     if (!returnTarget) return;
+    if (!isOnline) { setReturnError("Marking a return requires an internet connection. This restores stock on the server and cannot be done offline."); return; }
     setReturnProcessing(true);
     for (const item of returnTarget.items) {
       const { data: allocData } = await supabase.from("shop_allocations").select("remaining").eq("id", item.allocation_id).single();
@@ -726,6 +772,22 @@ export default function PosRequests() {
         </div>
       </div>
 
+      {/* ── Offline banner ── */}
+      {!isOnline && (
+        <div style={{ margin: "12px 16px 0", background: "rgba(146,64,14,0.15)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 14, padding: "12px 16px", display: "flex", alignItems: "flex-start", gap: 12 }}>
+          <span style={{ fontSize: 18, flexShrink: 0, marginTop: 1 }}>⚡</span>
+          <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", lineHeight: 1.6 }}>
+            <strong>Offline mode</strong> — Requests and expenses will be queued and sent when connection returns.
+            Credit payments and returns require a live connection.
+            {queuedItems.length > 0 && (
+              <div style={{ marginTop: 4, color: theme.text.muted }}>
+                {queuedItems.length} item{queuedItems.length !== 1 ? "s" : ""} queued.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* ══ REQUESTS TAB ══ */}
       {activeTab === "requests" && (
         <>
@@ -806,12 +868,40 @@ export default function PosRequests() {
           )}
 
           <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {/* Queued offline requests */}
+            {queuedItems.filter(i => "requestType" in i).map(i => {
+              const q = i as QueuedRequest;
+              const rt = REQUEST_TYPES.find(r => r.value === q.requestType) ?? REQUEST_TYPES[3];
+              return (
+                <div key={q.id} style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 14, padding: "14px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                    <div style={{ width: 38, height: 38, borderRadius: 10, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>
+                      {rt.icon}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#fbbf24" }}>{rt.label}</div>
+                        <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 20, padding: "2px 8px" }}>QUEUED</span>
+                      </div>
+                      {q.productName && (
+                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 3 }}>
+                          📦 {q.productName}{q.quantity != null && <span style={{ color: theme.text.secondary }}> · {q.quantity} units</span>}
+                        </div>
+                      )}
+                      <div style={{ fontSize: 12, color: theme.text.secondary, lineHeight: 1.5 }}>{q.message}</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 6 }}>Will sync when connection returns</div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+
             {loading ? (
               <div style={{ textAlign: "center", padding: "60px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 13 }}>
                 <div style={{ width: 24, height: 24, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: "#06b6d4", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 12px" }} />
                 Loading requests...
               </div>
-            ) : requests.length === 0 ? (
+            ) : requests.length === 0 && queuedItems.filter(i => "requestType" in i).length === 0 ? (
               <div style={{ textAlign: "center", padding: "60px 16px", color: theme.text.muted }}>
                 <div style={{ fontSize: 48, marginBottom: 12, opacity: 0.3 }}>📋</div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>No requests yet</div>
@@ -883,11 +973,28 @@ export default function PosRequests() {
             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>{expenses.length} record{expenses.length !== 1 ? "s" : ""}</div>
           </div>
 
+          {/* Queued offline expenses */}
+          {queuedItems.filter(i => "loggedBy" in i).map(i => {
+            const q = i as QueuedExpense;
+            return (
+              <div key={q.id} style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>⏳</div>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.description}</div>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                    {q.loggedByName} · <span style={{ color: "#fbbf24" }}>queued offline</span>
+                  </div>
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#fbbf24", flexShrink: 0 }}>{fmt(q.amount)}</div>
+              </div>
+            );
+          })}
+
           {expLoading ? (
             <div style={{ textAlign: "center", padding: "40px 0" }}>
               <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
             </div>
-          ) : expenses.length === 0 ? (
+          ) : expenses.length === 0 && queuedItems.filter(i => "loggedBy" in i).length === 0 ? (
             <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
               <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>💸</div>
               <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No expenses recorded yet</div>

@@ -2,7 +2,9 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useNetwork } from "../context/NetworkContext";
 import { supabase } from "../lib/supabase";
+import { getQueue, type QueuedSale } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -23,6 +25,31 @@ interface LocalTransaction {
   unit_price: number | null;
   receipt_sent: boolean | null;
   receipt_phone: string | null;
+  status: string | null;
+}
+
+interface SaleGroup {
+  key: string;
+  created_at: string;
+  seller_name: string | null;
+  payment_method: string;
+  status: string | null;
+  items: LocalTransaction[];
+  total: number;
+}
+
+function groupTransactions(txns: LocalTransaction[]): SaleGroup[] {
+  const map = new Map<string, SaleGroup>();
+  for (const tx of txns) {
+    const key = `${tx.seller_name ?? ""}__${tx.created_at}`;
+    if (!map.has(key)) {
+      map.set(key, { key, created_at: tx.created_at, seller_name: tx.seller_name, payment_method: tx.payment_method, status: tx.status, items: [], total: 0 });
+    }
+    const g = map.get(key)!;
+    g.items.push(tx);
+    g.total += tx.amount;
+  }
+  return [...map.values()];
 }
 
 type DateFilter = "today" | "week" | "month" | "all";
@@ -47,7 +74,11 @@ function getStartDate(filter: DateFilter): Date | null {
 export default function PosTransactionsPage() {
   const { shop } = useShopAuth();
   const { theme } = useTheme();
+  const { pendingCount } = useNetwork();
   const navigate = useNavigate();
+
+  const [queuedSales, setQueuedSales]   = useState<QueuedSale[]>([]);
+  const [expandedQ,   setExpandedQ]     = useState<string | null>(null);
 
   const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
   const [loading, setLoading]           = useState(true);
@@ -60,6 +91,9 @@ export default function PosTransactionsPage() {
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
+
+  // Reload queued sales whenever the queue changes
+  useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
 
   const productMapRef = useRef<Record<string, { name: string; sku: string }>>({});
   const sellerMapRef  = useRef<Record<string, { name: string; code: string }>>({});
@@ -115,7 +149,7 @@ export default function PosTransactionsPage() {
       mpesa_amount:   t.mpesa_amount,
       mpesa_ref:      t.mpesa_ref ?? null,
       created_at:     t.created_at,
-      product_name:   existingProductMap[t.product_id]?.name  ?? "—",
+      product_name:   t.status === "credit_partial" && !t.product_id ? "Credit Sale Payment" : (existingProductMap[t.product_id]?.name ?? "—"),
       product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
       seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
@@ -123,6 +157,7 @@ export default function PosTransactionsPage() {
       unit_price:     t.unit_price ?? null,
       receipt_sent:   t.receipt_sent ?? null,
       receipt_phone:  t.receipt_phone ?? null,
+      status:         t.status ?? null,
     }));
   }, [shop]);
 
@@ -135,7 +170,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(0, PAGE_SIZE - 1);
@@ -159,7 +194,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -242,9 +277,26 @@ export default function PosTransactionsPage() {
     return matchesMethod && matchesSearch;
   });
 
-  const totalRevenue = displayed.reduce((s, t) => s + t.amount, 0);
-  const totalCash    = displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0);
-  const totalMpesa   = displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
+  const totalRevenue  = displayed.reduce((s, t) => s + t.amount, 0);
+  const totalCash     = displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0);
+  const totalMpesa    = displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
+  const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
+
+  // Helper: collapse multi-item queued sale to a readable label
+  const queuedLabel = (q: QueuedSale) =>
+    q.cart.length === 1
+      ? q.cart[0].productName
+      : `${q.cart[0].productName} +${q.cart.length - 1} more`;
+
+  const payLabel = (m: string) =>
+    m === "cash" ? "💵 Cash" : m === "mpesa" ? "📱 M-Pesa" : m === "split" ? "⚡ Split" : "📝 Credit";
+
+  const timeAgo = (ts: number) => {
+    const m = Math.floor((Date.now() - ts) / 60000);
+    if (m < 1) return "just now";
+    if (m < 60) return `${m}m ago`;
+    return `${Math.floor(m / 60)}h ago`;
+  };
 
   const groupByDate = (txns: LocalTransaction[]) => {
     const groups: Record<string, LocalTransaction[]> = {};
@@ -355,18 +407,102 @@ export default function PosTransactionsPage() {
         </div>
 
         {/* Summary strip */}
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: queuedSales.length > 0 ? "repeat(4,1fr)" : "repeat(3,1fr)", gap: 8 }}>
           {[
             { label: "Total",  value: fmt(totalRevenue), color: theme.accent.gold },
-            { label: "Cash",   value: fmt(totalCash),    color: "#34d399"          },
-            { label: "M-Pesa", value: fmt(totalMpesa),   color: "#60a5fa"          },
+            { label: "Cash",   value: fmt(totalCash),    color: "#34d399"         },
+            { label: "M-Pesa", value: fmt(totalMpesa),   color: "#60a5fa"         },
+            ...(queuedSales.length > 0
+              ? [{ label: "Queued", value: fmt(queuedTotal), color: "#fbbf24" }]
+              : []),
           ].map(({ label, value, color }) => (
-            <div key={label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>{label}</div>
+            <div key={label} style={{ background: label === "Queued" ? "rgba(251,191,36,0.06)" : theme.bg.card, border: `1px solid ${label === "Queued" ? "rgba(251,191,36,0.25)" : theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: label === "Queued" ? "#fbbf24" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>{label}</div>
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color }}>{value}</div>
             </div>
           ))}
         </div>
+
+        {/* Queued offline sales */}
+        {queuedSales.length > 0 && (
+          <div style={{ background: "rgba(251,191,36,0.04)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 18, overflow: "hidden" }}>
+            <div style={{ padding: "12px 18px", borderBottom: "1px solid rgba(251,191,36,0.15)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ fontSize: 14 }}>⏳</span>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, color: "#fbbf24" }}>
+                  Queued Offline
+                </div>
+              </div>
+              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", opacity: 0.7 }}>
+                {queuedSales.length} sale{queuedSales.length !== 1 ? "s" : ""} · will sync on reconnect
+              </div>
+            </div>
+
+            {queuedSales.map((q, i) => {
+              const isOpen = expandedQ === q.id;
+              const isLast = i === queuedSales.length - 1;
+              return (
+                <div key={q.id}>
+                  <div
+                    onClick={() => setExpandedQ(isOpen ? null : q.id)}
+                    style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : "1px solid rgba(251,191,36,0.1)", cursor: "pointer", background: isOpen ? "rgba(251,191,36,0.04)" : undefined }}>
+                    <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
+                      ⏳
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: theme.text.primary }}>
+                        {queuedLabel(q)}
+                      </div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                        {q.verifiedAgent.name} · {timeAgo(q.queuedAt)}
+                      </div>
+                      <div style={{ marginTop: 4 }}>
+                        <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 20, padding: "2px 8px" }}>
+                          QUEUED
+                        </span>
+                      </div>
+                    </div>
+                    <div style={{ textAlign: "right", flexShrink: 0 }}>
+                      <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#fbbf24" }}>{fmt(q.grandTotal)}</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{payLabel(q.payMethod)}</div>
+                      <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
+                    </div>
+                  </div>
+
+                  {isOpen && (
+                    <div style={{ borderBottom: isLast ? "none" : "1px solid rgba(251,191,36,0.1)", background: "rgba(251,191,36,0.02)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {[
+                          { label: "Status",  value: "Pending sync", color: "#fbbf24", full: true },
+                          { label: "Seller",  value: q.verifiedAgent.name },
+                          { label: "Payment", value: payLabel(q.payMethod) },
+                          ...(q.customerName  ? [{ label: "Customer", value: q.customerName }] : []),
+                          ...(q.customerPhone ? [{ label: "Phone",    value: q.customerPhone }] : []),
+                          { label: "Queued",  value: new Date(q.queuedAt).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" }) },
+                          { label: "Total",   value: fmt(q.grandTotal), color: "#fbbf24" },
+                        ].map(({ label, value, color, full }: { label: string; value: string; color?: string; full?: boolean }) => (
+                          <div key={label} style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", gridColumn: full ? "1 / -1" : undefined }}>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: color ?? theme.text.primary }}>{value}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Items</div>
+                        {q.cart.map((item, idx) => (
+                          <div key={idx} style={{ display: "flex", justifyContent: "space-between", padding: "7px 10px", background: theme.bg.input, borderRadius: 8 }}>
+                            <span style={{ fontSize: 12, color: theme.text.secondary }}>{item.quantity}× {item.productName}</span>
+                            <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.primary }}>{fmt(item.sellPrice * item.quantity)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         {/* Transaction list */}
         <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, overflow: "hidden", animation: "fadeUp 0.3s ease" }}>
@@ -398,47 +534,95 @@ export default function PosTransactionsPage() {
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(txns.reduce((s, t) => s + t.amount, 0))}</div>
                   </div>
 
-                  {txns.map((tx, i) => {
-                    const badge    = methodBadge(tx.payment_method);
-                    const rcpt     = receiptBadge(tx);
-                    const isLast   = i === txns.length - 1;
-                    const isOpen   = expanded === tx.id;
+                  {groupTransactions(txns).map((group, gi, arr) => {
+                    const isMulti  = group.items.length > 1;
+                    const isLast   = gi === arr.length - 1;
+                    const isOpen   = expanded === group.key;
+                    const badge    = methodBadge(group.payment_method);
+                    const time     = new Date(group.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+                    const isCredit = group.items.some(t => t.status === "credit_partial");
+
+                    if (isMulti) {
+                      const label = `${group.items[0].product_name ?? "Item"} +${group.items.length - 1} more`;
+                      return (
+                        <div key={group.key}>
+                          <div className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
+                            <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
+                              🛒
+                            </div>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{group.seller_name} · {time}</div>
+                              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.cyan, background: "rgba(6,182,212,0.10)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 20, padding: "2px 8px" }}>
+                                  {group.items.length} items
+                                </span>
+                                {isCredit && (
+                                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 8px" }}>
+                                    📝 Credit · Partial Payment
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div style={{ textAlign: "right", flexShrink: 0 }}>
+                              <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</div>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{badge.label}</div>
+                              <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
+                            </div>
+                          </div>
+                          {isOpen && (
+                            <div className="expand-panel" style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
+                              {group.items.map(tx => (
+                                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
+                                  <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
+                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}/unit</div>
+                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
+                                  </div>
+                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.gold, flexShrink: 0, marginLeft: 12 }}>{fmt(tx.amount)}</div>
+                                </div>
+                              ))}
+                              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, marginTop: 2 }}>
+                                <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Sale Total · {badge.label}</span>
+                                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    }
+
+                    // Single-item group — same display as before
+                    const tx        = group.items[0];
+                    const rcpt      = receiptBadge(tx);
                     const isSending = resendingId === tx.id;
-                    const phone    = tx.receipt_phone ?? tx.customer_phone;
+                    const phone     = tx.receipt_phone ?? tx.customer_phone;
                     const canResend = !!phone && tx.receipt_sent !== true;
 
                     return (
-                      <div key={tx.id}>
-                        {/* Row */}
+                      <div key={group.key}>
                         <div
                           className="tx-row"
-                          onClick={() => setExpanded(isOpen ? null : tx.id)}
-                          style={{
-                            display: "flex", alignItems: "center", gap: 12,
-                            padding: "12px 18px",
-                            borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`,
-                            background: isOpen ? "rgba(6,182,212,0.03)" : undefined,
-                          }}>
+                          onClick={() => setExpanded(isOpen ? null : group.key)}
+                          style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
                           <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
                             {badge.icon}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
-                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                              {tx.seller_name} · {new Date(tx.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
-                            </div>
-                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>
-                              TXN-{tx.id.slice(0, 8).toUpperCase()}
-                            </div>
-                            {/* Receipt badge */}
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.seller_name} · {time}</div>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
+                            {tx.status === "credit_partial" && (
+                              <div style={{ marginTop: 5 }}>
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 8px" }}>
+                                  📝 Credit · Partial Payment
+                                </span>
+                              </div>
+                            )}
                             {rcpt && (
                               <div style={{ marginTop: 5 }}>
-                                <span style={{
-                                  fontSize: 9, fontFamily: theme.font.mono, fontWeight: 600,
-                                  color: rcpt.color, background: rcpt.bg,
-                                  border: `1px solid ${rcpt.border}`,
-                                  borderRadius: 20, padding: "2px 8px",
-                                }}>
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 600, color: rcpt.color, background: rcpt.bg, border: `1px solid ${rcpt.border}`, borderRadius: 20, padding: "2px 8px" }}>
                                   {rcpt.label}
                                 </span>
                               </div>
@@ -451,34 +635,26 @@ export default function PosTransactionsPage() {
                           </div>
                         </div>
 
-                        {/* Expanded panel */}
                         {isOpen && (
-                          <div
-                            className="expand-panel"
-                            style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-
-                            {/* Detail grid */}
+                          <div className="expand-panel" style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               {([
                                 { label: "Transaction ID", value: "TXN-" + tx.id.slice(0, 8).toUpperCase(), full: true, mono: true },
-                                { label: "Product",        value: tx.product_name ?? "—" },
-                                { label: "SKU",            value: tx.product_sku  || "—", mono: true },
-                                { label: "Unit Price",     value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },
-                                { label: "Qty",            value: String(tx.quantity) },
-                                { label: "Total",          value: fmt(tx.amount), color: theme.accent.gold },
-                                { label: "Payment",        value: tx.payment_method === "mpesa" ? "📱 M-Pesa" : tx.payment_method === "split" ? "⚡ Split" : "💵 Cash" },
-                                ...(tx.cash_amount  && tx.cash_amount  > 0 ? [{ label: "Cash",      value: fmt(tx.cash_amount)  }] : []),
-                                ...(tx.mpesa_amount && tx.mpesa_amount > 0 ? [{ label: "M-Pesa",    value: fmt(tx.mpesa_amount) }] : []),
+                                ...(tx.status === "credit_partial" ? [{ label: "Sale Type", value: "Credit Sale · Upfront Payment", full: true, color: "#c084fc" }] : []),
+                                { label: "Product",    value: tx.product_name ?? "—" },
+                                { label: "SKU",        value: tx.product_sku  || "—", mono: true },
+                                { label: "Unit Price", value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },
+                                { label: "Qty",        value: String(tx.quantity) },
+                                { label: "Total",      value: fmt(tx.amount), color: theme.accent.gold },
+                                { label: "Payment",    value: tx.payment_method === "mpesa" ? "📱 M-Pesa" : tx.payment_method === "split" ? "⚡ Split" : "💵 Cash" },
+                                ...(tx.cash_amount  && tx.cash_amount  > 0 ? [{ label: "Cash",       value: fmt(tx.cash_amount)  }] : []),
+                                ...(tx.mpesa_amount && tx.mpesa_amount > 0 ? [{ label: "M-Pesa",     value: fmt(tx.mpesa_amount) }] : []),
                                 ...(tx.mpesa_ref                            ? [{ label: "M-Pesa Ref", value: tx.mpesa_ref, mono: true }] : []),
-                                { label: "Seller",         value: tx.seller_name  ?? "—" },
+                                { label: "Seller",     value: tx.seller_name ?? "—" },
                                 ...(tx.customer_phone ? [{ label: "Customer Phone", value: tx.customer_phone }] : []),
                                 {
                                   label: "Receipt",
-                                  value: tx.receipt_sent === true
-                                    ? `📱 Sent to ${tx.receipt_phone ?? tx.customer_phone}`
-                                    : tx.receipt_sent === false
-                                      ? "📵 Failed to send"
-                                      : phone ? "📄 Not sent yet" : "— No phone on file",
+                                  value: tx.receipt_sent === true ? `📱 Sent to ${tx.receipt_phone ?? tx.customer_phone}` : tx.receipt_sent === false ? "📵 Failed to send" : phone ? "📄 Not sent yet" : "— No phone on file",
                                   full: true,
                                   color: tx.receipt_sent === true ? "#34d399" : tx.receipt_sent === false ? "#fbbf24" : theme.text.muted,
                                 },
@@ -489,51 +665,27 @@ export default function PosTransactionsPage() {
                                 </div>
                               ))}
                             </div>
-
-                            {/* Resend button */}
                             {(canResend || tx.receipt_sent === true) && (
                               <div onClick={e => e.stopPropagation()}>
                                 {tx.receipt_sent === true ? (
                                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10 }}>
                                     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                                       <span>📱</span>
-                                      <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>
-                                        Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong>
-                                      </span>
+                                      <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong></span>
                                     </div>
-                                    <button
-                                      onClick={() => handleResend(tx)}
-                                      disabled={isSending}
-                                      style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1 }}>
+                                    <button onClick={() => handleResend(tx)} disabled={isSending} style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1 }}>
                                       {isSending ? "Sending..." : "Resend"}
                                     </button>
                                   </div>
                                 ) : (
-                                  <button
-                                    onClick={() => handleResend(tx)}
-                                    disabled={isSending}
-                                    style={{
-                                      width: "100%", padding: "12px 16px",
-                                      background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
-                                      border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
-                                      borderRadius: 10,
-                                      color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan,
-                                      fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
-                                      cursor: isSending ? "not-allowed" : "pointer",
-                                      opacity: isSending ? 0.6 : 1,
-                                      display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-                                    }}>
+                                  <button onClick={() => handleResend(tx)} disabled={isSending} style={{ width: "100%", padding: "12px 16px", background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)", border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`, borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
                                     {isSending
                                       ? <><span style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
-                                      : tx.receipt_sent === false
-                                        ? `📵 Retry Receipt → ${phone}`
-                                        : `📄 Send Receipt → ${phone}`}
+                                      : tx.receipt_sent === false ? `📵 Retry Receipt → ${phone}` : `📄 Send Receipt → ${phone}`}
                                   </button>
                                 )}
                               </div>
                             )}
-
-                            {/* No phone on file */}
                             {!phone && (
                               <div style={{ padding: "10px 14px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
                                 No phone number recorded — receipt cannot be sent

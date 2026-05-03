@@ -5,7 +5,9 @@ import { useState, useEffect, useCallback } from "react";
 import { useLocation } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useNetwork } from "../context/NetworkContext";
 import { supabase } from "../lib/supabase";
+import { getQueue } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -38,6 +40,7 @@ type ActiveTab = "stock" | "agents";
 export default function PosShopInfo() {
   const { shop } = useShopAuth();
   const { theme } = useTheme();
+  const { pendingCount } = useNetwork();
   const location = useLocation();
   const width = useWindowWidth();
   const isMobile = width < 640;
@@ -57,6 +60,15 @@ export default function PosShopInfo() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Offline queue
+  const [queuedCount, setQueuedCount] = useState(0);
+  const [queuedTotal, setQueuedTotal] = useState(0);
+  useEffect(() => {
+    const q = getQueue();
+    setQueuedCount(q.length);
+    setQueuedTotal(q.reduce((s, sale) => s + sale.grandTotal, 0));
+  }, [pendingCount]);
+
   // Today's stats
   const [todaySales,   setTodaySales]   = useState(0);
   const [todayRevenue, setTodayRevenue] = useState(0);
@@ -65,8 +77,34 @@ export default function PosShopInfo() {
   const [statsLoading, setStatsLoading] = useState(true);
 
   // ── fetch stock + agents ──────────────────────────────────────────────
+  const cacheKey = shop ? `pos_cache_${shop.id}` : null;
+
+  // Load from cache first so offline visits show real data immediately
+  useEffect(() => {
+    if (!cacheKey) return;
+    try {
+      const raw = localStorage.getItem(cacheKey);
+      if (!raw) return;
+      const { products, agents: cachedAgents } = JSON.parse(raw);
+      if (products?.length) {
+        setStock(products.map((a: any) => ({
+          id: a.id, allocated: a.allocated, remaining: a.remaining,
+          product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
+        })));
+      }
+      if (cachedAgents?.length) {
+        setAgents(cachedAgents.map((a: any) => ({
+          id: a.id, pin: a.pin, active: a.active,
+          agent: { id: a.agent_id, name: a.name, agent_id: a.agent_code, avatar: a.avatar },
+        })));
+      }
+    } catch {}
+  }, [cacheKey]);
+
   const fetchInfo = useCallback(async () => {
     if (!shop) return;
+    // When offline use cached data already loaded above; skip network
+    if (!navigator.onLine) { setLoading(false); return; }
     setLoading(true);
     try {
       const [allocRes, shopAgentsRaw] = await Promise.all([
@@ -145,6 +183,7 @@ export default function PosShopInfo() {
   // ── fetch today's stats ───────────────────────────────────────────────
   const fetchStats = useCallback(async () => {
     if (!shop) return;
+    if (!navigator.onLine) { setStatsLoading(false); return; }
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const { data } = await supabase.from("shop_transactions")
       .select("amount, cash_amount, mpesa_amount")
@@ -203,16 +242,19 @@ export default function PosShopInfo() {
             <div style={{ width: 20, height: 20, border: "3px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: queuedCount > 0 ? `repeat(${isMobile ? 2 : 5},1fr)` : "repeat(4,1fr)", gap: 8 }}>
             {[
-              { label: "Sales",   value: String(todaySales), color: theme.text.primary, icon: "🧾", sub: "transactions" },
-              { label: "Revenue", value: fmt(todayRevenue),  color: theme.accent.gold,  icon: "💰", sub: "total earned"  },
-              { label: "Cash",    value: fmt(todayCash),     color: "#34d399",           icon: "💵", sub: "cash"          },
-              { label: "M-Pesa",  value: fmt(todayMpesa),    color: "#60a5fa",           icon: "📱", sub: "mobile"        },
-            ].map(({ label, value, color, icon, sub }) => (
-              <div key={label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+              { label: "Sales",   value: String(todaySales), color: theme.text.primary, icon: "🧾", sub: "transactions", queued: false },
+              { label: "Revenue", value: fmt(todayRevenue),  color: theme.accent.gold,  icon: "💰", sub: "total earned",  queued: false },
+              { label: "Cash",    value: fmt(todayCash),     color: "#34d399",           icon: "💵", sub: "cash",          queued: false },
+              { label: "M-Pesa",  value: fmt(todayMpesa),    color: "#60a5fa",           icon: "📱", sub: "mobile",        queued: false },
+              ...(queuedCount > 0
+                ? [{ label: "Queued", value: String(queuedCount), color: "#fbbf24", icon: "⏳", sub: fmt(queuedTotal), queued: true }]
+                : []),
+            ].map(({ label, value, color, icon, sub, queued }) => (
+              <div key={label} style={{ background: queued ? "rgba(251,191,36,0.06)" : theme.bg.card, border: `1px solid ${queued ? "rgba(251,191,36,0.3)" : theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
                 <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</div>
+                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: queued ? "#fbbf24" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>{label}</div>
                   <span style={{ fontSize: 12, opacity: 0.5 }}>{icon}</span>
                 </div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 14 : 17, color, lineHeight: 1.1 }}>{value}</div>
