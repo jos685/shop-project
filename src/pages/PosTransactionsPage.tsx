@@ -87,7 +87,7 @@ export default function PosTransactionsPage() {
   const [offset, setOffset]             = useState(0);
   const [filter, setFilter]             = useState<DateFilter>("today");
   const [search, setSearch]             = useState("");
-  const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
+  const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split" | "credit">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
@@ -149,7 +149,7 @@ export default function PosTransactionsPage() {
       mpesa_amount:   t.mpesa_amount,
       mpesa_ref:      t.mpesa_ref ?? null,
       created_at:     t.created_at,
-      product_name:   t.status === "credit_partial" && !t.product_id ? "Credit Sale Payment" : (existingProductMap[t.product_id]?.name ?? "—"),
+      product_name:   t.status === "credit_partial" ? "Credit Sale (Partial Payment)" : t.status === "credit" ? "Credit Sale (Unpaid)" : (existingProductMap[t.product_id]?.name ?? "—"),
       product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
       seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
@@ -259,14 +259,17 @@ export default function PosTransactionsPage() {
     }
   }
 
-  const methodBadge = (method: string) => {
+  const methodBadge = (method: string, status?: string | null) => {
+    if (status === "credit" || status === "credit_partial") return { icon: "📝", color: "#c084fc", label: "Credit" };
     if (method === "cash")  return { icon: "💵", color: "#34d399", label: "Cash"   };
     if (method === "mpesa") return { icon: "📱", color: "#60a5fa", label: "M-Pesa" };
     return                         { icon: "⚡", color: "#fbbf24", label: "Split"  };
   };
 
   const displayed = transactions.filter(tx => {
-    const matchesMethod = methodFilter === "all" || tx.payment_method === methodFilter;
+    const isCredit = tx.status === "credit" || tx.status === "credit_partial";
+    const matchesMethod = methodFilter === "all"
+      || (methodFilter === "credit" ? isCredit : (tx.payment_method === methodFilter && !isCredit));
     const q = search.toLowerCase();
     const matchesSearch = !q
       || (tx.product_name   ?? "").toLowerCase().includes(q)
@@ -403,6 +406,7 @@ export default function PosTransactionsPage() {
             <option value="cash">Cash</option>
             <option value="mpesa">M-Pesa</option>
             <option value="split">Split</option>
+            <option value="credit">Credit</option>
           </select>
         </div>
 
@@ -538,9 +542,9 @@ export default function PosTransactionsPage() {
                     const isMulti  = group.items.length > 1;
                     const isLast   = gi === arr.length - 1;
                     const isOpen   = expanded === group.key;
-                    const badge    = methodBadge(group.payment_method);
+                    const isCredit = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
+                    const badge    = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
                     const time     = new Date(group.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
-                    const isCredit = group.items.some(t => t.status === "credit_partial");
 
                     if (isMulti) {
                       const label = `${group.items[0].product_name ?? "Item"} +${group.items.length - 1} more`;
@@ -559,7 +563,7 @@ export default function PosTransactionsPage() {
                                 </span>
                                 {isCredit && (
                                   <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 8px" }}>
-                                    📝 Credit · Partial Payment
+                                    {group.items.some(t => t.status === "credit_partial") ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
                                   </span>
                                 )}
                               </div>
@@ -613,10 +617,10 @@ export default function PosTransactionsPage() {
                             <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
                             <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.seller_name} · {time}</div>
                             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
-                            {tx.status === "credit_partial" && (
+                            {(tx.status === "credit_partial" || tx.status === "credit") && (
                               <div style={{ marginTop: 5 }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 8px" }}>
-                                  📝 Credit · Partial Payment
+                                  {tx.status === "credit_partial" ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
                                 </span>
                               </div>
                             )}
@@ -640,7 +644,8 @@ export default function PosTransactionsPage() {
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               {([
                                 { label: "Transaction ID", value: "TXN-" + tx.id.slice(0, 8).toUpperCase(), full: true, mono: true },
-                                ...(tx.status === "credit_partial" ? [{ label: "Sale Type", value: "Credit Sale · Upfront Payment", full: true, color: "#c084fc" }] : []),
+                                ...(tx.status === "credit_partial" ? [{ label: "Sale Type", value: "Credit Sale · Partial Payment", full: true, color: "#c084fc" }] : []),
+                                ...(tx.status === "credit" ? [{ label: "Sale Type", value: "Credit Sale · No Payment Yet", full: true, color: "#c084fc" }] : []),
                                 { label: "Product",    value: tx.product_name ?? "—" },
                                 { label: "SKU",        value: tx.product_sku  || "—", mono: true },
                                 { label: "Unit Price", value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },

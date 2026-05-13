@@ -415,6 +415,7 @@ export default function PosScan() {
 
     setProcessing(true); setError("");
 
+    try {
     // Deduct stock for every item regardless of payment method.
     // Track successfully deducted items so we can roll back on partial failure.
     const deducted: { id: string; quantity: number; name: string }[] = [];
@@ -424,14 +425,10 @@ export default function PosScan() {
         p_quantity: item.quantity,
       });
       if (stockErr) {
-        // Roll back already-deducted items
-        for (const d of deducted) {
-          await supabase.rpc("deduct_shop_stock", {
-            p_shop_allocation_id: d.id,
-            p_quantity: -d.quantity,
-          });
-        }
-        setProcessing(false);
+        // Best-effort rollback in parallel
+        Promise.all(deducted.map(d =>
+          supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
+        )).catch(() => {});
         setError(stockErr.message.includes("Insufficient")
           ? `Not enough stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`
           : `Failed to deduct stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`);
@@ -472,18 +469,18 @@ export default function PosScan() {
         .single();
 
       if (creditErr) {
-        // Roll back stock deductions since the credit record failed
-        for (const d of deducted) {
-          await supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity });
-        }
-        setProcessing(false);
-        setError("Failed to record credit sale. Stock has been restored — please try again.");
+        console.error("shop_credit_sales insert error:", creditErr);
+        // Best-effort rollback — run in parallel so nothing blocks setProcessing
+        Promise.all(deducted.map(d =>
+          supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
+        )).catch(() => {});
+        setError(`Credit sale failed: ${creditErr.message || creditErr.code || "unknown error"}`);
         return;
       }
 
-      // Record the initial payment as a history entry if one was made
+      // Record initial payment (if any) into credit_payments
       if (initPaid > 0 && creditData?.id) {
-        await supabase.from("shop_credit_payments").insert({
+        supabase.from("shop_credit_payments").insert({
           credit_sale_id: creditData.id,
           shop_id:        shop?.id,
           owner_id:       shop?.owner_id,
@@ -491,29 +488,31 @@ export default function PosScan() {
           payment_method: initialPayMethod,
           mpesa_ref:      null,
         });
-
-        // Record a single summary row in shop_transactions for the upfront payment.
-        // We use null product_id so the transactions page shows it as one "Credit Sale Payment"
-        // entry rather than splitting the amount proportionally across cart items.
-        await supabase.from("shop_transactions").insert({
-          shop_id:           shop?.id,
-          owner_id:          shop?.owner_id,
-          seller_agent_id:   verifiedAgent.agent_id,
-          product_id:        null,
-          quantity:          cart.reduce((s, i) => s + i.quantity, 0),
-          amount:            initPaid,
-          customer_phone:    customerPhone.trim(),
-          payment_method:    initialPayMethod,
-          cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
-          mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
-          mpesa_ref:         null,
-          status:            "credit_partial",
-          unit_price:        null,
-          base_price:        null,
-          commission_rate:   0,
-          commission_earned: 0,
-        });
       }
+
+      // Always record a row in shop_transactions so the sale is visible in the transactions page.
+      // amount = what was actually paid upfront (0 if no upfront payment).
+      // status = "credit_partial" (some paid), "credit" (nothing paid yet), or "ok" (fully paid).
+      const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : initPaid > 0 ? "credit_partial" : "credit";
+      const { error: txCreditErr } = await supabase.from("shop_transactions").insert({
+        shop_id:           shop?.id,
+        owner_id:          shop?.owner_id,
+        seller_agent_id:   verifiedAgent.agent_id,
+        product_id:        cart[0].allocation.product.id,
+        quantity:          cart.reduce((s, i) => s + i.quantity, 0),
+        amount:            initPaid,
+        customer_phone:    customerPhone.trim(),
+        payment_method:    initPaid > 0 ? initialPayMethod : "cash",
+        cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
+        mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
+        mpesa_ref:         null,
+        status:            txStatus,
+        unit_price:        cart[0].allocation.product.price,
+        base_price:        cart[0].allocation.product.price,
+        commission_rate:   0,
+        commission_earned: 0,
+      });
+      if (txCreditErr) console.error("credit transaction record error:", txCreditErr);
 
       setSavedBatchRef((creditData?.id ?? "").slice(0, 8).toUpperCase());
       setSelectedAgent(verifiedAgent);
@@ -585,11 +584,9 @@ export default function PosScan() {
 
     const { data, error: txErr } = await supabase.from("shop_transactions").insert(txRows).select();
     if (txErr) {
-      // Roll back all stock deductions since the transaction record failed
-      for (const d of deducted) {
-        await supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity });
-      }
-      setProcessing(false);
+      Promise.all(deducted.map(d =>
+        supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
+      )).catch(() => {});
       setError("Transaction failed. Stock has been restored — please try again.");
       return;
     }
@@ -621,6 +618,12 @@ export default function PosScan() {
       }).then(({ data: rd, error: re }) => {
         setReceiptStatus((re || !(rd as any)?.sent) ? "failed" : "sent");
       });
+    }
+    } catch (err) {
+      console.error("handleSubmitSale error:", err);
+      setError("An unexpected error occurred. Please try again.");
+    } finally {
+      setProcessing(false);
     }
   };
 
@@ -1132,6 +1135,7 @@ export default function PosScan() {
 
             {/* RIGHT COLUMN — Verify method + agent + PIN */}
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+              {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px" }}>⚠ {error}</div>}
               {/* Method toggle */}
               <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
                 {([{ key: "badge", label: "📛 Scan Badge" }, { key: "pin", label: "🔑 Enter PIN" }] as const).map(({ key, label }) => (
@@ -1209,12 +1213,13 @@ export default function PosScan() {
                           <button key={k} disabled={!k || processing || pinIsLocked}
                             onClick={() => {
                               if (pinIsLocked) return;
-                              if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); }
+                              if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
                               else if (k && pin.length < 4) {
+                                setError("");
                                 const newPin = pin + k;
                                 setPin(newPin);
                                 if (newPin.length === 4 && selectedAgent) {
-                                  if (newPin !== selectedAgent.pin) {
+                                  if (newPin !== String(selectedAgent.pin)) {
                                     const next = pinFails + 1;
                                     setPinFails(next);
                                     if (next >= PIN_MAX_FAILS) {
