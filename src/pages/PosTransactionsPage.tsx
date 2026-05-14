@@ -19,8 +19,10 @@ interface LocalTransaction {
   created_at: string;
   product_name: string | null;
   product_sku: string | null;
+  product_id: string | null;
   seller_name: string | null;
   seller_code: string | null;
+  seller_agent_id: string | null;
   customer_phone: string | null;
   unit_price: number | null;
   receipt_sent: boolean | null;
@@ -36,6 +38,28 @@ interface SaleGroup {
   status: string | null;
   items: LocalTransaction[];
   total: number;
+}
+
+interface TransactionReturn {
+  id: string;
+  original_transaction_id: string;
+  product_id: string | null;
+  product_name: string;
+  quantity_returned: number;
+  unit_price: number;
+  amount_refunded: number;
+  reason: string;
+  created_at: string;
+}
+
+interface ReturnItem {
+  txn_id: string;
+  product_id: string | null;
+  product_name: string;
+  original_qty: number;
+  already_returned: number;
+  unit_price: number;
+  return_qty: number;
 }
 
 function groupTransactions(txns: LocalTransaction[]): SaleGroup[] {
@@ -91,6 +115,12 @@ export default function PosTransactionsPage() {
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
+  const [returnsMap,       setReturnsMap]       = useState<Record<string, TransactionReturn[]>>({});
+  const [returnModal,      setReturnModal]      = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
+  const [returnReason,     setReturnReason]     = useState("");
+  const [returnProcessing, setReturnProcessing] = useState(false);
+  const [returnError,      setReturnError]      = useState("");
+  const [returnSuccess,    setReturnSuccess]    = useState(false);
 
   // Reload queued sales whenever the queue changes
   useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
@@ -108,6 +138,145 @@ export default function PosTransactionsPage() {
       .single()
       .then(({ data }) => { if (data?.business_name) setBusinessName(data.business_name); });
   }, [shop?.owner_id]);
+
+  // ── Fetch returns for loaded transactions ────────────────────────────
+  useEffect(() => {
+    if (!shop || transactions.length === 0) return;
+    const ids = transactions.map(t => t.id);
+    supabase
+      .from("transaction_returns")
+      .select("id, original_transaction_id, product_id, product_name, quantity_returned, unit_price, amount_refunded, reason, created_at")
+      .in("original_transaction_id", ids)
+      .then(({ data }) => {
+        const map: Record<string, TransactionReturn[]> = {};
+        for (const r of data ?? []) {
+          if (!map[r.original_transaction_id]) map[r.original_transaction_id] = [];
+          map[r.original_transaction_id].push(r as TransactionReturn);
+        }
+        setReturnsMap(map);
+      });
+  }, [transactions, shop]);
+
+  // ── Return helpers ───────────────────────────────────────────────────
+  function getReturnStatus(group: SaleGroup): "none" | "partial" | "full" {
+    const returnable = group.items.filter(t => t.product_id && t.unit_price != null);
+    if (returnable.length === 0) return "none";
+    let fullyReturned = 0;
+    let hasAny = false;
+    for (const tx of returnable) {
+      const rets = returnsMap[tx.id] ?? [];
+      const total = rets.reduce((s, r) => s + r.quantity_returned, 0);
+      if (total > 0) hasAny = true;
+      if (total >= tx.quantity) fullyReturned++;
+    }
+    if (!hasAny) return "none";
+    return fullyReturned === returnable.length ? "full" : "partial";
+  }
+
+  async function openReturnModal(group: SaleGroup) {
+    const txnIds = group.items.map(t => t.id);
+    const { data } = await supabase
+      .from("transaction_returns")
+      .select("id, original_transaction_id, product_id, product_name, quantity_returned, unit_price, amount_refunded, reason, created_at")
+      .in("original_transaction_id", txnIds);
+    const existing = (data ?? []) as TransactionReturn[];
+
+    const items: ReturnItem[] = group.items
+      .filter(tx => tx.product_id && tx.unit_price != null)
+      .map(tx => {
+        const alreadyReturned = existing
+          .filter(r => r.original_transaction_id === tx.id)
+          .reduce((s, r) => s + r.quantity_returned, 0);
+        return {
+          txn_id:           tx.id,
+          product_id:       tx.product_id,
+          product_name:     tx.product_name ?? "Product",
+          original_qty:     tx.quantity,
+          already_returned: alreadyReturned,
+          unit_price:       tx.unit_price!,
+          return_qty:       0,
+        };
+      })
+      .filter(item => item.original_qty - item.already_returned > 0);
+
+    setReturnModal({ group, items });
+    setReturnReason("");
+    setReturnError("");
+    setReturnSuccess(false);
+  }
+
+  function updateReturnQty(txn_id: string, qty: number) {
+    setReturnModal(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        items: prev.items.map(item =>
+          item.txn_id === txn_id
+            ? { ...item, return_qty: Math.max(0, Math.min(qty, item.original_qty - item.already_returned)) }
+            : item
+        ),
+      };
+    });
+  }
+
+  async function handleReturn() {
+    if (!returnModal || !shop) return;
+    if (!returnReason.trim()) { setReturnError("Please provide a reason for the return."); return; }
+    const toReturn = returnModal.items.filter(i => i.return_qty > 0);
+    if (toReturn.length === 0) { setReturnError("Select at least one item to return (qty > 0)."); return; }
+
+    setReturnProcessing(true);
+    setReturnError("");
+    try {
+      const firstItem = returnModal.group.items[0];
+      const rows = toReturn.map(item => ({
+        owner_id:                shop.owner_id,
+        source:                  "shop",
+        original_transaction_id: item.txn_id,
+        shop_id:                 shop.id,
+        agent_id:                firstItem.seller_agent_id ?? null,
+        product_id:              item.product_id,
+        product_name:            item.product_name,
+        quantity_returned:       item.return_qty,
+        unit_price:              item.unit_price,
+        amount_refunded:         item.unit_price * item.return_qty,
+        reason:                  returnReason.trim(),
+        actor_name:              firstItem.seller_name ?? null,
+        actor_code:              firstItem.seller_code ?? null,
+      }));
+      const { error } = await supabase.from("transaction_returns").insert(rows);
+      if (error) { setReturnError(error.message); setReturnProcessing(false); return; }
+
+      // Update local returnsMap
+      setReturnsMap(prev => {
+        const next = { ...prev };
+        for (const item of toReturn) {
+          if (!next[item.txn_id]) next[item.txn_id] = [];
+          next[item.txn_id] = [...next[item.txn_id], {
+            id: crypto.randomUUID(),
+            original_transaction_id: item.txn_id,
+            product_id:       item.product_id,
+            product_name:     item.product_name,
+            quantity_returned: item.return_qty,
+            unit_price:       item.unit_price,
+            amount_refunded:  item.unit_price * item.return_qty,
+            reason:           returnReason.trim(),
+            created_at:       new Date().toISOString(),
+          }];
+        }
+        return next;
+      });
+      setReturnSuccess(true);
+      setTimeout(() => {
+        setReturnModal(null);
+        setReturnSuccess(false);
+      }, 1500);
+    } catch (e: any) {
+      setReturnError(e.message ?? "Unknown error");
+    } finally {
+      setReturnProcessing(false);
+    }
+  }
 
   const enrichRows = useCallback(async (
     txData: any[],
@@ -151,8 +320,10 @@ export default function PosTransactionsPage() {
       created_at:     t.created_at,
       product_name:   t.status === "credit_partial" ? "Credit Sale (Partial Payment)" : t.status === "credit" ? "Credit Sale (Unpaid)" : (existingProductMap[t.product_id]?.name ?? "—"),
       product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
+      product_id:     t.product_id ?? null,
       seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
+      seller_agent_id: t.seller_agent_id ?? null,
       customer_phone: t.customer_phone ?? null,
       unit_price:     t.unit_price ?? null,
       receipt_sent:   t.receipt_sent ?? null,
@@ -285,6 +456,26 @@ export default function PosTransactionsPage() {
   const totalMpesa    = displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
   const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
 
+  const totalRefunded = displayed.reduce((s, t) => {
+    return s + (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
+  }, 0);
+  const cashRefunded = displayed.reduce((s, t) => {
+    const refunded = (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
+    if (!refunded) return s;
+    if (t.payment_method === "cash") return s + refunded;
+    if (t.payment_method === "split" && t.amount > 0)
+      return s + refunded * ((t.cash_amount ?? 0) / t.amount);
+    return s;
+  }, 0);
+  const mpesaRefunded = displayed.reduce((s, t) => {
+    const refunded = (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
+    if (!refunded) return s;
+    if (t.payment_method === "mpesa") return s + refunded;
+    if (t.payment_method === "split" && t.amount > 0)
+      return s + refunded * ((t.mpesa_amount ?? 0) / t.amount);
+    return s;
+  }, 0);
+
   // Helper: collapse multi-item queued sale to a readable label
   const queuedLabel = (q: QueuedSale) =>
     q.cart.length === 1
@@ -413,9 +604,9 @@ export default function PosTransactionsPage() {
         {/* Summary strip */}
         <div style={{ display: "grid", gridTemplateColumns: queuedSales.length > 0 ? "repeat(4,1fr)" : "repeat(3,1fr)", gap: 8 }}>
           {[
-            { label: "Total",  value: fmt(totalRevenue), color: theme.accent.gold },
-            { label: "Cash",   value: fmt(totalCash),    color: "#34d399"         },
-            { label: "M-Pesa", value: fmt(totalMpesa),   color: "#60a5fa"         },
+            { label: "Net Total", value: fmt(totalRevenue - totalRefunded), color: theme.accent.gold },
+            { label: "Cash",      value: fmt(totalCash - cashRefunded),     color: "#34d399"         },
+            { label: "M-Pesa",    value: fmt(totalMpesa - mpesaRefunded),   color: "#60a5fa"         },
             ...(queuedSales.length > 0
               ? [{ label: "Queued", value: fmt(queuedTotal), color: "#fbbf24" }]
               : []),
@@ -426,6 +617,18 @@ export default function PosTransactionsPage() {
             </div>
           ))}
         </div>
+        {totalRefunded > 0 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 14 }}>↩</span>
+              <div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", textTransform: "uppercase", letterSpacing: "0.07em" }}>Returns Deducted</div>
+                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(248,113,113,0.6)", marginTop: 1 }}>Gross sales: {fmt(totalRevenue)}</div>
+              </div>
+            </div>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#f87171" }}>-{fmt(totalRefunded)}</div>
+          </div>
+        )}
 
         {/* Queued offline sales */}
         {queuedSales.length > 0 && (
@@ -539,12 +742,13 @@ export default function PosTransactionsPage() {
                   </div>
 
                   {groupTransactions(txns).map((group, gi, arr) => {
-                    const isMulti  = group.items.length > 1;
-                    const isLast   = gi === arr.length - 1;
-                    const isOpen   = expanded === group.key;
-                    const isCredit = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
-                    const badge    = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
-                    const time     = new Date(group.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+                    const isMulti      = group.items.length > 1;
+                    const isLast       = gi === arr.length - 1;
+                    const isOpen       = expanded === group.key;
+                    const isCredit     = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
+                    const badge        = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
+                    const time         = new Date(group.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+                    const returnStatus = getReturnStatus(group);
 
                     if (isMulti) {
                       const label = `${group.items[0].product_name ?? "Item"} +${group.items.length - 1} more`;
@@ -564,6 +768,11 @@ export default function PosTransactionsPage() {
                                 {isCredit && (
                                   <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 8px" }}>
                                     {group.items.some(t => t.status === "credit_partial") ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
+                                  </span>
+                                )}
+                                {returnStatus !== "none" && (
+                                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 8px" }}>
+                                    {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
                                   </span>
                                 )}
                               </div>
@@ -591,6 +800,13 @@ export default function PosTransactionsPage() {
                                 <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Sale Total · {badge.label}</span>
                                 <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>
                               </div>
+                              {returnStatus !== "full" && (
+                                <button
+                                  onClick={e => { e.stopPropagation(); openReturnModal(group); }}
+                                  style={{ width: "100%", padding: "11px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                  ↩ Return Products
+                                </button>
+                              )}
                             </div>
                           )}
                         </div>
@@ -628,6 +844,13 @@ export default function PosTransactionsPage() {
                               <div style={{ marginTop: 5 }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 600, color: rcpt.color, background: rcpt.bg, border: `1px solid ${rcpt.border}`, borderRadius: 20, padding: "2px 8px" }}>
                                   {rcpt.label}
+                                </span>
+                              </div>
+                            )}
+                            {returnStatus !== "none" && (
+                              <div style={{ marginTop: 5 }}>
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 8px" }}>
+                                  {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
                                 </span>
                               </div>
                             )}
@@ -696,6 +919,13 @@ export default function PosTransactionsPage() {
                                 No phone number recorded — receipt cannot be sent
                               </div>
                             )}
+                            {returnStatus !== "full" && tx.product_id && (
+                              <button
+                                onClick={e => { e.stopPropagation(); openReturnModal(group); }}
+                                style={{ width: "100%", padding: "11px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                ↩ {returnStatus === "partial" ? "Return More" : "Return Product"}
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>
@@ -725,6 +955,120 @@ export default function PosTransactionsPage() {
         </div>
 
       </div>
+
+      {/* ── Return Modal ─────────────────────────────────────────────────── */}
+    {returnModal && (
+      <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "flex-end", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
+        onClick={e => { if (e.target === e.currentTarget) setReturnModal(null); }}>
+        <div style={{ width: "100%", maxHeight: "90vh", overflowY: "auto", background: theme.bg.card, borderRadius: "20px 20px 0 0", border: `1px solid ${theme.border.default}`, borderBottom: "none", padding: "20px 18px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+          {/* Modal header */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: "#f87171" }}>↩ Return Products</div>
+              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                {returnModal.group.seller_name} · {new Date(returnModal.group.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+              </div>
+            </div>
+            <button onClick={() => setReturnModal(null)} style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              ×
+            </button>
+          </div>
+
+          {/* Items */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Select items &amp; quantities to return
+            </div>
+            {returnModal.items.map(item => {
+              const max = item.original_qty - item.already_returned;
+              const refund = item.return_qty * item.unit_price;
+              return (
+                <div key={item.txn_id} style={{ background: theme.bg.input, borderRadius: 12, padding: "12px 14px", border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                        {fmt(item.unit_price)}/unit · Sold: {item.original_qty}
+                        {item.already_returned > 0 && ` · Already returned: ${item.already_returned}`}
+                        {" · Max: "}{max}
+                      </div>
+                    </div>
+                    {item.return_qty > 0 && (
+                      <div style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", flexShrink: 0 }}>
+                        -{fmt(refund)}
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Return qty:</span>
+                    <button onClick={() => updateReturnQty(item.txn_id, item.return_qty - 1)}
+                      style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      −
+                    </button>
+                    <input
+                      type="number" min={0} max={max} value={item.return_qty}
+                      onChange={e => updateReturnQty(item.txn_id, parseInt(e.target.value) || 0)}
+                      style={{ width: 54, textAlign: "center", padding: "6px 8px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, outline: "none" }}
+                    />
+                    <button onClick={() => updateReturnQty(item.txn_id, item.return_qty + 1)}
+                      style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                      +
+                    </button>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>of {max} max</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Refund summary */}
+          {returnModal.items.some(i => i.return_qty > 0) && (
+            <div style={{ padding: "12px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>Total Refund</span>
+              <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171" }}>
+                -{fmt(returnModal.items.reduce((s, i) => s + i.return_qty * i.unit_price, 0))}
+              </span>
+            </div>
+          )}
+
+          {/* Reason */}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Reason for return <span style={{ color: "#f87171" }}>*</span>
+            </div>
+            <textarea
+              placeholder="e.g. Customer changed mind, defective product, wrong item…"
+              value={returnReason}
+              onChange={e => setReturnReason(e.target.value)}
+              rows={3}
+              style={{ padding: "10px 12px", background: theme.bg.input, border: `1px solid ${returnReason.trim() ? "rgba(248,113,113,0.4)" : theme.border.default}`, borderRadius: 12, color: theme.text.primary, fontSize: 13, fontFamily: theme.font.body, resize: "vertical", outline: "none", width: "100%", boxSizing: "border-box" }}
+            />
+          </div>
+
+          {returnError && (
+            <div style={{ padding: "10px 14px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>
+              {returnError}
+            </div>
+          )}
+
+          {returnSuccess && (
+            <div style={{ padding: "10px 14px", background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10, fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", textAlign: "center" }}>
+              ✓ Return recorded successfully
+            </div>
+          )}
+
+          <button
+            onClick={handleReturn}
+            disabled={returnProcessing || returnSuccess}
+            style={{ padding: "14px 20px", background: returnSuccess ? "rgba(52,211,153,0.15)" : "rgba(248,113,113,0.15)", border: `1px solid ${returnSuccess ? "rgba(52,211,153,0.4)" : "rgba(248,113,113,0.4)"}`, borderRadius: 14, color: returnSuccess ? "#34d399" : "#f87171", fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, cursor: returnProcessing || returnSuccess ? "not-allowed" : "pointer", opacity: returnProcessing ? 0.7 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            {returnProcessing
+              ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(248,113,113,0.3)", borderTopColor: "#f87171", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Processing...</>
+              : returnSuccess ? "✓ Done" : "↩ Confirm Return"}
+          </button>
+        </div>
+      </div>
+    )}
     </div>
   );
 }
