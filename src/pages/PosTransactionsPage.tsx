@@ -28,6 +28,9 @@ interface LocalTransaction {
   receipt_sent: boolean | null;
   receipt_phone: string | null;
   status: string | null;
+  commission_rate: number | null;
+  commission_earned: number | null;
+  credit_sale_id: string | null;
 }
 
 interface SaleGroup {
@@ -59,6 +62,9 @@ interface ReturnItem {
   original_qty: number;
   already_returned: number;
   unit_price: number;
+  tx_amount: number;
+  status: string | null;
+  credit_sale_id: string | null;
   return_qty: number;
 }
 
@@ -194,6 +200,9 @@ export default function PosTransactionsPage() {
           original_qty:     tx.quantity,
           already_returned: alreadyReturned,
           unit_price:       tx.unit_price!,
+          tx_amount:        tx.amount,
+          status:           tx.status,
+          credit_sale_id:   tx.credit_sale_id ?? null,
           return_qty:       0,
         };
       })
@@ -239,7 +248,9 @@ export default function PosTransactionsPage() {
         product_name:            item.product_name,
         quantity_returned:       item.return_qty,
         unit_price:              item.unit_price,
-        amount_refunded:         item.unit_price * item.return_qty,
+        amount_refunded:         (item.status === "credit" || item.status === "credit_partial")
+          ? Math.round((item.return_qty / item.original_qty) * item.tx_amount)
+          : item.unit_price * item.return_qty,
         reason:                  returnReason.trim(),
         actor_name:              firstItem.seller_name ?? null,
         actor_code:              firstItem.seller_code ?? null,
@@ -247,21 +258,43 @@ export default function PosTransactionsPage() {
       const { error } = await supabase.from("transaction_returns").insert(rows);
       if (error) { setReturnError(error.message); setReturnProcessing(false); return; }
 
+      // Update shop_credit_sales balance for credit items so customer no longer owes for returned goods
+      const creditItems = toReturn.filter(i => (i.status === "credit" || i.status === "credit_partial") && i.credit_sale_id);
+      for (const item of creditItems) {
+        const { data: cs } = await supabase
+          .from("shop_credit_sales")
+          .select("id, amount, amount_paid")
+          .eq("id", item.credit_sale_id!)
+          .single();
+        if (cs) {
+          const returnedFullValue = item.return_qty * item.unit_price;
+          const newTotal  = Math.max(0, cs.amount - returnedFullValue);
+          const newPaid   = Math.min(cs.amount_paid ?? 0, newTotal);
+          const newStatus = newTotal <= 0      ? "returned"
+                          : newPaid >= newTotal ? "paid"
+                          : newPaid > 0        ? "partial"
+                          : "pending";
+          await supabase.from("shop_credit_sales")
+            .update({ amount: newTotal, amount_paid: newPaid, status: newStatus })
+            .eq("id", cs.id);
+        }
+      }
+
       // Update local returnsMap
       setReturnsMap(prev => {
         const next = { ...prev };
         for (const item of toReturn) {
           if (!next[item.txn_id]) next[item.txn_id] = [];
           next[item.txn_id] = [...next[item.txn_id], {
-            id: crypto.randomUUID(),
+            id:                      crypto.randomUUID(),
             original_transaction_id: item.txn_id,
-            product_id:       item.product_id,
-            product_name:     item.product_name,
-            quantity_returned: item.return_qty,
-            unit_price:       item.unit_price,
-            amount_refunded:  item.unit_price * item.return_qty,
-            reason:           returnReason.trim(),
-            created_at:       new Date().toISOString(),
+            product_id:              item.product_id,
+            product_name:            item.product_name,
+            quantity_returned:       item.return_qty,
+            unit_price:              item.unit_price,
+            amount_refunded:         item.unit_price * item.return_qty,
+            reason:                  returnReason.trim(),
+            created_at:              new Date().toISOString(),
           }];
         }
         return next;
@@ -325,10 +358,13 @@ export default function PosTransactionsPage() {
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
       seller_agent_id: t.seller_agent_id ?? null,
       customer_phone: t.customer_phone ?? null,
-      unit_price:     t.unit_price ?? null,
-      receipt_sent:   t.receipt_sent ?? null,
-      receipt_phone:  t.receipt_phone ?? null,
-      status:         t.status ?? null,
+      unit_price:        t.unit_price ?? null,
+      receipt_sent:      t.receipt_sent ?? null,
+      receipt_phone:     t.receipt_phone ?? null,
+      status:            t.status ?? null,
+      commission_rate:   t.commission_rate ?? null,
+      commission_earned: t.commission_earned ?? null,
+      credit_sale_id:    t.credit_sale_id ?? null,
     }));
   }, [shop]);
 
@@ -341,7 +377,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(0, PAGE_SIZE - 1);
@@ -365,7 +401,7 @@ export default function PosTransactionsPage() {
     const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status")
+      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
       .eq("shop_id", shop.id)
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
@@ -439,8 +475,10 @@ export default function PosTransactionsPage() {
 
   const displayed = transactions.filter(tx => {
     const isCredit = tx.status === "credit" || tx.status === "credit_partial";
+    const isUnpaidCredit = tx.status === "credit";
     const matchesMethod = methodFilter === "all"
-      || (methodFilter === "credit" ? isCredit : (tx.payment_method === methodFilter && !isCredit));
+      ? !isUnpaidCredit
+      : (methodFilter === "credit" ? isCredit : (tx.payment_method === methodFilter && !isCredit));
     const q = search.toLowerCase();
     const matchesSearch = !q
       || (tx.product_name   ?? "").toLowerCase().includes(q)
@@ -456,11 +494,13 @@ export default function PosTransactionsPage() {
   const totalMpesa    = displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
   const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
 
-  const totalRefunded = displayed.reduce((s, t) => {
-    return s + (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
-  }, 0);
+  // Cap each return deduction at t.amount — credit sales (amount=0) contribute nothing to revenue
+  const effectiveRefund = (t: LocalTransaction) =>
+    (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
+
+  const totalRefunded = displayed.reduce((s, t) => s + effectiveRefund(t), 0);
   const cashRefunded = displayed.reduce((s, t) => {
-    const refunded = (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
+    const refunded = effectiveRefund(t);
     if (!refunded) return s;
     if (t.payment_method === "cash") return s + refunded;
     if (t.payment_method === "split" && t.amount > 0)
@@ -468,13 +508,21 @@ export default function PosTransactionsPage() {
     return s;
   }, 0);
   const mpesaRefunded = displayed.reduce((s, t) => {
-    const refunded = (returnsMap[t.id] ?? []).reduce((rs, r) => rs + r.amount_refunded, 0);
+    const refunded = effectiveRefund(t);
     if (!refunded) return s;
     if (t.payment_method === "mpesa") return s + refunded;
     if (t.payment_method === "split" && t.amount > 0)
       return s + refunded * ((t.mpesa_amount ?? 0) / t.amount);
     return s;
   }, 0);
+
+  // Derive clawback from return qty vs original commission — no DB column needed
+  const calcClawback = (t: LocalTransaction) => {
+    if (!t.commission_earned || !t.quantity) return 0;
+    const returnedQty = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
+    return returnedQty > 0 ? Math.round((returnedQty / t.quantity) * t.commission_earned) : 0;
+  };
+  const totalCommissionClawed = displayed.reduce((s, t) => s + calcClawback(t), 0);
 
   // Helper: collapse multi-item queued sale to a readable label
   const queuedLabel = (q: QueuedSale) =>
@@ -629,6 +677,18 @@ export default function PosTransactionsPage() {
             <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#f87171" }}>-{fmt(totalRefunded)}</div>
           </div>
         )}
+        {totalCommissionClawed > 0 && (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(251,146,60,0.05)", border: "1px solid rgba(251,146,60,0.2)", borderRadius: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 14 }}>💸</span>
+              <div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fb923c", textTransform: "uppercase", letterSpacing: "0.07em" }}>Commission Clawed Back</div>
+                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.6)", marginTop: 1 }}>Cancelled or reduced due to returns</div>
+              </div>
+            </div>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#fb923c" }}>-{fmt(totalCommissionClawed)}</div>
+          </div>
+        )}
 
         {/* Queued offline sales */}
         {queuedSales.length > 0 && (
@@ -747,20 +807,19 @@ export default function PosTransactionsPage() {
                     const isOpen       = expanded === group.key;
                     const isCredit     = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
                     const badge        = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
-                    const time         = new Date(group.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
                     const returnStatus = getReturnStatus(group);
 
                     if (isMulti) {
                       const label = `${group.items[0].product_name ?? "Item"} +${group.items.length - 1} more`;
                       return (
-                        <div key={group.key}>
-                          <div className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
+                        <div key={group.key} className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ cursor: "pointer" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
                             <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
                               🛒
                             </div>
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
-                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{group.seller_name} · {time}</div>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{group.seller_name} · {new Date(group.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
                               <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.cyan, background: "rgba(6,182,212,0.10)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 20, padding: "2px 8px" }}>
                                   {group.items.length} items
@@ -784,7 +843,11 @@ export default function PosTransactionsPage() {
                             </div>
                           </div>
                           {isOpen && (
-                            <div className="expand-panel" style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+                            <div className="expand-panel" onClick={e => e.stopPropagation()} style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+                              <div style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px" }}>
+                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Date &amp; Time</div>
+                                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: theme.font.mono, color: theme.text.primary }}>{new Date(group.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
+                              </div>
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
                               {group.items.map(tx => (
                                 <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
@@ -800,6 +863,32 @@ export default function PosTransactionsPage() {
                                 <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Sale Total · {badge.label}</span>
                                 <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>
                               </div>
+                              {/* Group commission summary */}
+                              {(() => {
+                                const groupCommissionEarned = group.items.reduce((s, t) => s + (t.commission_earned ?? 0), 0);
+                                const groupCommissionClawed = group.items.reduce((s, t) => s + calcClawback(t), 0);
+                                if (groupCommissionEarned === 0) return null;
+                                return (
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: groupCommissionClawed > 0 ? "rgba(251,146,60,0.06)" : "rgba(52,211,153,0.06)", border: `1px solid ${groupCommissionClawed > 0 ? "rgba(251,146,60,0.25)" : "rgba(52,211,153,0.2)"}`, borderRadius: 10 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span style={{ fontSize: 14 }}>{groupCommissionClawed > 0 ? "💸" : "✨"}</span>
+                                      <div>
+                                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: groupCommissionClawed > 0 ? "#fb923c" : "#34d399", fontWeight: 700 }}>
+                                          Commission {groupCommissionClawed > 0 ? (groupCommissionClawed >= groupCommissionEarned ? "Cancelled" : "Reduced") : "Earned"}
+                                        </div>
+                                        {groupCommissionClawed > 0 && (
+                                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.65)", marginTop: 1 }}>
+                                            Was {fmt(groupCommissionEarned)} · -{fmt(groupCommissionClawed)} clawed back
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: groupCommissionClawed > 0 ? "#fb923c" : "#34d399" }}>
+                                      {groupCommissionClawed > 0 ? fmt(groupCommissionEarned - groupCommissionClawed) : fmt(groupCommissionEarned)}
+                                    </div>
+                                  </div>
+                                );
+                              })()}
                               {returnStatus !== "full" && (
                                 <button
                                   onClick={e => { e.stopPropagation(); openReturnModal(group); }}
@@ -821,17 +910,14 @@ export default function PosTransactionsPage() {
                     const canResend = !!phone && tx.receipt_sent !== true;
 
                     return (
-                      <div key={group.key}>
-                        <div
-                          className="tx-row"
-                          onClick={() => setExpanded(isOpen ? null : group.key)}
-                          style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
+                      <div key={group.key} className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ cursor: "pointer" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
                           <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
                             {badge.icon}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
-                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.seller_name} · {time}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.seller_name} · {new Date(tx.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
                             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
                             {(tx.status === "credit_partial" || tx.status === "credit") && (
                               <div style={{ marginTop: 5 }}>
@@ -863,10 +949,11 @@ export default function PosTransactionsPage() {
                         </div>
 
                         {isOpen && (
-                          <div className="expand-panel" style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+                          <div className="expand-panel" onClick={e => e.stopPropagation()} style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
                             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                               {([
                                 { label: "Transaction ID", value: "TXN-" + tx.id.slice(0, 8).toUpperCase(), full: true, mono: true },
+                                { label: "Date & Time", value: new Date(tx.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }), full: true, mono: true },
                                 ...(tx.status === "credit_partial" ? [{ label: "Sale Type", value: "Credit Sale · Partial Payment", full: true, color: "#c084fc" }] : []),
                                 ...(tx.status === "credit" ? [{ label: "Sale Type", value: "Credit Sale · No Payment Yet", full: true, color: "#c084fc" }] : []),
                                 { label: "Product",    value: tx.product_name ?? "—" },
@@ -874,6 +961,7 @@ export default function PosTransactionsPage() {
                                 { label: "Unit Price", value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },
                                 { label: "Qty",        value: String(tx.quantity) },
                                 { label: "Total",      value: fmt(tx.amount), color: theme.accent.gold },
+                                ...(tx.commission_earned && tx.commission_earned > 0 ? [{ label: "Commission Earned", value: fmt(tx.commission_earned), color: "#34d399" }] : []),
                                 { label: "Payment",    value: tx.payment_method === "mpesa" ? "📱 M-Pesa" : tx.payment_method === "split" ? "⚡ Split" : "💵 Cash" },
                                 ...(tx.cash_amount  && tx.cash_amount  > 0 ? [{ label: "Cash",       value: fmt(tx.cash_amount)  }] : []),
                                 ...(tx.mpesa_amount && tx.mpesa_amount > 0 ? [{ label: "M-Pesa",     value: fmt(tx.mpesa_amount) }] : []),
@@ -893,6 +981,28 @@ export default function PosTransactionsPage() {
                                 </div>
                               ))}
                             </div>
+                            {/* Commission clawback detail */}
+                            {(() => {
+                              const totalClawed = calcClawback(tx);
+                              if (totalClawed === 0) return null;
+                              const isFullReturn = returnStatus === "full";
+                              return (
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.25)", borderRadius: 10 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span style={{ fontSize: 16 }}>💸</span>
+                                    <div>
+                                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fb923c", fontWeight: 700 }}>
+                                        Commission {isFullReturn ? "Cancelled" : "Reduced"}
+                                      </div>
+                                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.65)", marginTop: 1 }}>
+                                        Due to product return · was {fmt(tx.commission_earned ?? 0)}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: "#fb923c" }}>-{fmt(totalClawed)}</div>
+                                </div>
+                              );
+                            })()}
                             {(canResend || tx.receipt_sent === true) && (
                               <div onClick={e => e.stopPropagation()}>
                                 {tx.receipt_sent === true ? (
@@ -1022,15 +1132,32 @@ export default function PosTransactionsPage() {
             })}
           </div>
 
-          {/* Refund summary */}
-          {returnModal.items.some(i => i.return_qty > 0) && (
-            <div style={{ padding: "12px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>Total Refund</span>
-              <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171" }}>
-                -{fmt(returnModal.items.reduce((s, i) => s + i.return_qty * i.unit_price, 0))}
-              </span>
-            </div>
-          )}
+          {/* Refund + commission impact summary */}
+          {returnModal.items.some(i => i.return_qty > 0) && (() => {
+            const totalRefundAmt = returnModal.items.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
+            const commissionImpact = returnModal.items.reduce((s, item) => {
+              const origTx = returnModal.group.items.find(t => t.id === item.txn_id);
+              if (!origTx?.commission_earned || !origTx.commission_earned || !item.original_qty) return s;
+              return s + Math.round((item.return_qty / item.original_qty) * origTx.commission_earned);
+            }, 0);
+            return (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ padding: "12px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>Total Refund</span>
+                  <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171" }}>-{fmt(totalRefundAmt)}</span>
+                </div>
+                {commissionImpact > 0 && (
+                  <div style={{ padding: "10px 14px", background: "rgba(251,146,60,0.07)", border: "1px solid rgba(251,146,60,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div>
+                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fb923c", fontWeight: 700 }}>💸 Commission Impact</div>
+                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.6)", marginTop: 2 }}>Agent commission will be reduced by this amount</div>
+                    </div>
+                    <span style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: "#fb923c" }}>-{fmt(commissionImpact)}</span>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Reason */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

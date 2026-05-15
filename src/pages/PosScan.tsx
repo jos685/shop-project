@@ -74,6 +74,15 @@ export default function PosScan() {
   // checkout
   const [customerName,    setCustomerName]    = useState("");
   const [customerPhone,   setCustomerPhone]   = useState("");
+
+  // saved customer contacts
+  interface SavedCustomer { id?: string; name: string; phone: string; }
+  const customersKey = shop ? `pos_customers_${shop.id}` : null;
+  const usageKey     = shop ? `pos_customer_usage_${shop.id}` : null;
+  const [savedCustomers,   setSavedCustomers]   = useState<SavedCustomer[]>([]);
+  const [customerQuery,    setCustomerQuery]    = useState("");
+  const [showCustDropdown, setShowCustDropdown] = useState(false);
+  const [usageMap, setUsageMap] = useState<Record<string, number>>({});
   const [initialPayment,  setInitialPayment]  = useState("");
   const [initialPayMethod, setInitialPayMethod] = useState<"cash" | "mpesa">("cash");
   const [payMethod,     setPayMethod]     = useState<PayMethod>("cash");
@@ -147,6 +156,7 @@ export default function PosScan() {
   const [scanFeedback, setScanFeedback] = useState("");
   const [savedBatchRef, setSavedBatchRef] = useState("");
   const [wasQueued,    setWasQueued]    = useState(false);
+  const [saleTimestamp, setSaleTimestamp] = useState("");
   const [commissionConfig, setCommissionConfig] = useState<{ enabled: boolean; rate: number }>({ enabled: false, rate: 0 });
   const [businessName,  setBusinessName]  = useState("");
   const [receiptStatus, setReceiptStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
@@ -241,6 +251,76 @@ export default function PosScan() {
       }
     })();
   }, [shop, isOnline, cacheKey]);
+
+  // ── customer contacts: load from cache then Supabase ─────────────────
+  useEffect(() => {
+    if (!customersKey) return;
+    try {
+      const cached = localStorage.getItem(customersKey);
+      if (cached) setSavedCustomers(JSON.parse(cached));
+    } catch {}
+  }, [customersKey]);
+
+  useEffect(() => {
+    if (!usageKey) return;
+    try {
+      const raw = localStorage.getItem(usageKey);
+      if (raw) setUsageMap(JSON.parse(raw));
+    } catch {}
+  }, [usageKey]);
+
+  useEffect(() => {
+    if (!shop || !isOnline) return;
+    supabase
+      .from("shop_customers")
+      .select("id, name, phone")
+      .eq("shop_id", shop.id)
+      .order("name")
+      .then(({ data }) => {
+        if (!data) return;
+        setSavedCustomers(data as SavedCustomer[]);
+        if (customersKey) {
+          try { localStorage.setItem(customersKey, JSON.stringify(data)); } catch {}
+        }
+      });
+  }, [shop, isOnline, customersKey]);
+
+  const touchUsage = useCallback((phone: string) => {
+    if (!phone.trim()) return;
+    setUsageMap(prev => {
+      const next = { ...prev, [phone.trim()]: Date.now() };
+      if (usageKey) { try { localStorage.setItem(usageKey, JSON.stringify(next)); } catch {} }
+      return next;
+    });
+  }, [usageKey]);
+
+  const saveCustomer = useCallback(async (name: string, phone: string) => {
+    if (!shop || !name.trim() || !phone.trim()) return;
+    const already = savedCustomers.some(
+      c => c.phone === phone.trim() || c.name.toLowerCase() === name.trim().toLowerCase()
+    );
+    if (already) return;
+    const { data } = await supabase
+      .from("shop_customers")
+      .insert({ shop_id: shop.id, owner_id: shop.owner_id, name: name.trim(), phone: phone.trim() })
+      .select("id, name, phone")
+      .single();
+    if (data) {
+      setSavedCustomers(prev => {
+        const next = [...prev, data as SavedCustomer].sort((a, b) => a.name.localeCompare(b.name));
+        if (customersKey) { try { localStorage.setItem(customersKey, JSON.stringify(next)); } catch {} }
+        return next;
+      });
+    }
+  }, [shop, savedCustomers, customersKey]);
+
+  const filteredCustomers = (customerQuery.trim()
+    ? savedCustomers.filter(c =>
+        c.name.toLowerCase().includes(customerQuery.toLowerCase()) ||
+        c.phone.includes(customerQuery)
+      )
+    : [...savedCustomers]
+  ).sort((a, b) => (usageMap[b.phone] ?? 0) - (usageMap[a.phone] ?? 0) || a.name.localeCompare(b.name));
 
   // ── product lookup ────────────────────────────────────────────────────
   const fetchAllocationBySku = useCallback(async (sku: string): Promise<LocalAlloc | null> => {
@@ -409,6 +489,7 @@ export default function PosScan() {
       setWasQueued(true);
       setSelectedAgent(verifiedAgent);
       setSavedBatchRef("OFFLINE");
+      setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
       setStep("success");
       return;
     }
@@ -490,33 +571,37 @@ export default function PosScan() {
         });
       }
 
-      // Always record a row in shop_transactions so the sale is visible in the transactions page.
-      // amount = what was actually paid upfront (0 if no upfront payment).
-      // status = "credit_partial" (some paid), "credit" (nothing paid yet), or "ok" (fully paid).
-      const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : initPaid > 0 ? "credit_partial" : "credit";
-      const { error: txCreditErr } = await supabase.from("shop_transactions").insert({
-        shop_id:           shop?.id,
-        owner_id:          shop?.owner_id,
-        seller_agent_id:   verifiedAgent.agent_id,
-        product_id:        cart[0].allocation.product.id,
-        quantity:          cart.reduce((s, i) => s + i.quantity, 0),
-        amount:            initPaid,
-        customer_phone:    customerPhone.trim(),
-        payment_method:    initPaid > 0 ? initialPayMethod : "cash",
-        cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
-        mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
-        mpesa_ref:         null,
-        status:            txStatus,
-        unit_price:        cart[0].allocation.product.price,
-        base_price:        cart[0].allocation.product.price,
-        commission_rate:   0,
-        commission_earned: 0,
-      });
-      if (txCreditErr) console.error("credit transaction record error:", txCreditErr);
+      // Only record a shop_transaction when money was actually collected upfront.
+      // Zero-upfront credit sales belong only in shop_credit_sales + shop_credit_payments;
+      // a zero-amount shop_transaction would create ghost KSh 0 entries on the owner's dashboard.
+      if (initPaid > 0) {
+        const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
+        const { error: txCreditErr } = await supabase.from("shop_transactions").insert({
+          shop_id:           shop?.id,
+          owner_id:          shop?.owner_id,
+          seller_agent_id:   verifiedAgent.agent_id,
+          product_id:        cart[0].allocation.product.id,
+          quantity:          cart.reduce((s, i) => s + i.quantity, 0),
+          amount:            initPaid,
+          customer_phone:    customerPhone.trim(),
+          payment_method:    initialPayMethod,
+          cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
+          mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
+          mpesa_ref:         null,
+          status:            txStatus,
+          unit_price:        cart[0].allocation.product.price,
+          base_price:        cart[0].allocation.product.price,
+          commission_rate:   0,
+          commission_earned: 0,
+          credit_sale_id:    creditData?.id ?? null,
+        });
+        if (txCreditErr) console.error("credit transaction record error:", txCreditErr);
+      }
 
       setSavedBatchRef((creditData?.id ?? "").slice(0, 8).toUpperCase());
       setSelectedAgent(verifiedAgent);
       setProcessing(false);
+      setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
       setStep("success");
 
       // Fire credit receipt asynchronously — best effort
@@ -595,7 +680,14 @@ export default function PosScan() {
     setSavedBatchRef(firstId);
     setSelectedAgent(verifiedAgent);
     setProcessing(false);
+    setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
     setStep("success");
+
+    // Auto-save customer contact if name + phone were provided
+    if (customerName.trim() && customerPhone.trim()) {
+      saveCustomer(customerName.trim(), customerPhone.trim());
+      touchUsage(customerPhone.trim());
+    }
 
     // Fire receipt asynchronously — sale is already saved, this is best-effort
     if (customerPhone.trim()) {
@@ -649,7 +741,8 @@ export default function PosScan() {
     setStep("scan"); setMode("camera"); setManualSku(""); setProductSearch("");
     setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
-    setCustomerName(""); setCustomerPhone(""); setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
+    setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
+    setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false);
     setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
@@ -984,32 +1077,8 @@ export default function PosScan() {
               </button>
             </div>
 
-            {/* RIGHT COLUMN — Customer info + payment */}
+            {/* RIGHT COLUMN — Payment + customer info */}
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-              {/* Customer name — required for credit, optional otherwise */}
-              <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                  Customer Name {payMethod === "credit"
-                    ? <span style={{ color: theme.accent.red }}>*</span>
-                    : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
-                </label>
-                <input className="ki" type="text" value={customerName}
-                  onChange={e => setCustomerName(sanitizeText(e.target.value, 80))}
-                  placeholder="e.g. John Kamau" maxLength={80} />
-              </div>
-
-              {/* Customer phone */}
-              <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                  Customer Phone {payMethod === "credit"
-                    ? <span style={{ color: theme.accent.red }}>*</span>
-                    : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
-                </label>
-                <input className="ki" type="tel" value={customerPhone}
-                  onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
-                  placeholder="07XX XXX XXX" maxLength={15} />
-              </div>
-
               {/* Payment method */}
               <div>
                 <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
@@ -1096,7 +1165,99 @@ export default function PosScan() {
                 </div>
               )}
 
-          
+              {/* ── Customer section ── */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+                {/* Saved customers button */}
+                {savedCustomers.length > 0 && (
+                  <div style={{ position: "relative" }}>
+                    <button
+                      onClick={() => setShowCustDropdown(v => !v)}
+                      style={{ width: "100%", padding: "10px 14px", background: showCustDropdown ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${showCustDropdown ? "rgba(6,182,212,0.4)" : theme.border.default}`, borderRadius: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 10, color: theme.text.primary, transition: "all 0.15s" }}>
+                      <span style={{ fontSize: 16 }}>👤</span>
+                      <span style={{ flex: 1, textAlign: "left", fontFamily: theme.font.mono, fontSize: 12, color: theme.text.secondary }}>
+                        Pick from saved customers
+                      </span>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{savedCustomers.length} saved · {showCustDropdown ? "▲" : "▼"}</span>
+                    </button>
+
+                    {showCustDropdown && (
+                      <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 60, background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.5)", overflow: "hidden" }}>
+                        {/* Search within saved */}
+                        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${theme.border.default}` }}>
+                          <div style={{ position: "relative" }}>
+                            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 12, opacity: 0.4 }}>🔍</span>
+                            <input
+                              className="ki"
+                              type="text"
+                              value={customerQuery}
+                              onChange={e => setCustomerQuery(e.target.value)}
+                              placeholder="Filter by name or phone…"
+                              style={{ paddingLeft: 30, paddingRight: 70, paddingTop: 8, paddingBottom: 8, fontSize: 12 }}
+                              autoFocus
+                            />
+                            <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, pointerEvents: "none" }}>
+                              {customerQuery.trim() ? `${filteredCustomers.length} of ${savedCustomers.length}` : `${savedCustomers.length}`}
+                            </span>
+                          </div>
+                        </div>
+                        <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                          {filteredCustomers.length === 0 ? (
+                            <div style={{ padding: "16px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
+                              No customers match "{customerQuery}"
+                            </div>
+                          ) : (
+                            filteredCustomers.map((c, i) => (
+                              <button key={c.id ?? c.phone}
+                                onClick={() => {
+                                  setCustomerName(c.name);
+                                  setCustomerPhone(c.phone);
+                                  touchUsage(c.phone);
+                                  setCustomerQuery("");
+                                  setShowCustDropdown(false);
+                                }}
+                                style={{ width: "100%", padding: "11px 16px", background: "transparent", border: "none", borderBottom: i < filteredCustomers.length - 1 ? `1px solid ${theme.border.default}` : "none", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
+                                <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 15, color: theme.accent.cyan, flexShrink: 0 }}>
+                                  {c.name.charAt(0).toUpperCase()}
+                                </div>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
+                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{c.phone}</div>
+                                </div>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Customer Name */}
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                    Customer Name {payMethod === "credit"
+                      ? <span style={{ color: theme.accent.red }}>*</span>
+                      : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                  </label>
+                  <input className="ki" type="text" value={customerName}
+                    onChange={e => setCustomerName(sanitizeText(e.target.value, 80))}
+                    placeholder="e.g. John Kamau" maxLength={80} />
+                </div>
+
+                {/* Customer Phone — always visible */}
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                    Customer Phone {payMethod === "credit"
+                      ? <span style={{ color: theme.accent.red }}>*</span>
+                      : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                  </label>
+                  <input className="ki" type="tel" value={customerPhone}
+                    onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
+                    placeholder="07XX XXX XXX" maxLength={15} />
+                </div>
+              </div>
+
               {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
 
               <button className="abtn" onClick={handleCheckoutNext}
@@ -1178,81 +1339,8 @@ export default function PosScan() {
                   </div>
 
                   {selectedAgent && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-                      <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 12, textAlign: "center" }}>
-                        PIN for {selectedAgent.name}
-                      </label>
-
-                      {/* PIN lockout banner */}
-                      {pinIsLocked && (
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 12, padding: "12px 16px", marginBottom: 14 }}>
-                          <span style={{ fontSize: 20 }}>🔒</span>
-                          <div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
-                            <div style={{ fontSize: 12, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Attempt warning */}
-                      {!pinIsLocked && pinFails >= 3 && (
-                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 10, padding: "9px 14px", marginBottom: 12, textAlign: "center" }}>
-                          ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
-                        </div>
-                      )}
-
-                      <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 16, opacity: pinIsLocked ? 0.35 : 1 }}>
-                        {[0, 1, 2, 3].map(i => (
-                          <div key={i} className={`pin-digit ${i < pin.length ? "filled" : ""}`}>
-                            {i < pin.length ? "●" : ""}
-                          </div>
-                        ))}
-                      </div>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, maxWidth: 300, margin: "0 auto", width: "100%" }}>
-                        {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map(k => (
-                          <button key={k} disabled={!k || processing || pinIsLocked}
-                            onClick={() => {
-                              if (pinIsLocked) return;
-                              if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
-                              else if (k && pin.length < 4) {
-                                setError("");
-                                const newPin = pin + k;
-                                setPin(newPin);
-                                if (newPin.length === 4 && selectedAgent) {
-                                  if (newPin !== String(selectedAgent.pin)) {
-                                    const next = pinFails + 1;
-                                    setPinFails(next);
-                                    if (next >= PIN_MAX_FAILS) {
-                                      const until = Date.now() + PIN_LOCK_MS;
-                                      startPinLock(until);
-                                    }
-                                    setPinError("Incorrect PIN. Try again.");
-                                    setPinShake(true);
-                                    setTimeout(() => { setPinShake(false); setPin(""); }, 400);
-                                  } else {
-                                    setPinError("");
-                                    setPinFails(0); setPinCountdown(0);
-                                    handleSubmitSale(selectedAgent);
-                                  }
-                                }
-                              }
-                            }}
-                            style={{ height: isMobile ? 54 : 60, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 12, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 20 : 22, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1, transition: "background 0.1s" }}>
-                            {k}
-                          </button>
-                        ))}
-                      </div>
-                      {pinError && !pinIsLocked && (
-                        <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", marginTop: 12, textAlign: "center" }}>
-                          ⚠ {pinError}
-                        </div>
-                      )}
-                      {processing && (
-                        <div style={{ marginTop: 14, display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: 16, background: "rgba(255,255,255,0.04)", borderRadius: 14, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14 }}>
-                          <span style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                          {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
-                        </div>
-                      )}
+                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: "10px 14px", background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, textAlign: "center" }}>
+                      {selectedAgent.name} selected — PIN entry will appear on screen
                     </div>
                   )}
                 </div>
@@ -1313,7 +1401,7 @@ export default function PosScan() {
               )}
             </div>
             <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, padding: "20px 22px", width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 10 }}>
-              {/* Ref row */}
+              {/* Ref + timestamp row */}
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: `1px solid ${theme.border.default}` }}>
                 <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                   {wasQueued ? "Status" : payMethod === "credit" ? "Credit Ref" : "Receipt Ref"}
@@ -1321,6 +1409,10 @@ export default function PosScan() {
                 <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: wasQueued ? "#fbbf24" : payMethod === "credit" ? theme.accent.red : theme.accent.cyan }}>
                   {wasQueued ? "Pending sync" : payMethod === "credit" ? `CR-${savedBatchRef}` : `TXN-${savedBatchRef}`}
                 </span>
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Date &amp; Time</span>
+                <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.secondary }}>{saleTimestamp}</span>
               </div>
               {/* Items */}
               {cart.map(item => (
@@ -1385,6 +1477,121 @@ export default function PosScan() {
           </div>
         )}
       </div>
+
+      {/* ══════════════════ FULL-SCREEN PIN MODAL ══════════════════ */}
+      {step === "verify" && verifyMethod === "pin" && selectedAgent && (
+        <div style={{ position: "fixed", inset: 0, zIndex: 110, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(10px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 20px" }}>
+          {processing ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 }}>
+              <div style={{ position: "relative", width: 80, height: 80 }}>
+                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
+                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
+                <div style={{ position: "absolute", inset: 10, borderRadius: "50%", border: "2px solid transparent", borderTopColor: "rgba(6,182,212,0.45)", animation: "spin 1.2s linear infinite reverse" }} />
+              </div>
+              <div style={{ fontFamily: theme.font.mono, fontSize: 14, color: theme.text.muted }}>
+                {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
+              </div>
+              <div style={{ width: 260, height: 3, borderRadius: 99, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                <div style={{ height: "100%", borderRadius: 99, background: `linear-gradient(90deg,${theme.accent.cyan},#0891b2)`, animation: "progress-bar 1.4s ease-in-out infinite" }} />
+              </div>
+            </div>
+          ) : (
+            <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 20 }}>
+              {/* Back button + agent identity */}
+              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+                <button onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
+                  style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: theme.text.muted, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  ←
+                </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
+                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(6,182,212,0.18)", border: "1px solid rgba(6,182,212,0.4)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 20, color: theme.accent.cyan, flexShrink: 0 }}>
+                    {selectedAgent.avatar || selectedAgent.name.charAt(0).toUpperCase()}
+                  </div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 17, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedAgent.name}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>Enter 4-digit PIN to authorise</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Lockout banner */}
+              {pinIsLocked && (
+                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 12, padding: "12px 16px" }}>
+                  <span style={{ fontSize: 20 }}>🔒</span>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
+                    <div style={{ fontSize: 12, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
+                  </div>
+                </div>
+              )}
+
+              {/* Attempt warning */}
+              {!pinIsLocked && pinFails >= 3 && (
+                <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 10, padding: "9px 14px", textAlign: "center" }}>
+                  ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
+                </div>
+              )}
+
+              {/* PIN dots */}
+              <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 14, justifyContent: "center", opacity: pinIsLocked ? 0.35 : 1 }}>
+                {[0, 1, 2, 3].map(i => (
+                  <div key={i} className={`pin-digit ${i < pin.length ? "filled" : ""}`}>
+                    {i < pin.length ? "●" : ""}
+                  </div>
+                ))}
+              </div>
+
+              {/* PIN error */}
+              {pinError && !pinIsLocked && (
+                <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+                  ⚠ {pinError}
+                </div>
+              )}
+
+              {/* Numpad */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
+                {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map(k => (
+                  <button key={k} disabled={!k || pinIsLocked}
+                    onClick={() => {
+                      if (pinIsLocked) return;
+                      if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
+                      else if (k && pin.length < 4) {
+                        setError("");
+                        const newPin = pin + k;
+                        setPin(newPin);
+                        if (newPin.length === 4 && selectedAgent) {
+                          if (newPin !== String(selectedAgent.pin)) {
+                            const next = pinFails + 1;
+                            setPinFails(next);
+                            if (next >= PIN_MAX_FAILS) {
+                              const until = Date.now() + PIN_LOCK_MS;
+                              startPinLock(until);
+                            }
+                            setPinError("Incorrect PIN. Try again.");
+                            setPinShake(true);
+                            setTimeout(() => { setPinShake(false); setPin(""); }, 400);
+                          } else {
+                            setPinError("");
+                            setPinFails(0); setPinCountdown(0);
+                            handleSubmitSale(selectedAgent);
+                          }
+                        }
+                      }
+                    }}
+                    style={{ height: 66, border: `1px solid ${k ? "rgba(255,255,255,0.12)" : "transparent"}`, borderRadius: 14, background: k ? "rgba(255,255,255,0.05)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 22 : 26, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1, transition: "background 0.12s" }}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+
+              {/* Order total reminder */}
+              <div style={{ textAlign: "center", fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted }}>
+                Total: <span style={{ color: theme.accent.gold, fontWeight: 700, fontSize: 16 }}>{fmt(grandTotal)}</span>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
       {addingProduct && (

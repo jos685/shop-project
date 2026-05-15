@@ -25,7 +25,7 @@ function useWindowWidth() {
 
 type RequestType = "stock_request" | "damage_report" | "demand_report" | "message";
 type RequestStatus = "pending" | "approved" | "rejected";
-type ActiveTab = "requests" | "expenses" | "credit" | "customers";
+type ActiveTab = "requests" | "expenses" | "credit";
 
 interface ShopRequest {
   id: string;
@@ -77,6 +77,8 @@ interface CreditPayment {
   amount: number;
   payment_method: "cash" | "mpesa";
   mpesa_ref: string | null;
+  collected_by_agent_id: string | null;
+  collected_by_name: string | null;
   created_at: string;
 }
 
@@ -359,7 +361,7 @@ export default function PosRequests() {
   const fetchPaymentsFor = useCallback(async (creditSaleId: string) => {
     setPaymentsLoading(creditSaleId);
     const { data } = await supabase.from("shop_credit_payments")
-      .select("id, amount, payment_method, mpesa_ref, created_at")
+      .select("id, amount, payment_method, mpesa_ref, collected_by_agent_id, collected_by_name, created_at")
       .eq("credit_sale_id", creditSaleId).order("created_at", { ascending: true });
     setCreditPayments(prev => ({ ...prev, [creditSaleId]: (data || []) as CreditPayment[] }));
     setPaymentsLoading(null);
@@ -502,7 +504,7 @@ export default function PosRequests() {
   };
 
   // ── Credit handlers ───────────────────────────────────────────────────
-  const handleRecordPayment = async (_agent: ShopAgent) => {
+  const handleRecordPayment = async (agent: ShopAgent) => {
     if (!payTarget) return;
     if (!isOnline) { setPayError("Recording a credit payment requires an internet connection. Please reconnect and try again."); return; }
     const amount = parseFloat(payAmount);
@@ -512,9 +514,14 @@ export default function PosRequests() {
     setPayProcessing(true);
 
     const { error: insErr } = await supabase.from("shop_credit_payments").insert({
-      credit_sale_id: payTarget.id, shop_id: shop?.id, owner_id: shop?.owner_id,
-      amount, payment_method: payMethod2,
-      mpesa_ref: payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+      credit_sale_id:        payTarget.id,
+      shop_id:               shop?.id,
+      owner_id:              shop?.owner_id,
+      amount,
+      payment_method:        payMethod2,
+      mpesa_ref:             payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+      collected_by_agent_id: agent.agent.agent_id,
+      collected_by_name:     agent.agent.name,
     });
     if (insErr) { setPayProcessing(false); setPayError(insErr.message || "Failed to record payment. Try again."); return; }
 
@@ -690,36 +697,11 @@ export default function PosRequests() {
     </div>
   );
 
-  // ── Customer directory ────────────────────────────────────────────────
-  const [customerSearch, setCustomerSearch] = useState("");
-
-  const customerGroups = (() => {
-    const map: Record<string, { name: string; phone: string; sales: CreditSale[] }> = {};
-    for (const s of creditSales) {
-      const key = s.customer_phone || s.customer_name;
-      if (!map[key]) map[key] = { name: s.customer_name, phone: s.customer_phone, sales: [] };
-      map[key].sales.push(s);
-    }
-    return Object.values(map).sort((a, b) => {
-      const balA = a.sales.reduce((t, s) => t + (s.amount - s.amount_paid), 0);
-      const balB = b.sales.reduce((t, s) => t + (s.amount - s.amount_paid), 0);
-      return balB - balA;
-    });
-  })();
-
-  const filteredCustomers = customerSearch
-    ? customerGroups.filter(c =>
-        c.name.toLowerCase().includes(customerSearch.toLowerCase()) ||
-        c.phone.toLowerCase().includes(customerSearch.toLowerCase())
-      )
-    : customerGroups;
-
   // ── Tab labels ────────────────────────────────────────────────────────
   const tabs: { key: ActiveTab; label: string }[] = [
-    { key: "requests",  label: `📋 Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` },
-    { key: "expenses",  label: `💸 Expenses (${expenses.length})` },
-    { key: "credit",    label: `📝 Credit (${openCredit.length})` },
-    { key: "customers", label: `👤 Customers (${customerGroups.length})` },
+    { key: "requests", label: `📋 Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` },
+    { key: "expenses", label: `💸 Expenses (${expenses.length})` },
+    { key: "credit",   label: `📝 Credit (${openCredit.length})` },
   ];
 
   return (
@@ -1129,8 +1111,8 @@ export default function PosRequests() {
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                               {payments.map((p, idx) => (
-                                <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700 }}>
+                                <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, marginTop: 1 }}>
                                     {idx + 1}
                                   </div>
                                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -1138,6 +1120,12 @@ export default function PosRequests() {
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
                                       {p.payment_method === "cash" ? "💵 Cash" : "📱 M-Pesa"}{p.mpesa_ref ? ` · ${p.mpesa_ref}` : ""}
                                     </div>
+                                    {p.collected_by_name && (
+                                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#60a5fa", marginTop: 2 }}>
+                                        Collected by {p.collected_by_name}
+                                        {p.collected_by_agent_id && ` (${p.collected_by_agent_id})`}
+                                      </div>
+                                    )}
                                   </div>
                                   <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>
                                     {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })}
@@ -1282,86 +1270,6 @@ export default function PosRequests() {
               </div>
             )}
           </div>
-        </div>
-      )}
-
-      {/* ══ CUSTOMERS TAB ══ */}
-      {activeTab === "customers" && (
-        <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Search */}
-          <div style={{ position: "relative" }}>
-            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
-            <input
-              className="ki" value={customerSearch}
-              onChange={e => setCustomerSearch(e.target.value)}
-              placeholder="Search by name or phone…"
-              style={{ paddingLeft: 36 }} />
-          </div>
-
-          {creditLoading ? (
-            <div style={{ padding: "48px 20px", textAlign: "center" }}>
-              <div style={{ width: 22, height: 22, border: "3px solid rgba(6,182,212,0.2)", borderTopColor: "#06b6d4", borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 10px" }} />
-              <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>Loading customers…</div>
-            </div>
-          ) : filteredCustomers.length === 0 ? (
-            <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
-              <div style={{ fontSize: 40, opacity: 0.2, marginBottom: 12 }}>👤</div>
-              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>
-                {creditSales.length === 0 ? "No credit sales yet" : "No customers match that search"}
-              </div>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {filteredCustomers.map(customer => {
-                const totalOwed    = customer.sales.reduce((t, s) => t + s.amount, 0);
-                const totalPaid    = customer.sales.reduce((t, s) => t + s.amount_paid, 0);
-                const balance      = totalOwed - totalPaid;
-                const openSales    = customer.sales.filter(s => s.status !== "paid" && s.status !== "returned");
-                const latestSale   = customer.sales.slice().sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-                const balanceColor = balance > 0 ? theme.accent.red : "#34d399";
-                return (
-                  <div key={customer.phone || customer.name}
-                    style={{ background: theme.bg.card, border: `1px solid ${balance > 0 ? "rgba(248,113,113,0.2)" : theme.border.default}`, borderRadius: 14, padding: "16px 18px" }}>
-                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{customer.name}</div>
-                        {customer.phone && (
-                          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 6 }}>{customer.phone}</div>
-                        )}
-                        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                          <div>
-                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Sales</div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: theme.text.primary, fontFamily: theme.font.mono }}>{customer.sales.length}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Total</div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: theme.accent.gold, fontFamily: theme.font.mono }}>{fmt(totalOwed)}</div>
-                          </div>
-                          <div>
-                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Paid</div>
-                            <div style={{ fontSize: 13, fontWeight: 700, color: "#34d399", fontFamily: theme.font.mono }}>{fmt(totalPaid)}</div>
-                          </div>
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0 }}>
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Balance</div>
-                        <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 20, color: balanceColor }}>{fmt(balance)}</div>
-                        {openSales.length > 0 && (
-                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: balanceColor, marginTop: 3 }}>{openSales.length} open</div>
-                        )}
-                      </div>
-                    </div>
-                    {latestSale && (
-                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${theme.border.default}`, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                        Last sale: {new Date(latestSale.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}
-                        {latestSale.items.length > 0 && ` · ${latestSale.items[0].product_name}${latestSale.items.length > 1 ? ` +${latestSale.items.length - 1} more` : ""}`}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
       )}
 

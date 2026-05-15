@@ -34,7 +34,12 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     return () => events.forEach(e => document.removeEventListener(e, touch));
   }, []);
 
-  // Check for inactivity every minute — auto-logout when session exists
+  // Update shops.last_seen so the owner dashboard can detect this shop as online
+  const pingLastSeen = useCallback(async (shopId: string) => {
+    await supabase.from("shops").update({ last_seen: new Date().toISOString() }).eq("id", shopId);
+  }, []);
+
+  // Check for inactivity every minute — auto-logout when session exists, also heartbeat last_seen
   useEffect(() => {
     const timer = setInterval(() => {
       setShop(current => {
@@ -43,11 +48,12 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
           localStorage.removeItem(SESSION_KEY);
           return null;
         }
+        pingLastSeen(current.id);
         return current;
       });
     }, CHECK_INTERVAL);
     return () => clearInterval(timer);
-  }, []);
+  }, [pingLastSeen]);
 
   useEffect(() => {
     // Restore session from localStorage on load
@@ -56,7 +62,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
       if (stored) {
         const session = JSON.parse(stored);
         // Discard old sessions that are missing owner_id — forces a fresh login
-        if (session?.owner_id) setShop(session);
+        if (session?.owner_id) { setShop(session); pingLastSeen(session.id); }
         else localStorage.removeItem(SESSION_KEY);
       }
     } catch (err) {
@@ -90,6 +96,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
 
     localStorage.setItem(SESSION_KEY, JSON.stringify(session));
     setShop(session);
+    pingLastSeen(session.id);
     return null;
   };
 

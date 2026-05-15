@@ -120,6 +120,7 @@ export default function PosDashboard() {
   const [lowCount,    setLowCount]    = useState(0);
   const [creditCount, setCreditCount] = useState(0);
   const [creditAmt,   setCreditAmt]   = useState(0);
+  const [returnsAmt,  setReturnsAmt]  = useState(0);
   const [pendingReqs, setPendingReqs] = useState(0);
   const [queuedCount, setQueuedCount] = useState(0);
   const [queuedTotal, setQueuedTotal] = useState(0);
@@ -178,16 +179,43 @@ export default function PosDashboard() {
     const allocs  = allocRes.data || [];
     const credits = creditRes.data || [];
 
-    // Today totals
+    // Today totals (gross)
     const totalRev  = txData.reduce((s: number, t: any) => s + t.amount, 0);
     const cashTotal = txData.reduce((s: number, t: any) =>
       s + (t.cash_amount  ?? (t.payment_method === "cash"  ? t.amount : 0)), 0);
     const mpesaTotal = txData.reduce((s: number, t: any) =>
       s + (t.mpesa_amount ?? (t.payment_method === "mpesa" ? t.amount : 0)), 0);
     setTodayCount(txData.length);
-    setTodayRev(totalRev);
-    setCashRev(cashTotal);
-    setMpesaRev(mpesaTotal);
+
+    // Fetch today's returns and deduct from revenue
+    const txIds = txData.map((t: any) => t.id);
+    let returnsTotal = 0, cashReturns = 0, mpesaReturns = 0;
+    if (txIds.length > 0) {
+      const { data: returnsData } = await supabase
+        .from("transaction_returns")
+        .select("original_transaction_id, amount_refunded")
+        .in("original_transaction_id", txIds);
+      for (const r of returnsData ?? []) {
+        const orig = txData.find((t: any) => t.id === r.original_transaction_id);
+        // Cap deduction at what was actually received — credit sales (amount=0) deduct nothing
+        const effectiveRefund = orig ? Math.min(r.amount_refunded, orig.amount) : 0;
+        returnsTotal += effectiveRefund;
+        if (orig && effectiveRefund > 0) {
+          if (orig.payment_method === "cash") {
+            cashReturns += effectiveRefund;
+          } else if (orig.payment_method === "mpesa") {
+            mpesaReturns += effectiveRefund;
+          } else if (orig.payment_method === "split" && orig.amount > 0) {
+            cashReturns  += effectiveRefund * (orig.cash_amount  ?? 0) / orig.amount;
+            mpesaReturns += effectiveRefund * (orig.mpesa_amount ?? 0) / orig.amount;
+          }
+        }
+      }
+    }
+    setReturnsAmt(returnsTotal);
+    setTodayRev(totalRev - returnsTotal);
+    setCashRev(cashTotal  - cashReturns);
+    setMpesaRev(mpesaTotal - mpesaReturns);
 
     // Hourly (6AM–8PM)
     setHourlyData(HOURS.map(h => {
@@ -258,7 +286,7 @@ export default function PosDashboard() {
   const topCards = [
     { key: "sales",    icon: "🧾", label: "SALES",    col: "#fbbf24",
       value: String(todayCount),
-      sub: fmt(todayRev) + " today",
+      sub: fmt(todayRev) + " net today",
       onClick: () => navigate("/pos/transactions") },
     { key: "stock",    icon: "📦", label: "STOCK",    col: "#34d399",
       value: String(stockCount),
@@ -460,7 +488,8 @@ export default function PosDashboard() {
                 <div>
                   <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15 }}>Payment Split</div>
                   <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                    {fmt(todayRev)} across {todayCount} sale{todayCount !== 1 ? "s" : ""} today
+                    {fmt(todayRev)} net · {todayCount} sale{todayCount !== 1 ? "s" : ""} today
+                    {returnsAmt > 0 && <span style={{ color: "#f87171", marginLeft: 6 }}>↩ -{fmt(returnsAmt)} returned</span>}
                   </div>
                 </div>
                 <button onClick={() => navigate("/pos/info", { state: { tab: "expenses" } })}
