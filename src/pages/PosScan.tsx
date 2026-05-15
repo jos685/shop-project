@@ -6,7 +6,7 @@ import { useNetwork } from "../context/NetworkContext";
 import QrScanner from "../components/QrScanner";
 import { supabase } from "../lib/supabase";
 import { enqueue } from "../lib/offlineQueue";
-import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
+import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
 
 type Step         = "scan" | "checkout" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
@@ -74,6 +74,7 @@ export default function PosScan() {
   // checkout
   const [customerName,    setCustomerName]    = useState("");
   const [customerPhone,   setCustomerPhone]   = useState("");
+  const [fieldErrors,     setFieldErrors]     = useState<Record<string, string>>({});
 
   // saved customer contacts
   interface SavedCustomer { id?: string; name: string; phone: string; }
@@ -419,17 +420,48 @@ export default function PosScan() {
   // ── checkout ──────────────────────────────────────────────────────────
   const grandTotal = cart.reduce((s, i) => s + i.sellPrice * i.quantity, 0);
 
+  function validateField(name: string, value: string, method = payMethod): string {
+    if (name === "customerName") {
+      const v = value.trim();
+      if (method === "credit" && !v) return "Name is required for credit sales";
+      if (v && v.length < 2) return "Name must be at least 2 characters";
+      if (v.length > 60) return "Name must be 60 characters or fewer";
+      return "";
+    }
+    if (name === "customerPhone") {
+      const v = value.trim();
+      if (method === "credit" && !v) return "Phone is required for credit sales";
+      if (v) {
+        const err = validatePhone(v);
+        if (err) return err;
+      }
+      return "";
+    }
+    if (name === "mpesaRef") {
+      const v = value.trim();
+      if (v && (v.length < 8 || v.length > 12)) return "M-Pesa ref should be 8–12 characters";
+      return "";
+    }
+    return "";
+  }
+
   const handleCheckoutNext = () => {
     if (cart.length === 0) { setError("Add at least one product to the cart."); return; }
-    if (payMethod === "credit") {
-      if (!customerName.trim()) { setError("Customer name is required for credit sales."); return; }
-      if (!customerPhone.trim()) { setError("Customer phone is required for credit sales."); return; }
-    }
+
+    const errs: Record<string, string> = {
+      customerName:  validateField("customerName",  customerName),
+      customerPhone: validateField("customerPhone", customerPhone),
+      mpesaRef:      (payMethod === "mpesa" || payMethod === "split") ? validateField("mpesaRef", mpesaRef) : "",
+    };
+    const hasErr = Object.values(errs).some(Boolean);
+    if (hasErr) { setFieldErrors(errs); return; }
+
     if (payMethod === "split") {
       const c = Number(cashAmount) || 0, m = Number(mpesaAmount) || 0;
       if (!cashAmount || !mpesaAmount) { setError("Enter both Cash and M-Pesa amounts."); return; }
       if (Math.abs(c + m - grandTotal) > 1) { setError(`Cash + M-Pesa must equal ${fmt(grandTotal)}.`); return; }
     }
+    setFieldErrors({});
     setError("");
     setStep("verify");
   };
@@ -744,7 +776,7 @@ export default function PosScan() {
     setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
     setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
-    setError(""); setScanFeedback(""); setProcessing(false);
+    setError(""); setScanFeedback(""); setProcessing(false); setFieldErrors({});
     setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
     if (cartKey) localStorage.removeItem(cartKey);
     // Reset PIN lockout for the next sale
@@ -1158,10 +1190,20 @@ export default function PosScan() {
 
               {(payMethod === "mpesa" || payMethod === "split") && (
                 <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>M-Pesa Ref (optional)</label>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>M-Pesa Ref <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
                   <input className="ki" value={mpesaRef}
-                    onChange={e => setMpesaRef(sanitizeCode(e.target.value, 20))}
-                    placeholder="e.g. QHX7K3LM2P" maxLength={20} spellCheck={false} />
+                    onChange={e => {
+                      setMpesaRef(sanitizeCode(e.target.value, 12));
+                      if (fieldErrors.mpesaRef) setFieldErrors(prev => ({ ...prev, mpesaRef: "" }));
+                    }}
+                    onBlur={() => {
+                      const err = validateField("mpesaRef", mpesaRef);
+                      if (err) setFieldErrors(prev => ({ ...prev, mpesaRef: err }));
+                    }}
+                    placeholder="e.g. QHX7K3LM2P" maxLength={12} spellCheck={false} />
+                  {fieldErrors.mpesaRef && (
+                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.mpesaRef}</div>
+                  )}
                 </div>
               )}
 
@@ -1241,8 +1283,18 @@ export default function PosScan() {
                       : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
                   </label>
                   <input className="ki" type="text" value={customerName}
-                    onChange={e => setCustomerName(sanitizeText(e.target.value, 80))}
-                    placeholder="e.g. John Kamau" maxLength={80} />
+                    onChange={e => {
+                      setCustomerName(sanitizeText(e.target.value, 60));
+                      if (fieldErrors.customerName) setFieldErrors(prev => ({ ...prev, customerName: "" }));
+                    }}
+                    onBlur={() => {
+                      const err = validateField("customerName", customerName);
+                      if (err) setFieldErrors(prev => ({ ...prev, customerName: err }));
+                    }}
+                    placeholder="e.g. John Kamau" maxLength={60} />
+                  {fieldErrors.customerName && (
+                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.customerName}</div>
+                  )}
                 </div>
 
                 {/* Customer Phone — always visible */}
@@ -1253,8 +1305,18 @@ export default function PosScan() {
                       : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
                   </label>
                   <input className="ki" type="tel" value={customerPhone}
-                    onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
-                    placeholder="07XX XXX XXX" maxLength={15} />
+                    onChange={e => {
+                      setCustomerPhone(sanitizePhone(e.target.value));
+                      if (fieldErrors.customerPhone) setFieldErrors(prev => ({ ...prev, customerPhone: "" }));
+                    }}
+                    onBlur={() => {
+                      const err = validateField("customerPhone", customerPhone);
+                      if (err) setFieldErrors(prev => ({ ...prev, customerPhone: err }));
+                    }}
+                    placeholder="07XXXXXXXXX or 254XXXXXXXXX" maxLength={13} />
+                  {fieldErrors.customerPhone && (
+                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.customerPhone}</div>
+                  )}
                 </div>
               </div>
 

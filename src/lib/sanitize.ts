@@ -39,12 +39,31 @@ export function sanitizeSku(s: string, maxLen = 40): string {
 }
 
 /**
- * Phone number field. Allows digits, spaces, dashes, dots, and leading plus.
+ * Phone number field. Allows digits, spaces, dashes, and a leading plus.
+ * Max 13 chars covers +254XXXXXXXXX (the longest valid Kenyan format).
  */
-export function sanitizePhone(s: string, maxLen = 15): string {
-  // Allow + only at position 0
+export function sanitizePhone(s: string, maxLen = 13): string {
   const cleaned = s.replace(/[^0-9+\- ]/g, "").replace(/(?!^)\+/g, "");
   return stripControl(cleaned).slice(0, maxLen);
+}
+
+/**
+ * Validates a Kenyan phone number.
+ * Returns null if valid, or an error string if invalid.
+ * Accepts:
+ *   - Exactly 10 digits starting with 0  (local: 07XX XXX XXX)
+ *   - Exactly 12 digits starting with 254 (intl without +: 2547XXXXXXXX)
+ * Spaces, dashes, and a leading + are stripped before counting.
+ * Returns null for empty input — "required" is the caller's responsibility.
+ */
+export function validatePhone(raw: string): string | null {
+  const digits = raw.replace(/\D/g, "");
+  if (digits.length === 0) return null;
+  if (digits.length === 10 && digits.startsWith("0")) return null;
+  if (digits.length === 12 && digits.startsWith("254")) return null;
+  if (digits.length < 10) return "Too short — enter 10 digits (07XXXXXXXX)";
+  if (digits.length > 12) return "Too long — enter 10 digits (07XXXXXXXX) or 12 with country code (254XXXXXXXXX)";
+  return "Enter 10 digits starting with 0, or 12 starting with 254";
 }
 
 /**

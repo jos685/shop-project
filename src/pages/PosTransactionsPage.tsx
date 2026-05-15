@@ -65,6 +65,7 @@ interface ReturnItem {
   tx_amount: number;
   status: string | null;
   credit_sale_id: string | null;
+  outstanding: number | null; // outstanding credit balance at time of return modal open
   return_qty: number;
 }
 
@@ -187,7 +188,7 @@ export default function PosTransactionsPage() {
       .in("original_transaction_id", txnIds);
     const existing = (data ?? []) as TransactionReturn[];
 
-    const items: ReturnItem[] = group.items
+    let items: ReturnItem[] = group.items
       .filter(tx => tx.product_id && tx.unit_price != null)
       .map(tx => {
         const alreadyReturned = existing
@@ -203,10 +204,29 @@ export default function PosTransactionsPage() {
           tx_amount:        tx.amount,
           status:           tx.status,
           credit_sale_id:   tx.credit_sale_id ?? null,
+          outstanding:      null,
           return_qty:       0,
         };
       })
       .filter(item => item.original_qty - item.already_returned > 0);
+
+    // Fetch outstanding balance for any credit items
+    const creditSaleIds = [...new Set(items.map(i => i.credit_sale_id).filter(Boolean))] as string[];
+    if (creditSaleIds.length > 0) {
+      const { data: creditRows } = await supabase
+        .from("shop_credit_sales")
+        .select("id, amount, amount_paid")
+        .in("id", creditSaleIds);
+      const balanceMap: Record<string, number> = {};
+      for (const cs of creditRows ?? []) {
+        balanceMap[cs.id] = Math.max(0, (cs.amount ?? 0) - (cs.amount_paid ?? 0));
+      }
+      items = items.map(item =>
+        item.credit_sale_id && balanceMap[item.credit_sale_id] !== undefined
+          ? { ...item, outstanding: balanceMap[item.credit_sale_id] }
+          : item
+      );
+    }
 
     setReturnModal({ group, items });
     setReturnReason("");
@@ -1134,18 +1154,54 @@ export default function PosTransactionsPage() {
 
           {/* Refund + commission impact summary */}
           {returnModal.items.some(i => i.return_qty > 0) && (() => {
-            const totalRefundAmt = returnModal.items.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
+            // Compute per-item breakdown: credit items reduce balance first, excess is cash
+            let totalBalanceReduction = 0;
+            let totalCashRefund = 0;
+            for (const item of returnModal.items) {
+              if (item.return_qty <= 0) continue;
+              const returnValue = item.return_qty * item.unit_price;
+              const isCredit = item.status === "credit" || item.status === "credit_partial";
+              if (isCredit && item.outstanding !== null) {
+                const balanceDeduction = Math.min(returnValue, item.outstanding);
+                totalBalanceReduction += balanceDeduction;
+                totalCashRefund       += returnValue - balanceDeduction;
+              } else {
+                totalCashRefund += returnValue;
+              }
+            }
             const commissionImpact = returnModal.items.reduce((s, item) => {
               const origTx = returnModal.group.items.find(t => t.id === item.txn_id);
-              if (!origTx?.commission_earned || !origTx.commission_earned || !item.original_qty) return s;
+              if (!origTx?.commission_earned || !item.original_qty) return s;
               return s + Math.round((item.return_qty / item.original_qty) * origTx.commission_earned);
             }, 0);
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ padding: "12px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>Total Refund</span>
-                  <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171" }}>-{fmt(totalRefundAmt)}</span>
-                </div>
+                {totalBalanceReduction > 0 && (
+                  <div style={{ padding: "12px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 700 }}>📉 Credit Balance Reduced</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "rgba(248,113,113,0.6)", marginTop: 2 }}>
+                          Customer's outstanding debt reduced by this amount
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171" }}>-{fmt(totalBalanceReduction)}</span>
+                    </div>
+                  </div>
+                )}
+                {totalCashRefund > 0 && (
+                  <div style={{ padding: "12px 16px", background: "rgba(52,211,153,0.07)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 12 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700 }}>💵 Cash Refund to Customer</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "rgba(52,211,153,0.6)", marginTop: 2 }}>
+                          {totalBalanceReduction > 0 ? "Excess after clearing outstanding balance" : "Agent hands this cash back to customer"}
+                        </div>
+                      </div>
+                      <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#34d399" }}>{fmt(totalCashRefund)}</span>
+                    </div>
+                  </div>
+                )}
                 {commissionImpact > 0 && (
                   <div style={{ padding: "10px 14px", background: "rgba(251,146,60,0.07)", border: "1px solid rgba(251,146,60,0.25)", borderRadius: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div>
