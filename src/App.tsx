@@ -14,16 +14,14 @@ import ErrorBoundary       from "./components/ErrorBoundary";
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
   const { shop } = useShopAuth();
-  // When logged in, float above the bottom nav to avoid overlapping page headers
-  const pos = shop
-    ? { bottom: 76, right: 12, top: "auto" as const }
-    : { top: 12,   right: 12, bottom: "auto" as const };
+  // Only show the floating toggle on the login page; dashboard has it in its navbar
+  if (shop) return null;
   return (
     <button
       onClick={toggleTheme}
       title={theme.isDark ? "Switch to light mode" : "Switch to dark mode"}
       style={{
-        position: "fixed", ...pos, zIndex: 999,
+        position: "fixed", top: 12, right: 12, zIndex: 999,
         width: 38, height: 38, borderRadius: "50%",
         background: theme.bg.card,
         border: `1px solid ${theme.border.default}`,

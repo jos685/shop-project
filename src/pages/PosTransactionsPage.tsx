@@ -118,7 +118,7 @@ export default function PosTransactionsPage() {
   const [offset, setOffset]             = useState(0);
   const [filter, setFilter]             = useState<DateFilter>("today");
   const [search, setSearch]             = useState("");
-  const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split" | "credit">("all");
+  const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
@@ -163,6 +163,24 @@ export default function PosTransactionsPage() {
         setReturnsMap(map);
       });
   }, [transactions, shop]);
+
+  // ── Realtime: catch returns inserted from other pages (e.g. Credit tab) ─
+  useEffect(() => {
+    if (!shop || transactions.length === 0) return;
+    const txnIds = new Set(transactions.map(t => t.id));
+    const ch = supabase.channel(`txn-returns-rt-${shop.id}`)
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "transaction_returns" }, (payload) => {
+        const r = payload.new as TransactionReturn;
+        if (!r?.original_transaction_id || !txnIds.has(r.original_transaction_id)) return;
+        setReturnsMap(prev => {
+          const bucket = prev[r.original_transaction_id] ?? [];
+          if (bucket.some(x => x.id === r.id)) return prev; // already have it (optimistic)
+          return { ...prev, [r.original_transaction_id]: [...bucket, r] };
+        });
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [shop, transactions]);
 
   // ── Return helpers ───────────────────────────────────────────────────
   function getReturnStatus(group: SaleGroup): "none" | "partial" | "full" {
@@ -451,6 +469,32 @@ export default function PosTransactionsPage() {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchTransactions]);
 
+  // Refetch returnsMap when user comes back to this page (catches returns done on Credit tab)
+  useEffect(() => {
+    const refetchReturns = () => {
+      if (document.visibilityState !== "visible" || transactions.length === 0 || !shop) return;
+      const ids = transactions.map(t => t.id);
+      supabase
+        .from("transaction_returns")
+        .select("id, original_transaction_id, product_id, product_name, quantity_returned, unit_price, amount_refunded, reason, created_at")
+        .in("original_transaction_id", ids)
+        .then(({ data }) => {
+          const map: Record<string, TransactionReturn[]> = {};
+          for (const r of data ?? []) {
+            if (!map[r.original_transaction_id]) map[r.original_transaction_id] = [];
+            map[r.original_transaction_id].push(r as TransactionReturn);
+          }
+          setReturnsMap(map);
+        });
+    };
+    document.addEventListener("visibilitychange", refetchReturns);
+    window.addEventListener("focus", refetchReturns);
+    return () => {
+      document.removeEventListener("visibilitychange", refetchReturns);
+      window.removeEventListener("focus", refetchReturns);
+    };
+  }, [shop, transactions]);
+
   // ── Resend receipt ────────────────────────────────────────────────────
   async function handleResend(tx: LocalTransaction) {
     const phone = tx.receipt_phone ?? tx.customer_phone ?? "";
@@ -498,7 +542,7 @@ export default function PosTransactionsPage() {
     const isUnpaidCredit = tx.status === "credit";
     const matchesMethod = methodFilter === "all"
       ? !isUnpaidCredit
-      : (methodFilter === "credit" ? isCredit : (tx.payment_method === methodFilter && !isCredit));
+      : (tx.payment_method === methodFilter && !isCredit);
     const q = search.toLowerCase();
     const matchesSearch = !q
       || (tx.product_name   ?? "").toLowerCase().includes(q)
@@ -635,38 +679,53 @@ export default function PosTransactionsPage() {
           ))}
         </div>
 
-        {/* Search + method filter */}
-        <div style={{ display: "flex", gap: 8 }}>
-          <div style={{ flex: 1, position: "relative" }}>
-            <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
-            <input
-              placeholder="Product, seller, phone, M-Pesa ref…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              style={{
-                width: "100%", boxSizing: "border-box",
-                padding: "10px 12px 10px 36px",
-                background: theme.bg.card, border: `1px solid ${theme.border.default}`,
-                borderRadius: 12, color: theme.text.primary, fontSize: 13,
-                fontFamily: theme.font.mono, outline: "none",
-              }}
-            />
-          </div>
-          <select
-            value={methodFilter}
-            onChange={e => setMethodFilter(e.target.value as any)}
+        {/* Search bar */}
+        <div style={{ position: "relative" }}>
+          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
+          <input
+            placeholder="Product, seller, phone, M-Pesa ref…"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
             style={{
-              padding: "10px 12px", background: theme.bg.card,
-              border: `1px solid ${theme.border.default}`, borderRadius: 12,
-              color: theme.text.primary, fontSize: 12, fontFamily: theme.font.mono,
-              outline: "none", cursor: "pointer",
-            }}>
-            <option value="all">All</option>
-            <option value="cash">Cash</option>
-            <option value="mpesa">M-Pesa</option>
-            <option value="split">Split</option>
-            <option value="credit">Credit</option>
-          </select>
+              width: "100%", boxSizing: "border-box",
+              padding: "10px 12px 10px 36px",
+              background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+              borderRadius: 12, color: theme.text.primary, fontSize: 13,
+              fontFamily: theme.font.mono, outline: "none",
+            }}
+          />
+        </div>
+
+        {/* Payment method filter pills */}
+        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+          {([
+            { key: "all",   icon: "",   label: "All Methods" },
+            { key: "cash",  icon: "💵", label: "Cash"        },
+            { key: "mpesa", icon: "📱", label: "M-Pesa"      },
+            { key: "split", icon: "⚡", label: "Split"       },
+          ] as const).map(({ key, icon, label }) => {
+            const active = methodFilter === key;
+            const colors: Record<string, string> = {
+              all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan,
+              split: "#fbbf24", credit: "#f87171",
+            };
+            const col = colors[key];
+            return (
+              <button key={key} className="filter-pill"
+                onClick={() => setMethodFilter(key)}
+                style={{
+                  padding: "7px 16px", borderRadius: 50, whiteSpace: "nowrap",
+                  border: `1px solid ${active ? col : theme.border.default}`,
+                  background: active ? `${col}22` : "transparent",
+                  color: active ? col : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
+                  display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+                }}>
+                {icon && <span style={{ fontSize: 13 }}>{icon}</span>}
+                {label}
+              </button>
+            );
+          })}
         </div>
 
         {/* Summary strip */}

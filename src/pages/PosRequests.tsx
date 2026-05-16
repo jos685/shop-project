@@ -358,6 +358,17 @@ export default function PosRequests() {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchCreditSales]);
 
+  // Refetch credit data when user returns to this tab/window (catches updates made on other pages)
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") fetchCreditSales(); };
+    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", fetchCreditSales);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", fetchCreditSales);
+    };
+  }, [fetchCreditSales]);
+
   const fetchPaymentsFor = useCallback(async (creditSaleId: string) => {
     setPaymentsLoading(creditSaleId);
     const { data } = await supabase.from("shop_credit_payments")
@@ -547,9 +558,11 @@ export default function PosRequests() {
   };
 
   const handleMarkReturned = async (_agent: ShopAgent) => {
-    if (!returnTarget) return;
+    if (!returnTarget || !shop) return;
     if (!isOnline) { setReturnError("Marking a return requires an internet connection. This restores stock on the server and cannot be done offline."); return; }
     setReturnProcessing(true);
+
+    // Restore stock for each item
     for (const item of returnTarget.items) {
       const { data: allocData } = await supabase.from("shop_allocations").select("remaining").eq("id", item.allocation_id).single();
       if (allocData) {
@@ -562,9 +575,45 @@ export default function PosRequests() {
         }
       }
     }
+
+    // Mark credit sale as returned
     await supabase.from("shop_credit_sales")
       .update({ status: "returned", updated_at: new Date().toISOString() })
       .eq("id", returnTarget.id);
+
+    // Insert transaction_returns rows so the Transactions page reflects the return
+    const { data: linkedTxns } = await supabase
+      .from("shop_transactions")
+      .select("id, product_id, seller_agent_id")
+      .eq("credit_sale_id", returnTarget.id)
+      .eq("shop_id", shop.id);
+
+    if (linkedTxns && linkedTxns.length > 0) {
+      const returnRows = returnTarget.items
+        .map(item => {
+          const tx = linkedTxns.find(t => t.product_id === item.product_id);
+          if (!tx) return null;
+          return {
+            owner_id:                shop.owner_id,
+            source:                  "shop",
+            original_transaction_id: tx.id,
+            shop_id:                 shop.id,
+            agent_id:                returnTarget.seller_agent_id ?? null,
+            product_id:              item.product_id,
+            product_name:            item.product_name,
+            quantity_returned:       item.quantity,
+            unit_price:              item.unit_price,
+            amount_refunded:         item.subtotal,
+            reason:                  "Credit sale returned in full",
+            actor_name:              returnTarget.seller_name ?? null,
+            actor_code:              null,
+          };
+        })
+        .filter(Boolean);
+      if (returnRows.length > 0) {
+        await supabase.from("transaction_returns").insert(returnRows);
+      }
+    }
 
     setReturnTarget(null);
     setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); setReturnProcessing(false);
@@ -728,19 +777,6 @@ export default function PosRequests() {
               {shop?.name}
             </div>
           </div>
-          {activeTab === "requests" && (
-            <button
-              onClick={() => { setShowForm(true); resetForm(); }}
-              style={{ background: "linear-gradient(135deg,#06b6d4,#0891b2)", border: "none", borderRadius: 12, padding: "10px 18px", color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              + New
-            </button>
-          )}
-          {activeTab === "expenses" && (
-            <button onClick={() => setLogOpen(true)}
-              style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 12, padding: "10px 18px", color: "#f87171", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              + Log
-            </button>
-          )}
         </div>
 
         {/* Tab bar */}
@@ -850,6 +886,16 @@ export default function PosRequests() {
           )}
 
           <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 10 }}>
+
+            {/* Centered new request button */}
+            <div style={{ display: "flex", justifyContent: "center" }}>
+              <button
+                onClick={() => { setShowForm(true); resetForm(); }}
+                style={{ padding: "9px 20px", background: "linear-gradient(135deg,#06b6d4,#0891b2)", border: "none", borderRadius: 50, color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                + New Request
+              </button>
+            </div>
+
             {/* Queued offline requests */}
             {queuedItems.filter(i => "requestType" in i).map(i => {
               const q = i as QueuedRequest;
@@ -888,7 +934,7 @@ export default function PosRequests() {
                 <div style={{ fontSize: 48, marginBottom: 12, opacity: 0.3 }}>📋</div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, marginBottom: 6 }}>No requests yet</div>
                 <div style={{ fontFamily: theme.font.mono, fontSize: 12, lineHeight: 1.7 }}>
-                  Use the button above to send stock requests,<br />report damage, or message your owner.
+                  Tap the button above to send stock requests,<br />report damage, or message your owner.
                 </div>
               </div>
             ) : requests.map(req => {
@@ -948,6 +994,15 @@ export default function PosRequests() {
       {/* ══ EXPENSES TAB ══ */}
       {activeTab === "expenses" && (
         <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+          {/* Centered log expense button */}
+          <div style={{ display: "flex", justifyContent: "center" }}>
+            <button onClick={() => setLogOpen(true)}
+              style={{ padding: "9px 20px", background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.35)", borderRadius: 50, color: "#f87171", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+              + Log Expense
+            </button>
+          </div>
+
           {/* Summary card */}
           <div style={{ background: theme.bg.card, border: "1px solid rgba(248,113,113,0.2)", borderRadius: 14, padding: "16px 18px" }}>
             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Total Expenses</div>
@@ -980,7 +1035,7 @@ export default function PosRequests() {
             <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
               <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>💸</div>
               <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No expenses recorded yet</div>
-              <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Tap "+ Log" to add one</div>
+              <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Tap the button above to add one</div>
             </div>
           ) : (
             <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>

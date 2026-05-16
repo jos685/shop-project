@@ -36,7 +36,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
 
   // Update shops.last_seen so the owner dashboard can detect this shop as online
   const pingLastSeen = useCallback(async (shopId: string) => {
-    await supabase.from("shops").update({ last_seen: new Date().toISOString() }).eq("id", shopId);
+    await supabase.rpc("ping_shop_presence", { p_shop_id: shopId });
   }, []);
 
   // Check for inactivity every minute — auto-logout when session exists, also heartbeat last_seen

@@ -441,7 +441,7 @@ export default function PosLogin() {
         <div className="est-panel-logo">🏪</div>
 
         <div className="est-panel-content-mobile">
-          <div className="est-panel-title">Epic Shop<br />Tracker</div>
+          <div className="est-panel-title"><span style={{ color:"#c084fc" }}>QASH</span><span style={{ color:"#e879f9" }}>UP</span></div>
           <div className="est-panel-tagline">
             Every sale counts.<br />Every agent matters.
           </div>
@@ -471,7 +471,7 @@ export default function PosLogin() {
           </div>
         </div>
 
-        <div className="est-panel-footer">Epic Shop Tracker · POS Terminal</div>
+        <div className="est-panel-footer">QASHUP · POS Terminal</div>
       </div>
 
       {/* ── FORM SIDE ── */}
@@ -648,7 +648,7 @@ export default function PosLogin() {
           <div className="est-form-footer">
             <div className="est-form-footer-dot" />
             <span className="est-form-footer-text">
-              Secure terminal access · Epic Shop Tracker
+              Secure terminal access · QASHUP
             </span>
           </div>
 

@@ -470,6 +470,11 @@ export default function PosScan() {
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
     if (cart.length === 0) return;
 
+    // Persist the active agent so the dashboard can greet them by name
+    if (shop?.id) {
+      localStorage.setItem(`pos_last_agent_${shop.id}`, JSON.stringify({ name: verifiedAgent.name, id: verifiedAgent.agent_id }));
+    }
+
     // Offline: queue the sale and proceed to success screen
     if (!isOnline) {
       enqueue({
@@ -653,10 +658,10 @@ export default function PosScan() {
               unit_price: item.allocation.product.price,
               total:      item.allocation.product.price * item.quantity,
             })),
-            total_amount:    grandTotal,
-            payment_method:  "credit",
-            initial_payment: paid,
-            balance_due:     balance,
+            total_amount:   grandTotal,
+            payment_method: "credit",
+            amount_paid:    paid,
+            balance_owed:   balance,
           },
         }).then(({ data: rd, error: re }) => {
           setReceiptStatus((re || !(rd as any)?.sent) ? "failed" : "sent");
@@ -1100,6 +1105,33 @@ export default function PosScan() {
                   <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>Grand Total</span>
                   <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold }}>{fmt(grandTotal)}</span>
                 </div>
+
+                {/* Commission strip */}
+                {commissionConfig.enabled && commissionConfig.rate > 0 && (() => {
+                  const totalComm = payMethod === "credit" ? 0 : cart.reduce((s, item) => {
+                    const markup = Math.max(0, item.sellPrice - item.allocation.product.price);
+                    return s + Math.round(markup * item.quantity * commissionConfig.rate / 100);
+                  }, 0);
+                  if (payMethod === "credit") {
+                    return (
+                      <div style={{ padding: "10px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 10, background: "rgba(248,113,113,0.05)" }}>
+                        <span style={{ fontSize: 14 }}>💸</span>
+                        <span style={{ flex: 1, fontSize: 11, fontFamily: theme.font.mono, color: "rgba(248,113,113,0.8)" }}>No commission on Pay Later sales</span>
+                        <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "rgba(248,113,113,0.6)" }}>KSh 0</span>
+                      </div>
+                    );
+                  }
+                  if (totalComm > 0) {
+                    return (
+                      <div style={{ padding: "10px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 10, background: "rgba(52,211,153,0.05)" }}>
+                        <span style={{ fontSize: 14 }}>💰</span>
+                        <span style={{ flex: 1, fontSize: 11, fontFamily: theme.font.mono, color: "#34d399" }}>Your commission ({commissionConfig.rate}% on markup)</span>
+                        <span style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: "#34d399" }}>+{fmt(totalComm)}</span>
+                      </div>
+                    );
+                  }
+                  return null;
+                })()}
               </div>
 
               {/* Add more */}
@@ -1135,6 +1167,11 @@ export default function PosScan() {
                 <>
                   <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
                     📝 Stock will be deducted now. Payment will be tracked separately under the Credit tab in Shop.
+                    {commissionConfig.enabled && commissionConfig.rate > 0 && (
+                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(248,113,113,0.2)", color: "rgba(248,113,113,0.75)", fontSize: 11 }}>
+                        💸 No commission is earned on Pay Later sales.
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
@@ -1717,8 +1754,10 @@ export default function PosScan() {
                       {markup > 0 && (
                         <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
                           <span style={{ color: "#34d399" }}>Markup: {fmt(markup * qty)}</span>
-                          <span style={{ color: theme.accent.cyan }}>
-                            Commission: {fmt(Math.round(markup * qty * commissionConfig.rate / 100))}
+                          <span style={{ color: payMethod === "credit" ? "rgba(248,113,113,0.5)" : theme.accent.cyan }}>
+                            {payMethod === "credit"
+                              ? "No commission (Pay Later)"
+                              : `Commission: ${fmt(Math.round(markup * qty * commissionConfig.rate / 100))}`}
                           </span>
                         </div>
                       )}

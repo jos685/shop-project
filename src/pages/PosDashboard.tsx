@@ -97,7 +97,7 @@ function HourlyChart({ data, theme }: { data: HourData[]; theme: any }) {
 
 export default function PosDashboard() {
   const { shop, logout } = useShopAuth();
-  const { theme }        = useTheme();
+  const { theme, toggleTheme } = useTheme();
   const { pendingCount } = useNetwork();
   const navigate         = useNavigate();
   const width            = useWindowWidth();
@@ -107,6 +107,12 @@ export default function PosDashboard() {
   const [showLogout,  setShowLogout]  = useState(false);
   const [time,        setTime]        = useState(new Date());
   const [loading,     setLoading]     = useState(true);
+
+  // Read the last agent who completed a sale on this device
+  const lastAgent = (() => {
+    if (!shop?.id) return null;
+    try { return JSON.parse(localStorage.getItem(`pos_last_agent_${shop.id}`) ?? "null"); } catch { return null; }
+  })();
 
   const [hourlyData,  setHourlyData]  = useState<HourData[]>([]);
   const [stockRows,   setStockRows]   = useState<StockRow[]>([]);
@@ -332,33 +338,61 @@ export default function PosDashboard() {
       `}</style>
 
       {/* ── Header ── */}
-      <div style={{ borderBottom: `1px solid ${theme.border.default}`, padding: isMobile ? "14px 16px" : "16px 40px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: theme.bg.base, zIndex: 40 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <div style={{ width: 36, height: 36, background: "linear-gradient(135deg,#eab308,#f59e0b)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 800, fontSize: 17, color: "#000", flexShrink: 0 }}>S</div>
-          <div>
-            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 15 : 17, letterSpacing: "-0.02em" }}>{shop?.name}</div>
-            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>{shop?.shop_code} · {shop?.location}</div>
+      <div style={{ borderBottom: `1px solid ${theme.border.default}`, padding: isMobile ? "16px 16px" : "18px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: theme.bg.base, zIndex: 40 }}>
+
+        {/* Left: greeting + shop name */}
+        <div>
+          <div style={{ fontSize: isMobile ? 12 : 13, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
+            {(() => { const h = time.getHours(); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; })()}
+            {lastAgent?.name ? `, ${lastAgent.name.split(" ")[0]}` : ""}
+            {" 👋"}
+          </div>
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 20 : 24, letterSpacing: "-0.02em" }}>
+            {shop?.name}
           </div>
         </div>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ textAlign: "right" }}>
-            <div style={{ fontFamily: theme.font.mono, fontSize: isMobile ? 15 : 20, fontWeight: 700, color: theme.accent.cyan, letterSpacing: "0.04em" }}>
+
+        {/* Right: clock + alerts + avatar + logout */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+
+          {/* Clock */}
+          <div style={{ textAlign: "right", marginRight: 4, flexShrink: 0 }}>
+            <div style={{ fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 16, fontWeight: 700, color: theme.accent.cyan, letterSpacing: "0.04em" }}>
               {time.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
             </div>
-            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-              {time.toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short" })}
-            </div>
+            {!isMobile && (
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                {time.toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short" })}
+              </div>
+            )}
           </div>
+
+          {/* Alert pill */}
+          {(lowCount > 0 || pendingReqs > 0) && (
+            <button
+              onClick={() => navigate(lowCount > 0 ? "/pos/info" : "/pos/requests")}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 50, color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+              ⚠ {lowCount + pendingReqs} alert{lowCount + pendingReqs !== 1 ? "s" : ""}
+            </button>
+          )}
+
+          {/* Theme toggle */}
+          <button
+            onClick={toggleTheme}
+            title={theme.isDark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{ width: 34, height: 34, borderRadius: "50%", background: theme.bg.card, border: `1px solid ${theme.border.default}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, transition: "background 0.2s, border-color 0.2s" }}>
+            {theme.isDark ? "☀️" : "🌙"}
+          </button>
+
+          {/* Shop initials avatar */}
+          <div style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg,#06b6d4,#0891b2)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: "#fff", flexShrink: 0, letterSpacing: "-0.02em" }}>
+            {shop?.name?.slice(0, 2).toUpperCase() ?? "SH"}
+          </div>
+
+          {/* Logout button */}
           <button onClick={() => setShowLogout(true)}
-            style={{
-              background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.25)",
-              borderRadius: 9, padding: isMobile ? "8px 12px" : "8px 12px",
-              color: theme.accent.red, fontFamily: theme.font.mono,
-              fontSize: isMobile ? 12 : 13, cursor: "pointer",
-              display: "flex", alignItems: "center", gap: 5, fontWeight: 600,
-            }}>
-            <span style={{ fontSize: isMobile ? 14 : 15 }}>⏻</span>
-            {isMobile && <span>Logout</span>}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "0" : "6px 14px", width: isMobile ? 34 : "auto", height: isMobile ? 34 : "auto", justifyContent: "center", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: isMobile ? "50%" : 50, color: "#f87171", fontFamily: theme.font.mono, fontSize: isMobile ? 16 : 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
+            {isMobile ? "🚪" : "🚪 Logout"}
           </button>
         </div>
       </div>
