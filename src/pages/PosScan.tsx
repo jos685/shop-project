@@ -223,8 +223,8 @@ export default function PosScan() {
         for (const p of prodsData || []) productsMap[p.id] = p;
       }
 
-      const products = (allocsRes.data || [])
-        .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
+      const allProducts = (allocsRes.data || [])
+        .filter((a: any) => !!a.product_id)
         .map((a: any) => {
           const p = productsMap[a.product_id] || {};
           return {
@@ -241,6 +241,9 @@ export default function PosScan() {
           };
         });
 
+      // Only show items with stock available in the scan UI
+      const products = allProducts.filter(p => p.remaining > 0);
+
       setCommissionConfig(commission);
       setBusinessName(bizName);
       setShopAgents(agents);
@@ -249,6 +252,10 @@ export default function PosScan() {
       // Persist to cache so the next offline session has fresh data.
       if (cacheKey) {
         try { localStorage.setItem(cacheKey, JSON.stringify({ agents, products, commission, bizName })); } catch {}
+      }
+      // Full stock cache (all items including 0-remaining) for the stock info page
+      if (shop?.id) {
+        try { localStorage.setItem(`pos_stock_full_${shop.id}`, JSON.stringify({ items: allProducts, cachedAt: Date.now() })); } catch {}
       }
     })();
   }, [shop, isOnline, cacheKey]);
@@ -504,22 +511,38 @@ export default function PosScan() {
 
       // Deduct stock locally so agents can't oversell during offline mode.
       setMyProducts(prev => {
-        const updated = prev.map(alloc => {
+        const allUpdated = prev.map(alloc => {
           const sold = cart.find(i => i.allocation.id === alloc.id);
           if (!sold) return alloc;
           return { ...alloc, remaining: Math.max(0, alloc.remaining - sold.quantity) };
-        }).filter(alloc => alloc.remaining > 0);
-        // Persist updated stock to cache so it survives a page reload while still offline.
+        });
+        // Update PosScan cache (only remaining > 0 for scan UI)
         if (cacheKey) {
           try {
             const raw = localStorage.getItem(cacheKey);
             if (raw) {
               const cached = JSON.parse(raw);
-              localStorage.setItem(cacheKey, JSON.stringify({ ...cached, products: updated }));
+              localStorage.setItem(cacheKey, JSON.stringify({ ...cached, products: allUpdated.filter(a => a.remaining > 0) }));
             }
           } catch {}
         }
-        return updated;
+        // Update full stock cache so PosShopInfo shows correct remaining (including items at 0)
+        if (shop?.id) {
+          try {
+            const fullKey = `pos_stock_full_${shop.id}`;
+            const raw = localStorage.getItem(fullKey);
+            if (raw) {
+              const cached = JSON.parse(raw);
+              const updatedItems = (cached.items || []).map((item: any) => {
+                const match = allUpdated.find((a: any) => a.id === item.id);
+                return match ? { ...item, remaining: match.remaining } : item;
+              });
+              localStorage.setItem(fullKey, JSON.stringify({ ...cached, items: updatedItems }));
+            }
+          } catch {}
+        }
+        // Return only items with remaining > 0 for the scan UI state
+        return allUpdated.filter(alloc => alloc.remaining > 0);
       });
 
       refreshPendingCount();

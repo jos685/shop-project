@@ -10,6 +10,7 @@ import PosTransactionsPage from "./pages/PosTransactionsPage";
 import PosRequests         from "./pages/PosRequests";
 import BottomNav           from "./components/BottomNav";
 import ErrorBoundary       from "./components/ErrorBoundary";
+import { PwaUpdatePrompt, PwaInstallBanner } from "./components/PwaPrompts";
 
 function ThemeToggle() {
   const { theme, toggleTheme } = useTheme();
@@ -79,6 +80,8 @@ export default function App() {
             <BrowserRouter>
               <PosApp />
             </BrowserRouter>
+            <PwaUpdatePrompt />
+            <PwaInstallBanner />
           </NetworkProvider>
         </ShopAuthProvider>
       </ThemeProvider>

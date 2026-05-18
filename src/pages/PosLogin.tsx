@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
+import { useNetwork } from "../context/NetworkContext";
 import { useLoginSecurity } from "../lib/useLoginSecurity";
 import { sanitizeCode, sanitizePassword } from "../lib/sanitize";
 
@@ -14,11 +15,12 @@ function getGreeting() {
 export default function PosLogin() {
   const { login } = useShopAuth();
   const { theme, toggleTheme } = useTheme();
+  const { isOnline } = useNetwork();
   const dk = theme.isDark;
   const security = useLoginSecurity();
 
   const [businessCode, setBusinessCode] = useState("");
-  const [shopCode,     setShopCode]     = useState("");
+  const [shopSuffix,   setShopSuffix]   = useState("");
   const [password,     setPassword]     = useState("");
   const [showPw,       setShowPw]       = useState(false);
   const [loading,      setLoading]      = useState(false);
@@ -33,17 +35,24 @@ export default function PosLogin() {
     e.preventDefault();
     if (security.isLocked) return;
     if (!security.canAttempt()) return;
-    if (!businessCode.trim() || !shopCode.trim() || !password.trim()) {
+    if (!businessCode.trim() || !shopSuffix.trim() || !password.trim()) {
       setError("Please fill in all fields before signing in.");
       triggerShake();
       return;
     }
     setLoading(true);
     setError("");
-    const err = await login(businessCode, shopCode, password);
+    const err = await login(businessCode, "SHP-" + shopSuffix.trim().toUpperCase(), password);
     if (err) {
-      security.onFailure();
-      setError(err);
+      if (err === "offline_no_cache") {
+        setError("No offline data found. Connect to the internet and sign in at least once before using offline mode on this device.");
+      } else if (err === "offline_wrong_password") {
+        security.onFailure();
+        setError("Incorrect password. Your offline credentials don't match — check your password and try again.");
+      } else {
+        security.onFailure();
+        setError(err);
+      }
       setLoading(false);
       triggerShake();
     } else {
@@ -244,6 +253,46 @@ export default function PosLogin() {
           outline: none;
         }
         .est-input:disabled { opacity: 0.55; cursor: not-allowed; }
+
+        .est-prefix-wrap {
+          display: flex;
+          align-items: stretch;
+          border-radius: 12px;
+          border: 1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"};
+          overflow: hidden;
+          transition: border-color 0.18s, box-shadow 0.18s;
+          background: ${dk ? "#1e1c26" : "#ffffff"};
+        }
+        .est-prefix-wrap:focus-within {
+          border-color: #f97316;
+          box-shadow: 0 0 0 3px ${dk ? "rgba(249,115,22,0.22)" : "rgba(249,115,22,0.12)"};
+        }
+        .est-prefix-badge {
+          padding: 13px 12px 13px 16px;
+          font-size: 15px;
+          font-family: 'Inter', sans-serif;
+          font-weight: 600;
+          color: ${dk ? "#8b8699" : "#78716c"};
+          background: ${dk ? "#161320" : "#f5f5f4"};
+          border-right: 1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"};
+          user-select: none;
+          white-space: nowrap;
+          display: flex;
+          align-items: center;
+        }
+        .est-prefix-input {
+          flex: 1;
+          padding: 13px 16px;
+          border: none;
+          outline: none;
+          font-size: 15px;
+          font-family: 'Inter', sans-serif;
+          background: transparent;
+          color: ${dk ? "#f1f0f5" : "#1c1917"};
+          min-width: 0;
+        }
+        .est-prefix-input::placeholder { color: ${dk ? "#5a5669" : "#a8a29e"}; }
+        .est-prefix-input:disabled { opacity: 0.55; cursor: not-allowed; }
 
         .est-pw-wrap {
           position: relative;
@@ -494,6 +543,25 @@ export default function PosLogin() {
           <div className="est-greeting-text">{greeting.text}</div>
           <div className="est-greeting-sub">{greeting.sub}<br />Sign in to get started.</div>
 
+          {!isOnline && (
+            <div style={{
+              display: "flex", alignItems: "flex-start", gap: 10,
+              background: dk ? "rgba(220,38,38,0.08)" : "#fff5f5",
+              border: "1.5px solid rgba(220,38,38,0.25)",
+              borderRadius: 12, padding: "13px 15px", marginBottom: 20,
+            }}>
+              <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>📵</span>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", marginBottom: 3, fontFamily: "Inter, sans-serif" }}>
+                  You're offline
+                </div>
+                <div style={{ fontSize: 12, color: dk ? "#f87171" : "#dc2626", lineHeight: 1.5, fontFamily: "Inter, sans-serif" }}>
+                  Sign in with your cached credentials. Sales will queue and sync when connection is restored.
+                </div>
+              </div>
+            </div>
+          )}
+
           <form onSubmit={handleLogin} noValidate>
 
             <div className="est-field">
@@ -514,18 +582,21 @@ export default function PosLogin() {
 
             <div className="est-field">
               <label className="est-label" htmlFor="shop-id">Shop ID</label>
-              <input
-                id="shop-id"
-                className="est-input"
-                value={shopCode}
-                onChange={e => { setShopCode(sanitizeCode(e.target.value, 24)); setError(""); }}
-                placeholder="e.g. SHP-0001"
-                autoComplete="off"
-                autoCapitalize="characters"
-                spellCheck={false}
-                maxLength={24}
-                disabled={loading || isLocked}
-              />
+              <div className="est-prefix-wrap">
+                <span className="est-prefix-badge">SHP-</span>
+                <input
+                  id="shop-id"
+                  className="est-prefix-input"
+                  value={shopSuffix}
+                  onChange={e => { setShopSuffix(e.target.value.replace(/\D/g, "").slice(0, 4)); setError(""); }}
+                  placeholder="0001"
+                  autoComplete="off"
+                  inputMode="numeric"
+                  spellCheck={false}
+                  maxLength={4}
+                  disabled={loading || isLocked}
+                />
+              </div>
             </div>
 
             <div className="est-field">
@@ -646,9 +717,9 @@ export default function PosLogin() {
           </form>
 
           <div className="est-form-footer">
-            <div className="est-form-footer-dot" />
+            <div className="est-form-footer-dot" style={{ background: isOnline ? "#4ade80" : "#ef4444", boxShadow: isOnline ? "0 0 0 3px rgba(74,222,128,0.18)" : "0 0 0 3px rgba(239,68,68,0.18)" }} />
             <span className="est-form-footer-text">
-              Secure terminal access · QASHUP
+              {isOnline ? "Secure terminal access · QASHUP" : "Offline mode · cached login available"}
             </span>
           </div>
 

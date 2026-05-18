@@ -40,15 +40,16 @@ type ActiveTab = "stock" | "agents";
 export default function PosShopInfo() {
   const { shop } = useShopAuth();
   const { theme } = useTheme();
-  const { pendingCount } = useNetwork();
+  const { isOnline, pendingCount } = useNetwork();
   const location = useLocation();
   const width = useWindowWidth();
   const isMobile = width < 640;
 
-  const [stock,        setStock]        = useState<StockItem[]>([]);
-  const [agents,       setAgents]       = useState<ShopAgent[]>([]);
-  const [loading,      setLoading]      = useState(true);
-  const [tab,          setTab]          = useState<ActiveTab>("stock");
+  const [stock,           setStock]           = useState<StockItem[]>([]);
+  const [agents,          setAgents]          = useState<ShopAgent[]>([]);
+  const [loading,         setLoading]         = useState(true);
+  const [isOfflineData,   setIsOfflineData]   = useState(false);
+  const [tab,             setTab]             = useState<ActiveTab>("stock");
 
   // Deep-link from dashboard: navigate("/pos/info", { state: { tab: "stock" } })
   useEffect(() => {
@@ -81,30 +82,51 @@ export default function PosShopInfo() {
 
   // Load from cache first so offline visits show real data immediately
   useEffect(() => {
-    if (!cacheKey) return;
+    if (!shop) return;
     try {
-      const raw = localStorage.getItem(cacheKey);
-      if (!raw) return;
-      const { products, agents: cachedAgents } = JSON.parse(raw);
-      if (products?.length) {
-        setStock(products.map((a: any) => ({
-          id: a.id, allocated: a.allocated, remaining: a.remaining,
-          product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
-        })));
+      // Try the full stock cache first (includes 0-remaining items)
+      const fullRaw = localStorage.getItem(`pos_stock_full_${shop.id}`);
+      if (fullRaw) {
+        const { items } = JSON.parse(fullRaw);
+        if (items?.length) {
+          setStock(items.map((a: any) => ({
+            id: a.id, allocated: a.allocated, remaining: a.remaining ?? 0,
+            product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
+          })));
+        }
+      } else if (cacheKey) {
+        // Fallback to PosScan cache (only remaining > 0 items)
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const { products } = JSON.parse(raw);
+          if (products?.length) {
+            setStock(products.map((a: any) => ({
+              id: a.id, allocated: a.allocated, remaining: a.remaining,
+              product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
+            })));
+          }
+        }
       }
-      if (cachedAgents?.length) {
-        setAgents(cachedAgents.map((a: any) => ({
-          id: a.id, pin: a.pin, active: a.active,
-          agent: { id: a.agent_id, name: a.name, agent_id: a.agent_code, avatar: a.avatar },
-        })));
+      // Agents always come from PosScan cache (flat format)
+      if (cacheKey) {
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const { agents: cachedAgents } = JSON.parse(raw);
+          if (cachedAgents?.length) {
+            setAgents(cachedAgents.map((a: any) => ({
+              id: a.id, pin: a.pin, active: a.active,
+              agent: { id: a.agent_id, name: a.name, agent_id: a.agent_code, avatar: a.avatar },
+            })));
+          }
+        }
       }
     } catch {}
-  }, [cacheKey]);
+  }, [shop, cacheKey]);
 
   const fetchInfo = useCallback(async () => {
     if (!shop) return;
     // When offline use cached data already loaded above; skip network
-    if (!navigator.onLine) { setLoading(false); return; }
+    if (!navigator.onLine) { setIsOfflineData(true); setLoading(false); return; }
     setLoading(true);
     try {
       const [allocRes, shopAgentsRaw] = await Promise.all([
@@ -154,23 +176,29 @@ export default function PosShopInfo() {
         }
       }
 
-      setStock(
-        (allocRes.data || [])
-          .filter((a: any) => !!a.product_id)
-          .map((a: any) => ({
-            id: a.id,
-            allocated: a.allocated,
-            remaining: Math.max(0, a.remaining ?? 0),
-            product: {
-              id:    a.product_id,
-              name:  productsMap[a.product_id]?.name  || a.product_name  || "—",
-              sku:   productsMap[a.product_id]?.sku   || a.product_sku   || "",
-              price: Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
-              unit:  productsMap[a.product_id]?.unit  || a.product_unit  || "",
-            },
-          }))
-      );
+      const freshStock = (allocRes.data || [])
+        .filter((a: any) => !!a.product_id)
+        .map((a: any) => ({
+          id: a.id,
+          allocated: a.allocated,
+          remaining: Math.max(0, a.remaining ?? 0),
+          product: {
+            id:    a.product_id,
+            name:  productsMap[a.product_id]?.name  || a.product_name  || "—",
+            sku:   productsMap[a.product_id]?.sku   || a.product_sku   || "",
+            price: Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
+            unit:  productsMap[a.product_id]?.unit  || a.product_unit  || "",
+          },
+        }));
+
+      setStock(freshStock);
       setAgents(hydratedAgents);
+      setIsOfflineData(false);
+
+      // Persist full stock (all items including 0-remaining) for offline visits
+      try {
+        localStorage.setItem(`pos_stock_full_${shop.id}`, JSON.stringify({ items: freshStock, cachedAt: Date.now() }));
+      } catch {}
     } catch (err) {
       console.error("ShopInfo fetchInfo error:", err);
     } finally {
@@ -289,6 +317,22 @@ export default function PosShopInfo() {
             {/* ══ STOCK TAB ══ */}
             {tab === "stock" && (
               <div className="section">
+                {/* Offline data banner */}
+                {(isOfflineData || !isOnline) && stock.length > 0 && (
+                  <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(251,191,36,0.07)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 12, padding: "10px 14px", marginBottom: 16 }}>
+                    <span style={{ fontSize: 15 }}>📵</span>
+                    <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24" }}>
+                      Showing cached stock — data from last online session. Numbers reflect offline sales not yet synced.
+                    </span>
+                  </div>
+                )}
+                {!isOnline && stock.length === 0 && (
+                  <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, marginBottom: 24 }}>
+                    <div style={{ fontSize: 40, opacity: 0.3, marginBottom: 12 }}>📵</div>
+                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No cached stock data available</div>
+                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Connect to the internet to load stock information</div>
+                  </div>
+                )}
                 <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 12, marginBottom: 24 }}>
                   {[
                     { label: "Products",       value: String(stock.length),     color: theme.accent.cyan  },
