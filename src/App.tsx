@@ -1,4 +1,5 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { useState, useEffect } from "react";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { ShopAuthProvider, useShopAuth } from "./context/ShopAuthContext";
 import { NetworkProvider } from "./context/NetworkContext";
@@ -9,35 +10,10 @@ import PosShopInfo         from "./pages/PosShopInfo";
 import PosTransactionsPage from "./pages/PosTransactionsPage";
 import PosRequests         from "./pages/PosRequests";
 import BottomNav           from "./components/BottomNav";
+import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
 import { PwaUpdatePrompt, PwaInstallBanner } from "./components/PwaPrompts";
 
-function ThemeToggle() {
-  const { theme, toggleTheme } = useTheme();
-  const { shop } = useShopAuth();
-  // Only show the floating toggle on the login page; dashboard has it in its navbar
-  if (shop) return null;
-  return (
-    <button
-      onClick={toggleTheme}
-      title={theme.isDark ? "Switch to light mode" : "Switch to dark mode"}
-      style={{
-        position: "fixed", top: 12, right: 12, zIndex: 999,
-        width: 38, height: 38, borderRadius: "50%",
-        background: theme.bg.card,
-        border: `1px solid ${theme.border.default}`,
-        boxShadow: theme.isDark
-          ? "0 2px 12px rgba(0,0,0,0.4)"
-          : "0 2px 12px rgba(0,0,0,0.12)",
-        cursor: "pointer",
-        display: "flex", alignItems: "center", justifyContent: "center",
-        fontSize: 17,
-        transition: "background 0.2s, border-color 0.2s, box-shadow 0.2s",
-      }}>
-      {theme.isDark ? "☀️" : "🌙"}
-    </button>
-  );
-}
 
 // ── Route guard ───────────────────────────────────────────────
 function Protected({ children }: { children: React.ReactNode }) {
@@ -54,9 +30,24 @@ function Protected({ children }: { children: React.ReactNode }) {
 
 function PosApp() {
   const { shop } = useShopAuth();
+  const [showTour, setShowTour] = useState(false);
+
+  // Auto-show tour on first login for this shop
+  useEffect(() => {
+    if (!shop) return;
+    const seen = localStorage.getItem(`pos_tour_shown_${shop.id}`);
+    if (!seen) setShowTour(true);
+  }, [shop?.id]);
+
+  // Allow any page to trigger the tour via a custom event
+  useEffect(() => {
+    const handler = () => setShowTour(true);
+    window.addEventListener("shop:start-tour", handler);
+    return () => window.removeEventListener("shop:start-tour", handler);
+  }, []);
+
   return (
     <>
-      <ThemeToggle />
       <Routes>
         <Route path="/pos/login" element={shop ? <Navigate to="/pos" replace /> : <PosLogin />} />
         <Route path="/pos"      element={<Protected><PosDashboard /></Protected>} />
@@ -67,6 +58,15 @@ function PosApp() {
         <Route path="*"         element={<Navigate to="/pos" replace />} />
       </Routes>
       <BottomNav />
+
+      {/* Shop onboarding tour */}
+      {showTour && shop && (
+        <ShopOnboardingTour
+          shopId={shop.id}
+          shopName={shop.name}
+          onDone={() => setShowTour(false)}
+        />
+      )}
     </>
   );
 }

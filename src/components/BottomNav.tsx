@@ -4,11 +4,11 @@ import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 
 const tabs = [
-  { path: "/pos",              icon: "🏠", label: "Dashboard", short: "Home"  },
-  { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns"  },
-  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan"  },
-  { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop"  },
-  { path: "/pos/requests",     icon: "📋", label: "Hub",  short: "Hub"  },
+  { path: "/pos",              icon: "🏠", label: "Dashboard", short: "Home", tour: "pos-home" },
+  { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns", tour: "pos-txns" },
+  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan", tour: "pos-scan" },
+  { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop", tour: "pos-info" },
+  { path: "/pos/requests",     icon: "📋", label: "Hub",       short: "Hub",  tour: "pos-hub"  },
 ];
 
 function useWindowWidth() {
@@ -63,6 +63,7 @@ export default function BottomNav() {
             return (
               <button
                 key={tab.path}
+                data-tour={tab.tour}
                 className="bnav-btn bnav-scan-pill"
                 onClick={() => navigate(tab.path)}
                 style={{
@@ -102,6 +103,7 @@ export default function BottomNav() {
           return (
             <button
               key={tab.path}
+              data-tour={tab.tour}
               className="bnav-btn"
               onClick={() => navigate(tab.path)}
               style={{

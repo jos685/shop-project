@@ -389,6 +389,13 @@ export default function PosDashboard() {
             {shop?.name?.slice(0, 2).toUpperCase() ?? "SH"}
           </div>
 
+          {/* Take a Tour button */}
+          <button
+            onClick={() => window.dispatchEvent(new Event("shop:start-tour"))}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "0" : "6px 14px", width: isMobile ? 34 : "auto", height: isMobile ? 34 : "auto", justifyContent: "center", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.28)", borderRadius: isMobile ? "50%" : 50, color: "#c084fc", fontFamily: theme.font.mono, fontSize: isMobile ? 16 : 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, WebkitTapHighlightColor: "transparent" }}>
+            {isMobile ? "🧭" : "🧭 Tour"}
+          </button>
+
           {/* Logout button */}
           <button onClick={() => setShowLogout(true)}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "0" : "6px 14px", width: isMobile ? 34 : "auto", height: isMobile ? 34 : "auto", justifyContent: "center", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: isMobile ? "50%" : 50, color: "#f87171", fontFamily: theme.font.mono, fontSize: isMobile ? 16 : 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
