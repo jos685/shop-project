@@ -1,37 +1,83 @@
 import { useEffect, useState } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 
+// Shop POS — registerType: 'autoUpdate'; needRefresh fires after new SW activates
 export function PwaUpdatePrompt() {
   const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
-    onRegisteredSW(swUrl, r) {
-      if (r) setInterval(() => r.update(), 60 * 60 * 1000);
-      console.log("SW registered:", swUrl);
+    onRegisteredSW(_swUrl, r) {
+      if (!r) return;
+
+      // Poll every 10 minutes
+      const poll = setInterval(() => r.update(), 10 * 60 * 1000);
+
+      // Check immediately when shopkeeper returns to the screen
+      const onVisible = () => { if (document.visibilityState === "visible") r.update(); };
+      document.addEventListener("visibilitychange", onVisible);
+
+      return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVisible); };
     },
   });
+
+  const [reloading, setReloading] = useState(false);
+
+  const handleReload = () => {
+    setReloading(true);
+    updateServiceWorker(true);
+  };
 
   if (!needRefresh) return null;
 
   return (
-    <div style={{
-      position: "fixed", bottom: 24, left: "50%", transform: "translateX(-50%)",
-      zIndex: 99999, display: "flex", alignItems: "center", gap: 12,
-      background: "#1a0a00", border: "1px solid rgba(249,115,22,0.4)",
-      borderRadius: 14, padding: "12px 16px", boxShadow: "0 8px 32px rgba(0,0,0,0.5)",
-      whiteSpace: "nowrap", animation: "pwaIn 0.3s ease both",
-    }}>
-      <style>{`@keyframes pwaIn{from{opacity:0;transform:translateX(-50%) translateY(12px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}`}</style>
-      <span style={{ fontSize: 20 }}>🔄</span>
-      <div>
-        <div style={{ fontSize: 13, fontWeight: 700, color: "#f97316", fontFamily: "monospace" }}>Update available</div>
-        <div style={{ fontSize: 11, color: "rgba(255,255,255,0.5)", fontFamily: "monospace", marginTop: 2 }}>Reload to get the latest version</div>
+    <>
+      <style>{`
+        @keyframes pwaIn { from{opacity:0;transform:translateX(-50%) translateY(14px)} to{opacity:1;transform:translateX(-50%) translateY(0)} }
+        @keyframes pwaPulse { 0%,100%{box-shadow:0 0 0 0 rgba(249,115,22,0.6)} 60%{box-shadow:0 0 0 8px rgba(249,115,22,0)} }
+        @keyframes pwaSpin { to{transform:rotate(360deg)} }
+      `}</style>
+      <div style={{
+        position: "fixed", bottom: 28, left: "50%", transform: "translateX(-50%)",
+        zIndex: 99999, display: "flex", alignItems: "center", gap: 12,
+        background: "linear-gradient(135deg,#1a0a00,#1f1008)",
+        border: "1px solid rgba(249,115,22,0.55)",
+        borderRadius: 16, padding: "14px 16px",
+        boxShadow: "0 12px 40px rgba(0,0,0,0.6), 0 0 0 1px rgba(249,115,22,0.1)",
+        animation: "pwaIn 0.35s cubic-bezier(0.16,1,0.3,1) both",
+        whiteSpace: "nowrap",
+      }}>
+        <div style={{
+          width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+          background: "rgba(249,115,22,0.15)", border: "1px solid rgba(249,115,22,0.3)",
+          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
+        }}>
+          {reloading
+            ? <span style={{ display: "inline-block", animation: "pwaSpin 0.8s linear infinite" }}>🔄</span>
+            : "⬆️"}
+        </div>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#f97316", fontFamily: "monospace", marginBottom: 1 }}>
+            Update available
+          </div>
+          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "monospace" }}>
+            New version ready — reload to apply
+          </div>
+        </div>
+        <button
+          onClick={handleReload}
+          disabled={reloading}
+          style={{
+            background: reloading ? "rgba(249,115,22,0.15)" : "linear-gradient(135deg,#c2410c,#f97316)",
+            border: "none", borderRadius: 9,
+            padding: "9px 16px", color: "#fff",
+            fontFamily: "monospace", fontSize: 12, fontWeight: 700,
+            cursor: reloading ? "not-allowed" : "pointer", flexShrink: 0,
+            animation: reloading ? "none" : "pwaPulse 2s ease infinite",
+            transition: "background 0.2s",
+          }}
+        >
+          {reloading ? "Reloading…" : "Reload"}
+        </button>
       </div>
-      <button
-        onClick={() => updateServiceWorker(true)}
-        style={{ background: "rgba(249,115,22,0.2)", border: "1px solid rgba(249,115,22,0.4)", borderRadius: 8, padding: "7px 14px", color: "#f97316", fontFamily: "monospace", fontSize: 12, fontWeight: 700, cursor: "pointer", flexShrink: 0 }}
-      >
-        Reload
-      </button>
-    </div>
+    </>
   );
 }
 
@@ -40,10 +86,7 @@ export function PwaInstallBanner() {
   const [dismissed, setDismissed] = useState(() => !!localStorage.getItem("pwa_install_dismissed"));
 
   useEffect(() => {
-    const handler = (e: Event) => {
-      e.preventDefault();
-      setPrompt(e as Event & { prompt: () => Promise<void> });
-    };
+    const handler = (e: Event) => { e.preventDefault(); setPrompt(e as Event & { prompt: () => Promise<void> }); };
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);

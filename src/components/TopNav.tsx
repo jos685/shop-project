@@ -63,12 +63,6 @@ export default function TopNav() {
 
   if (!shop) return null;
 
-  // ── last agent who sold (shown in greeting) ─────────────────────────────
-  const lastAgent = (() => {
-    try { return JSON.parse(localStorage.getItem(`pos_last_agent_${shop.id}`) ?? "null"); } catch { return null; }
-  })();
-  const agentFirst = lastAgent?.name?.split(" ")[0];
-
   return (
     <>
       <style>{`
@@ -149,28 +143,30 @@ export default function TopNav() {
 
           {/* Stacked greeting + shop name */}
           <div style={{ minWidth: 0 }}>
-            <div style={{
-              fontSize:      isMobile ? 9 : 10,
-              fontFamily:    theme.font.mono,
-              color:         theme.text.muted,
-              letterSpacing: "0.1em",
-              textTransform: "uppercase",
-              lineHeight:    1.2,
-              whiteSpace:    "nowrap",
-            }}>
-              {greeting()}{agentFirst ? `, ${agentFirst}` : ""} 👋
-            </div>
+            {!isMobile && (
+              <div style={{
+                fontSize:      10,
+                fontFamily:    theme.font.mono,
+                color:         theme.text.muted,
+                letterSpacing: "0.1em",
+                textTransform: "uppercase",
+                lineHeight:    1.2,
+                whiteSpace:    "nowrap",
+              }}>
+                {greeting()} 👋
+              </div>
+            )}
             <div style={{
               fontFamily:    theme.font.display,
               fontWeight:    800,
-              fontSize:      isMobile ? 16 : 20,
+              fontSize:      isMobile ? 15 : 20,
               color:         theme.text.primary,
               letterSpacing: "-0.02em",
               lineHeight:    1.2,
               whiteSpace:    "nowrap",
               overflow:      "hidden",
               textOverflow:  "ellipsis",
-              maxWidth:      isMobile ? 100 : 220,
+              maxWidth:      isMobile ? 120 : 220,
             }}>
               {shop.name}
             </div>
@@ -180,24 +176,24 @@ export default function TopNav() {
         {/* ── RIGHT: clock · alerts · toggle · avatar · tour · logout ── */}
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
 
-          {/* Clock */}
-          <div style={{ textAlign: "right", flexShrink: 0 }}>
-            <div style={{
-              fontFamily:    theme.font.mono,
-              fontSize:      isMobile ? 12 : 15,
-              fontWeight:    700,
-              color:         theme.accent.cyan,
-              letterSpacing: "0.04em",
-              lineHeight:    1.2,
-            }}>
-              {time.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-            </div>
-            {!isMobile && (
+          {/* Clock — desktop only */}
+          {!isMobile && (
+            <div style={{ textAlign: "right", flexShrink: 0 }}>
+              <div style={{
+                fontFamily:    theme.font.mono,
+                fontSize:      15,
+                fontWeight:    700,
+                color:         theme.accent.cyan,
+                letterSpacing: "0.04em",
+                lineHeight:    1.2,
+              }}>
+                {time.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+              </div>
               <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.2 }}>
                 {time.toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short" })}
               </div>
-            )}
-          </div>
+            </div>
+          )}
 
           {/* Alert pill */}
           {alertCount > 0 && (
