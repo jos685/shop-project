@@ -28,6 +28,10 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     localStorage.removeItem(SESSION_KEY);
     setShop(null);
     setIsOfflineMode(false);
+    // Sign out from Supabase Auth so the JWT is revoked server-side.
+    // The POS gained a real Auth session via signInWithPassword on login;
+    // without this call the token stays valid until expiry (~1 h).
+    supabase.auth.signOut().catch(() => {});
   }, []);
 
   // Reset the inactivity clock on any user interaction
@@ -50,6 +54,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         if (!current) return current;
         if (Date.now() - lastActivityRef.current > TIMEOUT_MS) {
           localStorage.removeItem(SESSION_KEY);
+          supabase.auth.signOut().catch(() => {}); // revoke JWT on inactivity timeout
           return null;
         }
         pingLastSeen(current.id);
@@ -119,6 +124,19 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         location:  data.location,
         owner_id:  data.owner_id,
       };
+
+      // Establish a real Supabase Auth session so RLS policies using auth.uid() are satisfied.
+      // Shop auth users are created by the manage-shop-auth edge function when a shop is added.
+      // If the auth user doesn't exist yet (legacy shop), we proceed without a JWT — the
+      // service will degrade gracefully until the owner triggers shop auth provisioning.
+      const shopEmail = `${shopCode.trim().toLowerCase()}@${businessCode.trim().toLowerCase()}.pos`;
+      const { error: authErr } = await supabase.auth.signInWithPassword({
+        email:    shopEmail,
+        password: password.trim(),
+      });
+      if (authErr) {
+        console.warn("Shop auth sign-in failed (shop may not have an auth user yet):", authErr.message);
+      }
 
       localStorage.setItem(SESSION_KEY, JSON.stringify(session));
       await cachePosOfflineAuth(businessCode.trim(), shopCode.trim(), password.trim(), session);

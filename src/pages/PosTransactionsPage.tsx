@@ -643,7 +643,7 @@ export default function PosTransactionsPage() {
         borderBottom: `1px solid ${theme.border.default}`,
         padding: "16px 20px",
         display: "flex", alignItems: "center", gap: 14,
-        position: "sticky", top: 0, background: theme.bg.base, zIndex: 40,
+        position: "sticky", top: 58, background: theme.bg.base, zIndex: 40,
       }}>
         <button onClick={() => navigate("/pos")}
           style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: theme.text.primary, fontSize: 18, flexShrink: 0 }}>

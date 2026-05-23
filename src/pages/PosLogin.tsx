@@ -130,20 +130,12 @@ export default function PosLogin() {
           border: 2px solid rgba(255,255,255,0.35);
           border-radius: 20px;
           display: flex; align-items: center; justify-content: center;
-          font-size: 34px;
+          overflow: hidden;
           margin-bottom: 28px;
           position: relative; z-index: 1;
         }
-
-        .est-panel-title {
-          font-family: 'Nunito', sans-serif;
-          font-weight: 900;
-          font-size: 34px;
-          color: #fff;
-          line-height: 1.1;
-          letter-spacing: -0.02em;
-          position: relative; z-index: 1;
-          margin-bottom: 10px;
+        .est-panel-logo img {
+          width: 100%; height: 100%; object-fit: contain;
         }
 
         .est-panel-tagline {
@@ -487,10 +479,11 @@ export default function PosLogin() {
         <div className="est-blob3" />
 
         {/* Mobile: row layout wrapper */}
-        <div className="est-panel-logo">🏪</div>
+        <div className="est-panel-logo">
+          <img src="/Qash.png" alt="Qash" />
+        </div>
 
         <div className="est-panel-content-mobile">
-          <div className="est-panel-title"><span style={{ color:"#c084fc" }}>QASH</span><span style={{ color:"#e879f9" }}>UP</span></div>
           <div className="est-panel-tagline">
             Every sale counts.<br />Every agent matters.
           </div>

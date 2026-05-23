@@ -5,6 +5,7 @@ import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
 import QrScanner from "../components/QrScanner";
 import { supabase } from "../lib/supabase";
+import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
 import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
 
@@ -51,6 +52,9 @@ export default function PosScan() {
   const width     = useWindowWidth();
   const isMobile  = width < 640;
   const isDesktop = width >= 1024;
+
+  const { features } = useOwnerFeatures(shop?.owner_id);
+  const canScan = features.scan_to_sell;
 
   // ── flow state ────────────────────────────────────────────────────────
   const [step,         setStep]         = useState<Step>("scan");
@@ -164,8 +168,8 @@ export default function PosScan() {
 
   // ── camera sync ───────────────────────────────────────────────────────
   useEffect(() => {
-    setCameraActive(mode === "camera" && step === "scan" && !addingProduct);
-  }, [mode, step, addingProduct]);
+    setCameraActive(canScan && mode === "camera" && step === "scan" && !addingProduct);
+  }, [canScan, mode, step, addingProduct]);
 
   useEffect(() => {
     setBadgeActive(step === "verify" && verifyMethod === "badge");
@@ -868,7 +872,7 @@ export default function PosScan() {
       <div style={{
         borderBottom: `1px solid ${theme.border.default}`,
         padding: isMobile ? "12px 14px" : "16px 40px",
-        position: "sticky", top: 0, background: theme.bg.base, zIndex: 40,
+        position: "sticky", top: 58, background: theme.bg.base, zIndex: 40,
         display: "flex", flexDirection: "column", gap: 10,
       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -957,12 +961,28 @@ export default function PosScan() {
               {(["camera", "manual"] as const).map(m => (
                 <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
                   style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
-                  {m === "camera" ? "📷 Camera" : "📦 Products"}
+                  {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
                 </button>
               ))}
             </div>
 
-            {mode === "camera" && (
+            {mode === "camera" && !canScan && (
+              <div style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", borderRadius: 16, padding: "32px 20px", textAlign: "center" }}>
+                <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#e2e8f0", marginBottom: 8 }}>
+                  Camera Scan is a Hustler Feature
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted, lineHeight: 1.7, marginBottom: 16 }}>
+                  This shop's plan doesn't include QR scanning.<br />
+                  Products can still be added manually from the list.
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: "rgba(168,85,247,0.7)", background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.18)", borderRadius: 8, padding: "8px 14px", display: "inline-block" }}>
+                  Ask the business owner to upgrade to Hustler to unlock scanning
+                </div>
+              </div>
+            )}
+
+            {mode === "camera" && canScan && (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {scanFeedback && (
                   <div style={{ background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)", borderRadius: 10, padding: "10px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚠ {scanFeedback}</div>

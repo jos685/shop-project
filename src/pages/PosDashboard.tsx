@@ -96,23 +96,15 @@ function HourlyChart({ data, theme }: { data: HourData[]; theme: any }) {
 }
 
 export default function PosDashboard() {
-  const { shop, logout } = useShopAuth();
-  const { theme, toggleTheme } = useTheme();
+  const { shop } = useShopAuth();
+  const { theme } = useTheme();
   const { pendingCount } = useNetwork();
   const navigate         = useNavigate();
   const width            = useWindowWidth();
   const isMobile         = width < 640;
   const isTwoCol         = width >= 960;
 
-  const [showLogout,  setShowLogout]  = useState(false);
-  const [time,        setTime]        = useState(new Date());
   const [loading,     setLoading]     = useState(true);
-
-  // Read the last agent who completed a sale on this device
-  const lastAgent = (() => {
-    if (!shop?.id) return null;
-    try { return JSON.parse(localStorage.getItem(`pos_last_agent_${shop.id}`) ?? "null"); } catch { return null; }
-  })();
 
   const [hourlyData,  setHourlyData]  = useState<HourData[]>([]);
   const [stockRows,   setStockRows]   = useState<StockRow[]>([]);
@@ -124,17 +116,11 @@ export default function PosDashboard() {
   const [mpesaRev,    setMpesaRev]    = useState(0);
   const [stockCount,  setStockCount]  = useState(0);
   const [lowCount,    setLowCount]    = useState(0);
-  const [creditCount, setCreditCount] = useState(0);
-  const [creditAmt,   setCreditAmt]   = useState(0);
   const [returnsAmt,  setReturnsAmt]  = useState(0);
   const [pendingReqs, setPendingReqs] = useState(0);
   const [queuedCount, setQueuedCount] = useState(0);
   const [queuedTotal, setQueuedTotal] = useState(0);
 
-  useEffect(() => {
-    const t = setInterval(() => setTime(new Date()), 1000);
-    return () => clearInterval(t);
-  }, []);
 
   const fetchAll = useCallback(async () => {
     if (!shop) return;
@@ -162,7 +148,7 @@ export default function PosDashboard() {
     }
     const today = new Date(); today.setHours(0, 0, 0, 0);
 
-    const [txRes, allocRes, creditRes, reqRes] = await Promise.all([
+    const [txRes, allocRes, reqRes] = await Promise.all([
       supabase.from("shop_transactions")
         .select("id, amount, product_id, payment_method, cash_amount, mpesa_amount, created_at")
         .eq("shop_id", shop.id)
@@ -171,10 +157,6 @@ export default function PosDashboard() {
       supabase.from("shop_allocations")
         .select("product_id, remaining, allocated")
         .eq("shop_id", shop.id),
-      supabase.from("shop_credit_sales")
-        .select("amount, amount_paid")
-        .eq("shop_id", shop.id)
-        .in("status", ["pending", "partial"]),
       supabase.from("shop_requests")
         .select("id")
         .eq("shop_id", shop.id)
@@ -183,7 +165,6 @@ export default function PosDashboard() {
 
     const txData  = txRes.data   || [];
     const allocs  = allocRes.data || [];
-    const credits = creditRes.data || [];
 
     // Today totals (gross)
     const totalRev  = txData.reduce((s: number, t: any) => s + t.amount, 0);
@@ -248,9 +229,6 @@ export default function PosDashboard() {
       );
     }
 
-    // Credits
-    setCreditCount(credits.length);
-    setCreditAmt(credits.reduce((s: number, c: any) => s + (c.amount - c.amount_paid), 0));
 
     // Requests
     setPendingReqs((reqRes.data || []).length);
@@ -298,10 +276,6 @@ export default function PosDashboard() {
       value: String(stockCount),
       sub: lowCount > 0 ? `${lowCount} low stock` : "All healthy",
       onClick: () => navigate("/pos/info", { state: { tab: "stock" } }) },
-    { key: "credits",  icon: "📝", label: "CREDITS",  col: "#8b5cf6",
-      value: String(creditCount),
-      sub: fmt(creditAmt) + " owed",
-      onClick: () => navigate("/pos/info", { state: { tab: "credit" } }) },
     { key: "requests", icon: "📋", label: "REQUESTS", col: theme.accent.cyan,
       value: String(pendingReqs),
       sub: pendingReqs > 0 ? "Needs reply" : "No pending",
@@ -336,73 +310,6 @@ export default function PosDashboard() {
         .tx-row:hover { background: rgba(255,255,255,0.02) !important; }
         ::-webkit-scrollbar { display: none; }
       `}</style>
-
-      {/* ── Header ── */}
-      <div style={{ borderBottom: `1px solid ${theme.border.default}`, padding: isMobile ? "16px 16px" : "18px 32px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: theme.bg.base, zIndex: 40 }}>
-
-        {/* Left: greeting + shop name */}
-        <div>
-          <div style={{ fontSize: isMobile ? 12 : 13, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 4 }}>
-            {(() => { const h = time.getHours(); return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening"; })()}
-            {lastAgent?.name ? `, ${lastAgent.name.split(" ")[0]}` : ""}
-            {" 👋"}
-          </div>
-          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 20 : 24, letterSpacing: "-0.02em" }}>
-            {shop?.name}
-          </div>
-        </div>
-
-        {/* Right: clock + alerts + avatar + logout */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-
-          {/* Clock */}
-          <div style={{ textAlign: "right", marginRight: 4, flexShrink: 0 }}>
-            <div style={{ fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 16, fontWeight: 700, color: theme.accent.cyan, letterSpacing: "0.04em" }}>
-              {time.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
-            </div>
-            {!isMobile && (
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                {time.toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short" })}
-              </div>
-            )}
-          </div>
-
-          {/* Alert pill */}
-          {(lowCount > 0 || pendingReqs > 0) && (
-            <button
-              onClick={() => navigate(lowCount > 0 ? "/pos/info" : "/pos/requests")}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 12px", background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 50, color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
-              ⚠ {lowCount + pendingReqs} alert{lowCount + pendingReqs !== 1 ? "s" : ""}
-            </button>
-          )}
-
-          {/* Theme toggle */}
-          <button
-            onClick={toggleTheme}
-            title={theme.isDark ? "Switch to light mode" : "Switch to dark mode"}
-            style={{ width: 34, height: 34, borderRadius: "50%", background: theme.bg.card, border: `1px solid ${theme.border.default}`, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0, transition: "background 0.2s, border-color 0.2s" }}>
-            {theme.isDark ? "☀️" : "🌙"}
-          </button>
-
-          {/* Shop initials avatar */}
-          <div style={{ width: 34, height: 34, borderRadius: "50%", background: "linear-gradient(135deg,#06b6d4,#0891b2)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: "#fff", flexShrink: 0, letterSpacing: "-0.02em" }}>
-            {shop?.name?.slice(0, 2).toUpperCase() ?? "SH"}
-          </div>
-
-          {/* Take a Tour button */}
-          <button
-            onClick={() => window.dispatchEvent(new Event("shop:start-tour"))}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "0" : "6px 14px", width: isMobile ? 34 : "auto", height: isMobile ? 34 : "auto", justifyContent: "center", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.28)", borderRadius: isMobile ? "50%" : 50, color: "#c084fc", fontFamily: theme.font.mono, fontSize: isMobile ? 16 : 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0, WebkitTapHighlightColor: "transparent" }}>
-            {isMobile ? "🧭" : "🧭 Tour"}
-          </button>
-
-          {/* Logout button */}
-          <button onClick={() => setShowLogout(true)}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: isMobile ? "0" : "6px 14px", width: isMobile ? 34 : "auto", height: isMobile ? 34 : "auto", justifyContent: "center", background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: isMobile ? "50%" : 50, color: "#f87171", fontFamily: theme.font.mono, fontSize: isMobile ? 16 : 11, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", flexShrink: 0 }}>
-            {isMobile ? "🚪" : "🚪 Logout"}
-          </button>
-        </div>
-      </div>
 
       <div style={{ padding: isMobile ? "16px 14px 110px" : "22px 28px 110px", display: "flex", flexDirection: "column", gap: 14 }}>
 
@@ -622,30 +529,6 @@ export default function PosDashboard() {
 
       </div>
 
-      {/* ── Logout modal ── */}
-      {showLogout && (
-        <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, backdropFilter: "blur(8px)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
-          onClick={() => setShowLogout(false)}>
-          <div style={{ background: theme.bg.modal, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "32px 28px", maxWidth: 360, width: "100%", animation: "slideIn 0.2s ease", textAlign: "center" }}
-            onClick={e => e.stopPropagation()}>
-            <div style={{ fontSize: 38, marginBottom: 14 }}>🔒</div>
-            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 20, marginBottom: 8 }}>Close Terminal?</div>
-            <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, lineHeight: 1.6, marginBottom: 24 }}>
-              This will log out the shop and<br />require credentials to reopen.
-            </div>
-            <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => setShowLogout(false)}
-                style={{ flex: 1, background: "none", border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 14, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer" }}>
-                Cancel
-              </button>
-              <button onClick={logout}
-                style={{ flex: 2, background: "linear-gradient(135deg,#ef4444,#dc2626)", border: "none", borderRadius: 12, padding: 14, color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 15, cursor: "pointer" }}>
-                ⏻ Close Terminal
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

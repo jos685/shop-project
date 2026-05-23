@@ -10,6 +10,7 @@ import PosShopInfo         from "./pages/PosShopInfo";
 import PosTransactionsPage from "./pages/PosTransactionsPage";
 import PosRequests         from "./pages/PosRequests";
 import BottomNav           from "./components/BottomNav";
+import TopNav             from "./components/TopNav";
 import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
 import { PwaUpdatePrompt, PwaInstallBanner } from "./components/PwaPrompts";
@@ -48,15 +49,19 @@ function PosApp() {
 
   return (
     <>
-      <Routes>
-        <Route path="/pos/login" element={shop ? <Navigate to="/pos" replace /> : <PosLogin />} />
-        <Route path="/pos"      element={<Protected><PosDashboard /></Protected>} />
-        <Route path="/pos/scan" element={<Protected><PosScan /></Protected>} />
-        <Route path="/pos/transactions" element={<Protected><PosTransactionsPage /></Protected>} />
-        <Route path="/pos/info"         element={<Protected><PosShopInfo /></Protected>} />
-        <Route path="/pos/requests"     element={<Protected><PosRequests /></Protected>} />
-        <Route path="*"         element={<Navigate to="/pos" replace />} />
-      </Routes>
+      <TopNav />
+      {/* Push all page content below the fixed TopNav (58 px) */}
+      <div style={{ paddingTop: shop ? 58 : 0 }}>
+        <Routes>
+          <Route path="/pos/login" element={shop ? <Navigate to="/pos" replace /> : <PosLogin />} />
+          <Route path="/pos"      element={<Protected><PosDashboard /></Protected>} />
+          <Route path="/pos/scan" element={<Protected><PosScan /></Protected>} />
+          <Route path="/pos/transactions" element={<Protected><PosTransactionsPage /></Protected>} />
+          <Route path="/pos/info"         element={<Protected><PosShopInfo /></Protected>} />
+          <Route path="/pos/requests"     element={<Protected><PosRequests /></Protected>} />
+          <Route path="*"         element={<Navigate to="/pos" replace />} />
+        </Routes>
+      </div>
       <BottomNav />
 
       {/* Shop onboarding tour */}
