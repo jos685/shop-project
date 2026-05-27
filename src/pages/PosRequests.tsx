@@ -130,7 +130,7 @@ function statusBadge(status: RequestStatus) {
 
 export default function PosRequests() {
   const { theme } = useTheme();
-  const { shop } = useShopAuth();
+  const { shop, logout } = useShopAuth();
   const { isOnline, pendingCount: offlineQueueCount, refreshPendingCount } = useNetwork();
   const width = useWindowWidth();
   const isMobile = width < 640;
@@ -260,8 +260,9 @@ export default function PosRequests() {
   // ── Fetch requests + products ─────────────────────────────────────────
   const fetchData = useCallback(async () => {
     if (!shop) return;
+    // Use SECURITY DEFINER RPC for shop_requests so reads work without an auth session
     const [reqRes, allocRes] = await Promise.all([
-      supabase.from("shop_requests").select("*").eq("shop_id", shop.id).order("created_at", { ascending: false }),
+      supabase.rpc("get_shop_requests", { p_shop_id: shop.id }),
       supabase.from("shop_allocations").select("product_id").eq("shop_id", shop.id),
     ]);
 
@@ -279,50 +280,29 @@ export default function PosRequests() {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
-  // ── Fetch agents ──────────────────────────────────────────────────────
+  // ── Fetch agents (SECURITY DEFINER — works without auth session) ─────
   const fetchAgents = useCallback(async () => {
     if (!shop) return;
-    const { data: shopAgentsRaw } = await supabase
-      .from("shop_agents")
-      .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
-      .eq("shop_id", shop.id).eq("active", true);
+    const { data: shopAgentsRaw } = await supabase.rpc("get_shop_agents", { p_shop_id: shop.id });
 
-    let hydratedAgents: ShopAgent[] = (shopAgentsRaw || []).map((r: any) => ({
+    setAgents((shopAgentsRaw || []).map((r: any) => ({
       id: r.id, pin: r.pin, active: r.active,
-      agent: { id: r.agent_id, name: r.agent_name ?? "Agent", agent_id: r.agent_code ?? "", avatar: r.agent_avatar ?? "" },
-    }));
-
-    const needsFallback = hydratedAgents.some(a => a.agent.name === "Agent");
-    if (needsFallback) {
-      const agentIds = hydratedAgents.map(a => a.agent.id).filter(Boolean);
-      if (agentIds.length > 0) {
-        const { data: profilesData } = await supabase
-          .from("profiles").select("id, name, agent_id, avatar")
-          .in("id", agentIds).eq("owner_id", shop.owner_id);
-        if (profilesData && profilesData.length > 0) {
-          const pMap: Record<string, any> = {};
-          for (const p of profilesData) pMap[p.id] = p;
-          hydratedAgents = hydratedAgents.map(a => ({
-            ...a,
-            agent: pMap[a.agent.id]
-              ? { id: pMap[a.agent.id].id, name: pMap[a.agent.id].name, agent_id: pMap[a.agent.id].agent_id, avatar: pMap[a.agent.id].avatar }
-              : a.agent,
-          }));
-        }
-      }
-    }
-    setAgents(hydratedAgents);
+      agent: {
+        id:       r.agent_id,
+        name:     r.agent_name ?? "Agent",
+        agent_id: r.agent_code ?? "",
+        avatar:   r.agent_avatar ?? "",
+      },
+    })));
   }, [shop]);
 
   useEffect(() => { fetchAgents(); }, [fetchAgents]);
 
-  // ── Fetch expenses ────────────────────────────────────────────────────
+  // ── Fetch expenses (SECURITY DEFINER — works without auth session) ────
   const fetchExpenses = useCallback(async () => {
     if (!shop) return;
     setExpLoading(true);
-    const { data } = await supabase.from("shop_expenses")
-      .select("id, amount, description, logged_by, logged_by_name, created_at, updated_at")
-      .eq("shop_id", shop.id).order("created_at", { ascending: false });
+    const { data } = await supabase.rpc("get_shop_expenses", { p_shop_id: shop.id });
     setExpenses((data || []) as Expense[]);
     setExpLoading(false);
   }, [shop]);
@@ -337,13 +317,11 @@ export default function PosRequests() {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchExpenses]);
 
-  // ── Fetch credit sales ────────────────────────────────────────────────
+  // ── Fetch credit sales (SECURITY DEFINER — works without auth session) ─
   const fetchCreditSales = useCallback(async () => {
     if (!shop) return;
     setCreditLoading(true);
-    const { data } = await supabase.from("shop_credit_sales")
-      .select("id, amount, amount_paid, customer_name, customer_phone, seller_name, seller_agent_id, status, items, created_at")
-      .eq("shop_id", shop.id).order("created_at", { ascending: false });
+    const { data } = await supabase.rpc("get_shop_credit_sales", { p_shop_id: shop.id });
     setCreditSales((data || []) as CreditSale[]);
     setCreditLoading(false);
   }, [shop]);
@@ -358,7 +336,6 @@ export default function PosRequests() {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchCreditSales]);
 
-  // Refetch credit data when user returns to this tab/window (catches updates made on other pages)
   useEffect(() => {
     const onVisible = () => { if (document.visibilityState === "visible") fetchCreditSales(); };
     document.addEventListener("visibilitychange", onVisible);
@@ -369,11 +346,10 @@ export default function PosRequests() {
     };
   }, [fetchCreditSales]);
 
+  // ── Fetch credit payments (SECURITY DEFINER) ──────────────────────────
   const fetchPaymentsFor = useCallback(async (creditSaleId: string) => {
     setPaymentsLoading(creditSaleId);
-    const { data } = await supabase.from("shop_credit_payments")
-      .select("id, amount, payment_method, mpesa_ref, collected_by_agent_id, collected_by_name, created_at")
-      .eq("credit_sale_id", creditSaleId).order("created_at", { ascending: true });
+    const { data } = await supabase.rpc("get_credit_payments", { p_credit_sale_id: creditSaleId });
     setCreditPayments(prev => ({ ...prev, [creditSaleId]: (data || []) as CreditPayment[] }));
     setPaymentsLoading(null);
   }, []);
@@ -416,7 +392,7 @@ export default function PosRequests() {
       product_name: needsProduct && selectedProduct ? selectedProduct.name : needsProduct && productId === "__other__" ? "Other" : null,
       quantity:     needsQty && quantity ? parseInt(quantity) : null,
       message:      message.trim(),
-      status:       "pending",
+      // Note: status is intentionally omitted — the table default sets it to "pending"
     };
 
     if (!isOnline) {
@@ -436,8 +412,31 @@ export default function PosRequests() {
       return;
     }
 
-    const { error } = await supabase.from("shop_requests").insert(payload);
-    if (error) { setFormError(`Failed to send: ${error.message}`); setSubmitting(false); return; }
+    try {
+      // Use a SECURITY DEFINER RPC so the insert always succeeds regardless of
+      // the shop's JWT state — same pattern as insert_shop_transaction.
+      const { error } = await supabase.rpc("insert_shop_request", {
+        p_owner_id:     payload.owner_id,
+        p_shop_id:      payload.shop_id,
+        p_type:         payload.type,
+        p_product_id:   payload.product_id ?? null,
+        p_product_name: payload.product_name ?? null,
+        p_quantity:     payload.quantity ?? null,
+        p_message:      payload.message,
+      });
+
+      if (error) {
+        console.error("Request insert error:", JSON.stringify(error));
+        setFormError(`Failed to send: ${error.message || "Unknown error"}`);
+        setSubmitting(false);
+        return;
+      }
+    } catch (err) {
+      console.error("Unexpected error submitting request:", err);
+      setFormError(`Failed to send: ${err instanceof Error ? err.message : String(err)}`);
+      setSubmitting(false);
+      return;
+    }
     setSuccessMsg("Request sent to your owner ✓");
     setSubmitting(false);
     resetForm();
@@ -462,9 +461,13 @@ export default function PosRequests() {
       return;
     }
 
-    const { error } = await supabase.from("shop_expenses").insert({
-      shop_id: shop?.id, owner_id: shop?.owner_id, amount,
-      description: expDesc.trim(), logged_by: agent.agent.id, logged_by_name: agent.agent.name,
+    const { error } = await supabase.rpc("insert_shop_expense", {
+      p_shop_id:        shop?.id,
+      p_owner_id:       shop?.owner_id,
+      p_amount:         amount,
+      p_description:    expDesc.trim(),
+      p_logged_by:      agent.agent.id,
+      p_logged_by_name: agent.agent.name,
     });
     if (error) { setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
     setLogOpen(false);
@@ -491,9 +494,11 @@ export default function PosRequests() {
     if (!amount || amount <= 0) { setEditError("Enter a valid amount."); return; }
     if (!editDesc.trim()) { setEditError("Describe the expense."); return; }
     setEditProcessing(true);
-    const { error } = await supabase.from("shop_expenses")
-      .update({ amount, description: editDesc.trim(), updated_at: new Date().toISOString() })
-      .eq("id", editTarget.id);
+    const { error } = await supabase.rpc("update_shop_expense", {
+      p_expense_id:  editTarget.id,
+      p_amount:      amount,
+      p_description: editDesc.trim(),
+    });
     if (error) { setEditProcessing(false); setEditError("Failed to update expense."); return; }
     setEditTarget(null);
     setEditAmount(""); setEditDesc(""); setEditAgent(null); setEditPin(""); setEditError(""); setEditProcessing(false);
@@ -524,23 +529,18 @@ export default function PosRequests() {
     if (amount > balance) { setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`); return; }
     setPayProcessing(true);
 
-    const { error: insErr } = await supabase.from("shop_credit_payments").insert({
-      credit_sale_id:        payTarget.id,
-      shop_id:               shop?.id,
-      owner_id:              shop?.owner_id,
-      amount,
-      payment_method:        payMethod2,
-      mpesa_ref:             payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
-      collected_by_agent_id: agent.agent.agent_id,
-      collected_by_name:     agent.agent.name,
+    const { error: insErr } = await supabase.rpc("record_credit_payment", {
+      p_credit_sale_id:        payTarget.id,
+      p_shop_id:               shop?.id,
+      p_owner_id:              shop?.owner_id,
+      p_amount:                amount,
+      p_payment_method:        payMethod2,
+      p_mpesa_ref:             payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+      p_collected_by_agent_id: agent.agent.agent_id,
+      p_collected_by_name:     agent.agent.name,
     });
     if (insErr) { setPayProcessing(false); setPayError(insErr.message || "Failed to record payment. Try again."); return; }
-
-    const newPaid   = payTarget.amount_paid + amount;
-    const newStatus = newPaid >= payTarget.amount - 0.5 ? "paid" : "partial";
-    await supabase.from("shop_credit_sales")
-      .update({ amount_paid: newPaid, status: newStatus, updated_at: new Date().toISOString() })
-      .eq("id", payTarget.id);
+    // Credit sale status is updated atomically inside record_credit_payment RPC.
 
     const saleId = payTarget.id;
     setPayTarget(null);
@@ -562,57 +562,19 @@ export default function PosRequests() {
     if (!isOnline) { setReturnError("Marking a return requires an internet connection. This restores stock on the server and cannot be done offline."); return; }
     setReturnProcessing(true);
 
-    // Restore stock for each item
-    for (const item of returnTarget.items) {
-      const { data: allocData } = await supabase.from("shop_allocations").select("remaining").eq("id", item.allocation_id).single();
-      if (allocData) {
-        const { error: restoreErr } = await supabase.from("shop_allocations")
-          .update({ remaining: allocData.remaining + item.quantity }).eq("id", item.allocation_id);
-        if (restoreErr) {
-          setReturnProcessing(false);
-          setReturnError(`Failed to restore stock for ${item.product_name}.`);
-          return;
-        }
-      }
-    }
-
-    // Mark credit sale as returned
-    await supabase.from("shop_credit_sales")
-      .update({ status: "returned", updated_at: new Date().toISOString() })
-      .eq("id", returnTarget.id);
-
-    // Insert transaction_returns rows so the Transactions page reflects the return
-    const { data: linkedTxns } = await supabase
-      .from("shop_transactions")
-      .select("id, product_id, seller_agent_id")
-      .eq("credit_sale_id", returnTarget.id)
-      .eq("shop_id", shop.id);
-
-    if (linkedTxns && linkedTxns.length > 0) {
-      const returnRows = returnTarget.items
-        .map(item => {
-          const tx = linkedTxns.find(t => t.product_id === item.product_id);
-          if (!tx) return null;
-          return {
-            owner_id:                shop.owner_id,
-            source:                  "shop",
-            original_transaction_id: tx.id,
-            shop_id:                 shop.id,
-            agent_id:                returnTarget.seller_agent_id ?? null,
-            product_id:              item.product_id,
-            product_name:            item.product_name,
-            quantity_returned:       item.quantity,
-            unit_price:              item.unit_price,
-            amount_refunded:         item.subtotal,
-            reason:                  "Credit sale returned in full",
-            actor_name:              returnTarget.seller_name ?? null,
-            actor_code:              null,
-          };
-        })
-        .filter(Boolean);
-      if (returnRows.length > 0) {
-        await supabase.from("transaction_returns").insert(returnRows);
-      }
+    // Single RPC: restores stock + marks returned + inserts transaction_returns atomically
+    const { error: returnErr } = await supabase.rpc("mark_credit_returned", {
+      p_credit_sale_id:  returnTarget.id,
+      p_shop_id:         shop.id,
+      p_owner_id:        shop.owner_id,
+      p_seller_agent_id: returnTarget.seller_agent_id ?? null,
+      p_seller_name:     returnTarget.seller_name ?? null,
+      p_items:           returnTarget.items,
+    });
+    if (returnErr) {
+      setReturnProcessing(false);
+      setReturnError(`Failed to process return: ${returnErr.message}`);
+      return;
     }
 
     setReturnTarget(null);
@@ -806,6 +768,8 @@ export default function PosRequests() {
         </div>
       )}
 
+      {/* All writes use SECURITY DEFINER RPCs — no auth session banner needed */}
+
       {/* ══ REQUESTS TAB ══ */}
       {activeTab === "requests" && (
         <>
@@ -868,7 +832,22 @@ export default function PosRequests() {
                     style={{ width: "100%", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", resize: "none", boxSizing: "border-box", lineHeight: 1.6 }} />
                 </div>
 
-                {formError && <div style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 10, padding: "10px 14px", color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, marginBottom: 16 }}>⚠ {formError}</div>}
+                {formError && formError !== "__NO_AUTH__" && (
+                  <div style={{ background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 10, padding: "10px 14px", color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, marginBottom: 16 }}>⚠ {formError}</div>
+                )}
+                {formError === "__NO_AUTH__" && (
+                  <div style={{ background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 12, padding: "14px 16px", marginBottom: 16 }}>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, color: "#f87171", marginBottom: 6 }}>🔐 Session expired or shop not provisioned</div>
+                    <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: "#fca5a5", lineHeight: 1.6, marginBottom: 12 }}>
+                      Your shop's authentication token is missing or has expired.<br />
+                      Log out and log back in to restore it. If the problem persists, ask your owner to re-provision this shop from the owner dashboard.
+                    </div>
+                    <button onClick={() => { setShowForm(false); resetForm(); logout(); }}
+                      style={{ width: "100%", background: "rgba(239,68,68,0.15)", border: "1px solid rgba(239,68,68,0.35)", borderRadius: 9, padding: "10px 0", color: "#f87171", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+                      Log Out &amp; Re-login
+                    </button>
+                  </div>
+                )}
                 {successMsg && <div style={{ background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 10, padding: "10px 14px", color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, marginBottom: 16 }}>✓ {successMsg}</div>}
 
                 <div style={{ display: "flex", gap: 10 }}>

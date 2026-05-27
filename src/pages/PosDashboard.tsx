@@ -313,6 +313,8 @@ export default function PosDashboard() {
 
       <div style={{ padding: isMobile ? "16px 14px 110px" : "22px 28px 110px", display: "flex", flexDirection: "column", gap: 14 }}>
 
+        {/* Auth banner removed — all writes use SECURITY DEFINER RPCs and work without a session */}
+
         {/* ── Offline notice ── */}
         {!navigator.onLine && (
           <div style={{ background: "rgba(146,64,14,0.15)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 14, padding: "12px 16px", display: "flex", alignItems: "center", gap: 12 }}>
@@ -339,22 +341,28 @@ export default function PosDashboard() {
           </button>
         </div>
 
-        {/* ── Metric cards — horizontal scroll ── */}
+        {/* ── Metric cards — responsive grid ── */}
         <div className="section" style={{ animationDelay: "0.08s" }}>
-          <div style={{ display: "flex", gap: 10, overflowX: "auto", paddingBottom: 2, msOverflowStyle: "none" as any }}>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isMobile
+              ? "repeat(2, 1fr)"
+              : `repeat(${topCards.length}, 1fr)`,
+            gap: 10,
+          }}>
             {topCards.map(c => (
               <button key={c.key} className="top-card" onClick={c.onClick}
-                style={{ flex: `0 0 ${isMobile ? 152 : 190}px`, background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "13px 14px 11px", display: "flex", flexDirection: "column", gap: 5 }}>
+                style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "13px 14px 11px", display: "flex", flexDirection: "column", gap: 5, minWidth: 0 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
                   <div style={{ width: 28, height: 28, borderRadius: 7, background: `${c.col}1a`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>{c.icon}</div>
                   <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: c.col, letterSpacing: "0.12em" }}>{c.label}</span>
                 </div>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 28 : 34, color: c.col, lineHeight: 1, minHeight: 36 }}>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 26 : 30, color: c.col, lineHeight: 1, minHeight: 32 }}>
                   {loading ? <span style={{ opacity: 0.25, fontSize: 20 }}>—</span> : c.value}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.35 }}>{loading ? "" : c.sub}</div>
-                  <span style={{ fontSize: 11, color: "rgba(255,255,255,0.18)" }}>→</span>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "85%" }}>{loading ? "" : c.sub}</div>
+                  <span style={{ fontSize: 11, color: "rgba(255,255,255,0.18)", flexShrink: 0 }}>→</span>
                 </div>
               </button>
             ))}

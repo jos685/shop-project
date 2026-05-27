@@ -640,24 +640,26 @@ export default function PosScan() {
       // a zero-amount shop_transaction would create ghost KSh 0 entries on the owner's dashboard.
       if (initPaid > 0) {
         const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
-        const { error: txCreditErr } = await supabase.from("shop_transactions").insert({
-          shop_id:           shop?.id,
-          owner_id:          shop?.owner_id,
-          seller_agent_id:   verifiedAgent.agent_id,
-          product_id:        cart[0].allocation.product.id,
-          quantity:          cart.reduce((s, i) => s + i.quantity, 0),
-          amount:            initPaid,
-          customer_phone:    customerPhone.trim(),
-          payment_method:    initialPayMethod,
-          cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
-          mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
-          mpesa_ref:         null,
-          status:            txStatus,
-          unit_price:        cart[0].allocation.product.price,
-          base_price:        cart[0].allocation.product.price,
-          commission_rate:   0,
-          commission_earned: 0,
-          credit_sale_id:    creditData?.id ?? null,
+        const { error: txCreditErr } = await supabase.rpc("insert_shop_transaction", {
+          p_rows: {
+            shop_id:           shop?.id,
+            owner_id:          shop?.owner_id,
+            seller_agent_id:   verifiedAgent.agent_id,
+            product_id:        cart[0].allocation.product.id,
+            quantity:          cart.reduce((s, i) => s + i.quantity, 0),
+            amount:            initPaid,
+            customer_phone:    customerPhone.trim(),
+            payment_method:    initialPayMethod,
+            cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
+            mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
+            mpesa_ref:         null,
+            status:            txStatus,
+            unit_price:        cart[0].allocation.product.price,
+            base_price:        cart[0].allocation.product.price,
+            commission_rate:   0,
+            commission_earned: 0,
+            credit_sale_id:    creditData?.id ?? null,
+          },
         });
         if (txCreditErr) console.error("credit transaction record error:", txCreditErr);
       }
@@ -731,12 +733,14 @@ export default function PosScan() {
       };
     });
 
-    const { data, error: txErr } = await supabase.from("shop_transactions").insert(txRows).select();
+    const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: txRows });
     if (txErr) {
+      console.error("shop_transactions insert error:", JSON.stringify(txErr, null, 2));
+      console.error("txRows payload:", JSON.stringify(txRows, null, 2));
       Promise.all(deducted.map(d =>
         supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
       )).catch(() => {});
-      setError("Transaction failed. Stock has been restored — please try again.");
+      setError(`Transaction failed (${txErr.code}: ${txErr.message}). Stock has been restored — please try again.`);
       return;
     }
 
@@ -1697,27 +1701,45 @@ export default function PosScan() {
                     onClick={() => {
                       if (pinIsLocked) return;
                       if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
-                      else if (k && pin.length < 4) {
+                      else if (k) {
                         setError("");
-                        const newPin = pin + k;
-                        setPin(newPin);
-                        if (newPin.length === 4 && selectedAgent) {
-                          if (newPin !== String(selectedAgent.pin)) {
-                            const next = pinFails + 1;
-                            setPinFails(next);
-                            if (next >= PIN_MAX_FAILS) {
-                              const until = Date.now() + PIN_LOCK_MS;
-                              startPinLock(until);
+                        // Use functional update to always read the latest pin value —
+                        // avoids stale closure when digits are tapped quickly.
+                        setPin(prev => {
+                          if (prev.length >= 4) return prev; // guard (shouldn't happen)
+                          const newPin = prev + k;
+                          if (newPin.length === 4 && selectedAgent) {
+                            const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
+                            if (!storedPin) {
+                              // PIN not configured in DB — show helpful message
+                              setPinError("This agent has no PIN set. Ask your owner to configure one.");
+                              setPinShake(true);
+                              setTimeout(() => setPinShake(false), 400);
+                              return ""; // clear immediately
                             }
-                            setPinError("Incorrect PIN. Try again.");
-                            setPinShake(true);
-                            setTimeout(() => { setPinShake(false); setPin(""); }, 400);
-                          } else {
-                            setPinError("");
-                            setPinFails(0); setPinCountdown(0);
-                            handleSubmitSale(selectedAgent);
+                            if (newPin !== storedPin) {
+                              const next = pinFails + 1;
+                              setPinFails(next);
+                              if (next >= PIN_MAX_FAILS) {
+                                const until = Date.now() + PIN_LOCK_MS;
+                                startPinLock(until);
+                              }
+                              setPinError("Incorrect PIN. Try again.");
+                              setPinShake(true);
+                              // Clear pin IMMEDIATELY so the next digit starts fresh;
+                              // only delay the shake dismissal (visual only).
+                              setTimeout(() => setPinShake(false), 400);
+                              return ""; // ← reset right away, not in a 400ms timeout
+                            } else {
+                              setPinError("");
+                              setPinFails(0); setPinCountdown(0);
+                              handleSubmitSale(selectedAgent);
+                              return "";
+                            }
                           }
-                        }
+                          return newPin;
+                        });
+                        setPinError(""); // clear any prior error as user types
                       }
                     }}
                     style={{ height: 66, border: `1px solid ${k ? "rgba(255,255,255,0.12)" : "transparent"}`, borderRadius: 14, background: k ? "rgba(255,255,255,0.05)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 22 : 26, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1, transition: "background 0.12s" }}>

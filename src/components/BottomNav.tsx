@@ -6,10 +6,29 @@ import { useTheme } from "../context/ThemeContext";
 const tabs = [
   { path: "/pos",              icon: "🏠", label: "Dashboard", short: "Home", tour: "pos-home" },
   { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns", tour: "pos-txns" },
-  { path: "/pos/scan",         icon: "📷", label: "Scan&Sell", short: "Scan", tour: "pos-scan" },
+  { path: "/pos/scan",         icon: "cart", label: "Sell",    short: "Sell", tour: "pos-scan" },
   { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop", tour: "pos-info" },
   { path: "/pos/requests",     icon: "📋", label: "Hub",       short: "Hub",  tour: "pos-hub"  },
 ];
+
+function CartIcon({ color = "#fff", size = 22 }: { color?: string; size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+      {/* handle */}
+      <path d="M2 2h2.5l1.72 8.6" stroke={color} strokeWidth="1.7" strokeLinecap="round"/>
+      {/* basket body */}
+      <rect x="6.5" y="9" width="13" height="8.5" rx="1.5" stroke={color} strokeWidth="1.7"/>
+      {/* vertical grid lines inside basket */}
+      <line x1="10.5" y1="9" x2="10.5" y2="17.5" stroke={color} strokeWidth="1.1" strokeOpacity="0.6"/>
+      <line x1="14"   y1="9" x2="14"   y2="17.5" stroke={color} strokeWidth="1.1" strokeOpacity="0.6"/>
+      {/* horizontal grid line inside basket */}
+      <line x1="6.5" y1="13.2" x2="19.5" y2="13.2" stroke={color} strokeWidth="1.1" strokeOpacity="0.6"/>
+      {/* wheels */}
+      <circle cx="9.5"  cy="21" r="1.2" fill={color}/>
+      <circle cx="16.5" cy="21" r="1.2" fill={color}/>
+    </svg>
+  );
+}
 
 function useWindowWidth() {
   const [w, setW] = useState(window.innerWidth);
@@ -85,7 +104,7 @@ export default function BottomNav() {
                   justifyContent: "center",
                   gap: 2,
                 }}>
-                <span style={{ fontSize: 20, lineHeight: 1 }}>{tab.icon}</span>
+                <CartIcon color={isActive ? "#fff" : "#67e8f9"} size={22} />
                 <span style={{
                   fontSize: 9,
                   fontFamily: "DM Mono, monospace",

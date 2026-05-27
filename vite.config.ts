@@ -7,28 +7,44 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['icon-192.svg', 'icon-512.svg'],
+      includeAssets: ['shop2.png'],
       manifest: {
+        id: '/pos/',
         name: 'QASHUP POS',
         short_name: 'QASHUP POS',
         description: 'Shop point-of-sale terminal — process sales, manage stock, track performance.',
-        theme_color: '#130720',
-        background_color: '#130720',
+        theme_color: '#06b6d4',
+        background_color: '#080c12',
         display: 'standalone',
         orientation: 'any',
-        scope: '/',
-        start_url: '/',
+        scope: '/pos/',
+        start_url: '/pos',
         icons: [
           {
-            src: 'icon-512.svg',
-            sizes: 'any',
-            type: 'image/svg+xml',
+            src: 'shop2.png',
+            sizes: '192x192',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            src: 'shop2.png',
+            sizes: '512x512',
+            type: 'image/png',
+            purpose: 'any',
+          },
+          {
+            src: 'shop2.png',
+            sizes: '1254x1254',
+            type: 'image/png',
             purpose: 'any maskable',
           },
         ],
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,ico,svg,woff2}'],
+        disableDevLogs: true,
+        navigateFallback: '/pos/index.html',
+        navigateFallbackAllowlist: [/^\/pos/],
+        globPatterns: ['**/*.{js,css,html,ico,svg,png,woff2}'],
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*\.supabase\.co\/(rest|auth|storage)\//,
@@ -57,7 +73,8 @@ export default defineConfig({
         ],
       },
       devOptions: {
-        enabled: false,
+        enabled: true,
+        type: 'module',
       },
     }),
   ],

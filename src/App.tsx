@@ -13,7 +13,7 @@ import BottomNav           from "./components/BottomNav";
 import TopNav             from "./components/TopNav";
 import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
-import { PwaUpdatePrompt, PwaInstallBanner } from "./components/PwaPrompts";
+import { PwaUpdatePrompt, PwaInstallBanner, PwaReinstallNudge } from "./components/PwaPrompts";
 
 
 // ── Route guard ───────────────────────────────────────────────
@@ -87,6 +87,7 @@ export default function App() {
             </BrowserRouter>
             <PwaUpdatePrompt />
             <PwaInstallBanner />
+            <PwaReinstallNudge />
           </NetworkProvider>
         </ShopAuthProvider>
       </ThemeProvider>

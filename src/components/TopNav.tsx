@@ -33,6 +33,16 @@ export default function TopNav() {
   const [time,        setTime]        = useState(new Date());
   const [showLogout,  setShowLogout]  = useState(false);
   const [alertCount,  setAlertCount]  = useState(0);
+  // Guard against stray touch events propagating from the login screen.
+  // Reset to false every time a new shop session appears (login transition),
+  // then allow the logout button after 700 ms — enough time for the
+  // finger-lift from the login button tap to clear without triggering logout.
+  const [logoutReady, setLogoutReady] = useState(false);
+  useEffect(() => {
+    setLogoutReady(false);
+    const t = setTimeout(() => setLogoutReady(true), 700);
+    return () => clearTimeout(t);
+  }, [shop?.id]); // ← re-arm on every login, not just on mount
 
   // Clock tick
   useEffect(() => {
@@ -47,16 +57,17 @@ export default function TopNav() {
       supabase.from("shop_allocations")
         .select("remaining, allocated", { count: "exact", head: false })
         .eq("shop_id", shop.id),
-      supabase.from("shop_requests")
-        .select("id", { count: "exact", head: true })
-        .eq("shop_id", shop.id)
-        .eq("status", "pending"),
+      // Use SECURITY DEFINER RPC — works without an auth session
+      supabase.rpc("get_shop_requests", { p_shop_id: shop.id }),
     ]);
     const lowStock = (allocRes.data ?? []).filter(
       (a: { remaining: number; allocated: number }) =>
         a.allocated > 0 && a.remaining / a.allocated < 0.2
     ).length;
-    setAlertCount(lowStock + (reqRes.count ?? 0));
+    const pendingRequests = (reqRes.data ?? []).filter(
+      (r: { status: string }) => r.status === "pending"
+    ).length;
+    setAlertCount(lowStock + pendingRequests);
   }, [shop?.id]);
 
   useEffect(() => { fetchAlerts(); }, [fetchAlerts]);
@@ -264,7 +275,7 @@ export default function TopNav() {
 
           {/* Logout */}
           <button className="tnav-btn"
-            onClick={() => setShowLogout(true)}
+            onClick={() => logoutReady && setShowLogout(true)}
             style={{
               display:        "flex",
               alignItems:     "center",
@@ -284,7 +295,14 @@ export default function TopNav() {
               whiteSpace:     "nowrap",
               flexShrink:     0,
             }}>
-            {isMobile ? "🚪" : "🚪 Logout"}
+            {isMobile ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                {/* Arrow pointing right out of a box — universal "log out" icon */}
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <polyline points="16 17 21 12 16 7" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <line x1="21" y1="12" x2="9" y2="12" stroke="#f87171" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+            ) : "🚪 Logout"}
           </button>
         </div>
       </div>

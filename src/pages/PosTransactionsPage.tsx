@@ -83,15 +83,17 @@ function groupTransactions(txns: LocalTransaction[]): SaleGroup[] {
   return [...map.values()];
 }
 
-type DateFilter = "today" | "week" | "month" | "all";
+type DateFilter  = "today" | "week" | "month" | "all" | "custom";
+type CustomMode  = "day" | "month" | "year";
 
 const PAGE_SIZE = 25;
 
 const FILTER_LABELS: Record<DateFilter, string> = {
-  today: "Today",
-  week:  "This Week",
-  month: "This Month",
-  all:   "All Time",
+  today:  "Today",
+  week:   "This Week",
+  month:  "This Month",
+  all:    "All Time",
+  custom: "📅 Custom",
 };
 
 function getStartDate(filter: DateFilter): Date | null {
@@ -99,6 +101,31 @@ function getStartDate(filter: DateFilter): Date | null {
   if (filter === "today") { d.setHours(0, 0, 0, 0); return d; }
   if (filter === "week")  { d.setDate(d.getDate() - d.getDay()); d.setHours(0, 0, 0, 0); return d; }
   if (filter === "month") { d.setDate(1); d.setHours(0, 0, 0, 0); return d; }
+  return null;
+}
+
+function getCustomRange(mode: CustomMode, value: string): { start: Date; end: Date } | null {
+  if (!value) return null;
+  if (mode === "day") {
+    const start = new Date(value + "T00:00:00");
+    const end   = new Date(value + "T23:59:59.999");
+    if (isNaN(start.getTime())) return null;
+    return { start, end };
+  }
+  if (mode === "month") {
+    const [y, m] = value.split("-").map(Number);
+    if (!y || !m) return null;
+    const start = new Date(y, m - 1, 1);
+    const end   = new Date(y, m, 0, 23, 59, 59, 999);
+    return { start, end };
+  }
+  if (mode === "year") {
+    const y = parseInt(value);
+    if (isNaN(y)) return null;
+    const start = new Date(y,  0,  1,  0,  0,  0,   0);
+    const end   = new Date(y, 11, 31, 23, 59, 59, 999);
+    return { start, end };
+  }
   return null;
 }
 
@@ -117,6 +144,9 @@ export default function PosTransactionsPage() {
   const [hasMore, setHasMore]           = useState(false);
   const [offset, setOffset]             = useState(0);
   const [filter, setFilter]             = useState<DateFilter>("today");
+  const [customMode,  setCustomMode]    = useState<CustomMode>("day");
+  const [customValue, setCustomValue]   = useState("");
+  const [showCustomPicker, setShowCustomPicker] = useState(false);
   const [search, setSearch]             = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
@@ -412,7 +442,6 @@ export default function PosTransactionsPage() {
     productMapRef.current = {};
     sellerMapRef.current  = {};
 
-    const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
       .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
@@ -420,7 +449,16 @@ export default function PosTransactionsPage() {
       .order("created_at", { ascending: false })
       .range(0, PAGE_SIZE - 1);
 
-    if (startDate) query = query.gte("created_at", startDate.toISOString());
+    if (filter === "custom") {
+      const range = getCustomRange(customMode, customValue);
+      if (range) {
+        query = query.gte("created_at", range.start.toISOString())
+                     .lte("created_at", range.end.toISOString());
+      }
+    } else {
+      const startDate = getStartDate(filter);
+      if (startDate) query = query.gte("created_at", startDate.toISOString());
+    }
 
     const { data: txData, error } = await query;
     if (error || !txData) { setLoading(false); return; }
@@ -430,13 +468,12 @@ export default function PosTransactionsPage() {
     setOffset(PAGE_SIZE);
     setHasMore(txData.length === PAGE_SIZE);
     setLoading(false);
-  }, [shop, filter, enrichRows]);
+  }, [shop, filter, customMode, customValue, enrichRows]);
 
   const loadMore = useCallback(async () => {
     if (!shop || loadingMore) return;
     setLoadingMore(true);
 
-    const startDate = getStartDate(filter);
     let query = supabase
       .from("shop_transactions")
       .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
@@ -444,7 +481,16 @@ export default function PosTransactionsPage() {
       .order("created_at", { ascending: false })
       .range(offset, offset + PAGE_SIZE - 1);
 
-    if (startDate) query = query.gte("created_at", startDate.toISOString());
+    if (filter === "custom") {
+      const range = getCustomRange(customMode, customValue);
+      if (range) {
+        query = query.gte("created_at", range.start.toISOString())
+                     .lte("created_at", range.end.toISOString());
+      }
+    } else {
+      const startDate = getStartDate(filter);
+      if (startDate) query = query.gte("created_at", startDate.toISOString());
+    }
 
     const { data: txData, error } = await query;
     if (error || !txData) { setLoadingMore(false); return; }
@@ -454,7 +500,7 @@ export default function PosTransactionsPage() {
     setOffset(prev => prev + PAGE_SIZE);
     setHasMore(txData.length === PAGE_SIZE);
     setLoadingMore(false);
-  }, [shop, filter, offset, loadingMore, enrichRows]);
+  }, [shop, filter, customMode, customValue, offset, loadingMore, enrichRows]);
 
   useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
 
@@ -665,7 +711,11 @@ export default function PosTransactionsPage() {
         <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
           {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
             <button key={f} className="filter-pill"
-              onClick={() => setFilter(f)}
+              onClick={() => {
+                setFilter(f);
+                if (f === "custom") setShowCustomPicker(true);
+                else setShowCustomPicker(false);
+              }}
               style={{
                 padding: "7px 16px", borderRadius: 50,
                 border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
@@ -678,6 +728,100 @@ export default function PosTransactionsPage() {
             </button>
           ))}
         </div>
+
+        {/* Custom date picker — shown when "Custom" is active */}
+        {filter === "custom" && showCustomPicker && (
+          <div style={{
+            background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+            borderRadius: 14, padding: "14px 16px",
+            display: "flex", flexDirection: "column", gap: 12,
+            animation: "slideDown 0.18s ease",
+          }}>
+            {/* Mode tabs */}
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["day", "month", "year"] as CustomMode[]).map(m => (
+                <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
+                  style={{
+                    flex: 1, padding: "7px 0", borderRadius: 8,
+                    border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
+                    background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
+                    color: customMode === m ? theme.accent.cyan : theme.text.muted,
+                    fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
+                    cursor: "pointer", textTransform: "capitalize",
+                  }}>
+                  {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
+                </button>
+              ))}
+            </div>
+
+            {/* Input */}
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {customMode === "day" && (
+                <input type="date"
+                  value={customValue}
+                  max={new Date().toISOString().slice(0, 10)}
+                  onChange={e => setCustomValue(e.target.value)}
+                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+                />
+              )}
+              {customMode === "month" && (
+                <input type="month"
+                  value={customValue}
+                  max={new Date().toISOString().slice(0, 7)}
+                  onChange={e => setCustomValue(e.target.value)}
+                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+                />
+              )}
+              {customMode === "year" && (
+                <select
+                  value={customValue}
+                  onChange={e => setCustomValue(e.target.value)}
+                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
+                  <option value="">Select year…</option>
+                  {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
+                    <option key={y} value={String(y)}>{y}</option>
+                  ))}
+                </select>
+              )}
+              <button
+                onClick={() => { if (customValue) setShowCustomPicker(false); }}
+                disabled={!customValue}
+                style={{
+                  padding: "10px 18px", borderRadius: 10,
+                  background: customValue ? "linear-gradient(135deg,#0891b2,#06b6d4)" : "rgba(255,255,255,0.06)",
+                  border: "none", color: customValue ? "#fff" : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                  cursor: customValue ? "pointer" : "not-allowed", whiteSpace: "nowrap",
+                }}>
+                Apply ↵
+              </button>
+            </div>
+
+            {/* Active filter label */}
+            {customValue && !showCustomPicker && (
+              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+                Showing: {customMode === "day" ? new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "long", year: "numeric" }) : customMode === "month" ? new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" }) : customValue}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Active custom filter chip */}
+        {filter === "custom" && customValue && !showCustomPicker && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 50 }}>
+              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, fontWeight: 600 }}>
+                {customMode === "day"   ? `📆 ${new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}`
+                : customMode === "month" ? `📅 ${new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" })}`
+                : `🗓 ${customValue}`}
+              </span>
+              <button onClick={() => setShowCustomPicker(true)}
+                style={{ background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: theme.font.mono }}>
+                ✎
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Search bar */}
         <div style={{ position: "relative" }}>
