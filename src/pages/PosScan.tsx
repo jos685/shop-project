@@ -744,6 +744,9 @@ export default function PosScan() {
       return;
     }
 
+    // Notify PosTransactionsPage — window event works same-process; no JWT/RLS dependency
+    window.dispatchEvent(new CustomEvent("shop:new_sale", { detail: { shopId: shop?.id } }));
+
     const firstId = (data?.[0]?.id ?? "").slice(0, 8).toUpperCase();
     setSavedBatchRef(firstId);
     setSelectedAgent(verifiedAgent);

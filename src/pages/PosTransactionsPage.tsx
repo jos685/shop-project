@@ -151,6 +151,7 @@ export default function PosTransactionsPage() {
   const [showCustomPicker, setShowCustomPicker] = useState(false);
   const [search, setSearch]             = useState("");
   const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
+  const [typeFilter,   setTypeFilter]   = useState<"all" | "sales" | "expenses" | "returns">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [businessName, setBusinessName] = useState("");
@@ -532,17 +533,34 @@ export default function PosTransactionsPage() {
 
   useEffect(() => {
     if (!shop) return;
-    const ch = supabase.channel("pos-transactions-live")
-      .on("postgres_changes", {
-        event: "INSERT", schema: "public", table: "shop_transactions",
-        filter: `shop_id=eq.${shop.id}`,
-      }, fetchTransactions)
+
+    // window event: fired by PosScan/offlineQueue after a successful insert (same process, no JWT needed)
+    const onNewSale = (e: Event) => {
+      if ((e as CustomEvent).detail?.shopId === shop.id) fetchTransactions();
+    };
+    window.addEventListener("shop:new_sale", onNewSale);
+
+    // visibilitychange: refetch when user navigates back to this tab/page
+    const onVisible = () => { if (document.visibilityState === "visible") fetchTransactions(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    // 30 s polling as a safety net (mirrors owner dashboard behaviour)
+    const poll = setInterval(fetchTransactions, 30_000);
+
+    // expenses: postgres_changes is fine here since the fetch is via SECURITY DEFINER RPC
+    const expCh = supabase.channel(`shop-exp-changes-${shop.id}`)
       .on("postgres_changes", {
         event: "*", schema: "public", table: "shop_expenses",
         filter: `shop_id=eq.${shop.id}`,
       }, fetchTransactions)
       .subscribe();
-    return () => { supabase.removeChannel(ch); };
+
+    return () => {
+      window.removeEventListener("shop:new_sale", onNewSale);
+      document.removeEventListener("visibilitychange", onVisible);
+      clearInterval(poll);
+      supabase.removeChannel(expCh);
+    };
   }, [shop, fetchTransactions]);
 
   // Refetch returnsMap when user comes back to this page (catches returns done on Credit tab)
@@ -684,39 +702,53 @@ export default function PosTransactionsPage() {
     return `${Math.floor(m / 60)}h ago`;
   };
 
+  // Use YYYY-MM-DD (local date) as the group key — sorts correctly as a string
+  const dateKey = (iso: string) => {
+    const d = new Date(iso);
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${y}-${m}-${day}`;
+  };
+  const formatDateHeader = (key: string) =>
+    new Date(key + "T12:00:00").toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+
   const groupByDate = (txns: LocalTransaction[]) => {
     const groups: Record<string, LocalTransaction[]> = {};
     for (const tx of txns) {
-      const key = new Date(tx.created_at).toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+      const key = dateKey(tx.created_at);
       if (!groups[key]) groups[key] = [];
       groups[key].push(tx);
     }
     return groups;
   };
 
-  const grouped = groupByDate(displayed);
+  // When showing returns only, narrow to transactions that have at least one return entry
+  const displayedForType = typeFilter === "returns"
+    ? displayed.filter(tx => (returnsMap[tx.id] ?? []).length > 0)
+    : displayed;
 
-  // Build unified date-keyed list including expense rows
+  const grouped = groupByDate(displayedForType);
+
+  // Build unified date-keyed list — typeFilter controls which kinds appear
   type UnifiedItem = { kind: "tx"; data: LocalTransaction } | { kind: "exp"; data: typeof shopExpenses[number] };
   const unifiedByDate: Record<string, UnifiedItem[]> = {};
-  for (const [date, txns] of Object.entries(grouped)) {
-    unifiedByDate[date] = txns.map(t => ({ kind: "tx" as const, data: t }));
+  if (typeFilter !== "expenses") {
+    for (const [date, txns] of Object.entries(grouped)) {
+      unifiedByDate[date] = txns.map(t => ({ kind: "tx" as const, data: t }));
+    }
   }
-  for (const exp of shopExpenses) {
-    const key = new Date(exp.created_at).toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
-    if (!unifiedByDate[key]) unifiedByDate[key] = [];
-    unifiedByDate[key].push({ kind: "exp" as const, data: exp });
+  if (typeFilter !== "sales" && typeFilter !== "returns") {
+    for (const exp of shopExpenses) {
+      const key = dateKey(exp.created_at);
+      if (!unifiedByDate[key]) unifiedByDate[key] = [];
+      unifiedByDate[key].push({ kind: "exp" as const, data: exp });
+    }
   }
-  // Sort each day's items by created_at descending and sort date keys descending
-  const sortedDateKeys = Object.keys(unifiedByDate).sort(
-    (a, b) => new Date(b).getTime() - new Date(a).getTime()
-  );
+  // YYYY-MM-DD keys sort correctly as strings — newest first
+  const sortedDateKeys = Object.keys(unifiedByDate).sort((a, b) => b.localeCompare(a));
   for (const key of sortedDateKeys) {
-    unifiedByDate[key].sort((a, b) => {
-      const da = a.kind === "tx" ? a.data.created_at : a.data.created_at;
-      const db = b.kind === "tx" ? b.data.created_at : b.data.created_at;
-      return db.localeCompare(da);
-    });
+    unifiedByDate[key].sort((a, b) => b.data.created_at.localeCompare(a.data.created_at));
   }
 
   // Receipt badge config
@@ -759,6 +791,27 @@ export default function PosTransactionsPage() {
       </div>
 
       <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* Type filter pills */}
+        <div style={{ display: "flex", gap: 7 }}>
+          {(["all", "sales", "expenses", "returns"] as const).map(t => {
+            const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
+            const active = typeFilter === t;
+            return (
+              <button key={t} className="filter-pill" onClick={() => setTypeFilter(t)}
+                style={{
+                  padding: "7px 14px", borderRadius: 50,
+                  border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
+                  background: active ? "rgba(251,191,36,0.12)" : "transparent",
+                  color: active ? theme.accent.gold : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
+                  cursor: "pointer",
+                }}>
+                {labels[t]}
+              </button>
+            );
+          })}
+        </div>
 
         {/* Date filter pills */}
         <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
@@ -1071,10 +1124,12 @@ export default function PosTransactionsPage() {
                 Retry
               </button>
             </div>
-          ) : displayed.length === 0 && shopExpenses.length === 0 ? (
+          ) : sortedDateKeys.length === 0 ? (
             <div style={{ padding: "60px 20px", textAlign: "center" }}>
               <div style={{ fontSize: 40, opacity: 0.2, marginBottom: 12 }}>🧾</div>
-              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No transactions found</div>
+              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>
+                {typeFilter === "returns" ? "No returned transactions" : typeFilter === "expenses" ? "No expenses recorded" : "No transactions found"}
+              </div>
               {search && <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 4 }}>Try clearing your search</div>}
             </div>
           ) : (
@@ -1088,7 +1143,7 @@ export default function PosTransactionsPage() {
                 <div key={date}>
                   {/* Date group header */}
                   <div style={{ padding: "8px 18px", background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{date}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{formatDateHeader(date)}</div>
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(dayNet)}</div>
                   </div>
 

@@ -148,6 +148,7 @@ async function syncOne(sale: QueuedSale): Promise<"success" | "stock_error" | "d
       }
       return "db_error";
     }
+    window.dispatchEvent(new CustomEvent("shop:new_sale", { detail: { shopId: sale.shopId } }));
   }
 
   dequeue(sale.id);
