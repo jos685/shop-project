@@ -870,6 +870,10 @@ export default function PosScan() {
         .pin-digit.filled { border-color:${theme.accent.cyan}80;background:${theme.accent.cyan}14; }
         .back-btn:hover { background:rgba(255,255,255,0.08) !important; }
         .cart-row:hover { background:rgba(255,255,255,0.03) !important; }
+        .num-btn:active:not(:disabled) { background:rgba(6,182,212,0.18) !important; transform:scale(0.92); }
+        .num-del:active:not(:disabled) { background:rgba(248,113,113,0.2) !important; transform:scale(0.92); }
+        .method-card:hover { border-color:rgba(6,182,212,0.3) !important; }
+        @keyframes pinDotPop { 0%{transform:scale(0.6);opacity:0.5} 70%{transform:scale(1.25)} 100%{transform:scale(1.1);opacity:1} }
       `}</style>
 
       {/* ── Header ── */}
@@ -1443,14 +1447,39 @@ export default function PosScan() {
             {/* RIGHT COLUMN — Verify method + agent + PIN */}
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
               {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px" }}>⚠ {error}</div>}
-              {/* Method toggle */}
-              <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
-                {([{ key: "badge", label: "📛 Scan Badge" }, { key: "pin", label: "🔑 Enter PIN" }] as const).map(({ key, label }) => (
-                  <button key={key} onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
-                    style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: isMobile ? 12 : 13, fontWeight: verifyMethod === key ? 600 : 400, background: verifyMethod === key ? "rgba(6,182,212,0.15)" : "transparent", color: verifyMethod === key ? theme.accent.cyan : theme.text.muted }}>
-                    {label}
-                  </button>
-                ))}
+              {/* Method toggle — card style */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {([
+                  { key: "badge" as const, icon: "📛", label: "Scan Badge", desc: "Agent QR badge" },
+                  { key: "pin"   as const, icon: "🔑", label: "Enter PIN",  desc: "4-digit agent PIN" },
+                ]).map(({ key, icon, label, desc }) => {
+                  const isSel = verifyMethod === key;
+                  return (
+                    <button key={key} className="method-card"
+                      onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
+                      style={{
+                        padding: "16px 10px 14px",
+                        border: `1.5px solid ${isSel ? "rgba(6,182,212,0.55)" : "rgba(255,255,255,0.08)"}`,
+                        borderRadius: 16,
+                        background: isSel ? "rgba(6,182,212,0.1)" : "rgba(255,255,255,0.02)",
+                        cursor: "pointer",
+                        display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
+                        transition: "all 0.15s", textAlign: "center",
+                        position: "relative",
+                      }}>
+                      <span style={{ fontSize: 24, lineHeight: 1 }}>{icon}</span>
+                      <div style={{ fontFamily: theme.font.display, fontSize: 13, fontWeight: 700, color: isSel ? theme.accent.cyan : theme.text.primary, marginTop: 2 }}>
+                        {label}
+                      </div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: isSel ? "rgba(6,182,212,0.7)" : theme.text.muted }}>
+                        {desc}
+                      </div>
+                      {isSel && (
+                        <div style={{ position: "absolute", top: 10, right: 10, width: 7, height: 7, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.9)" }} />
+                      )}
+                    </button>
+                  );
+                })}
               </div>
 
               {/* ── PIN method ── */}
@@ -1625,137 +1654,163 @@ export default function PosScan() {
       </div>
 
       {/* ══════════════════ FULL-SCREEN PIN MODAL ══════════════════ */}
-      {step === "verify" && verifyMethod === "pin" && selectedAgent && (
-        <div style={{ position: "fixed", inset: 0, zIndex: 110, background: "rgba(0,0,0,0.92)", backdropFilter: "blur(10px)", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", padding: "24px 20px" }}>
-          {processing ? (
-            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 24 }}>
-              <div style={{ position: "relative", width: 80, height: 80 }}>
-                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
-                <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
-                <div style={{ position: "absolute", inset: 10, borderRadius: "50%", border: "2px solid transparent", borderTopColor: "rgba(6,182,212,0.45)", animation: "spin 1.2s linear infinite reverse" }} />
+      {step === "verify" && verifyMethod === "pin" && selectedAgent && (() => {
+        const btnH   = isMobile ? 54 : 58;
+        const padH   = isMobile ? "12px 16px 10px" : "14px 20px 12px";
+        const numGap = isMobile ? 6 : 8;
+        return (
+          <div style={{ position: "fixed", inset: 0, zIndex: 110, background: theme.bg.base, display: "flex", flexDirection: "column", alignItems: "center", overflow: "hidden" }}>
+            {processing ? (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20 }}>
+                <div style={{ position: "relative", width: 64, height: 64 }}>
+                  <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
+                  <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.muted }}>
+                  {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
+                </div>
+                <div style={{ width: 220, height: 3, borderRadius: 99, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+                  <div style={{ height: "100%", borderRadius: 99, background: `linear-gradient(90deg,${theme.accent.cyan},#0891b2)`, animation: "progress-bar 1.4s ease-in-out infinite" }} />
+                </div>
               </div>
-              <div style={{ fontFamily: theme.font.mono, fontSize: 14, color: theme.text.muted }}>
-                {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
-              </div>
-              <div style={{ width: 260, height: 3, borderRadius: 99, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                <div style={{ height: "100%", borderRadius: 99, background: `linear-gradient(90deg,${theme.accent.cyan},#0891b2)`, animation: "progress-bar 1.4s ease-in-out infinite" }} />
-              </div>
-            </div>
-          ) : (
-            <div style={{ width: "100%", maxWidth: 360, display: "flex", flexDirection: "column", gap: 20 }}>
-              {/* Back button + agent identity */}
-              <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
-                <button onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
-                  style={{ width: 40, height: 40, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.12)", background: "rgba(255,255,255,0.05)", color: theme.text.muted, fontSize: 18, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  ←
-                </button>
-                <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1, minWidth: 0 }}>
-                  <div style={{ width: 48, height: 48, borderRadius: "50%", background: "rgba(6,182,212,0.18)", border: "1px solid rgba(6,182,212,0.4)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 20, color: theme.accent.cyan, flexShrink: 0 }}>
+            ) : (
+              <div style={{ width: "100%", maxWidth: 400, display: "flex", flexDirection: "column" }}>
+
+                {/* ── Top bar ── */}
+                <div style={{ padding: padH, borderBottom: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 12 }}>
+                  <button onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
+                    style={{ width: 34, height: 34, borderRadius: "50%", border: `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.04)", color: theme.text.muted, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                    ←
+                  </button>
+                  <div style={{ width: 38, height: 38, borderRadius: "50%", background: "rgba(6,182,212,0.15)", border: "2px solid rgba(6,182,212,0.45)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: theme.accent.cyan, flexShrink: 0 }}>
                     {selectedAgent.avatar || selectedAgent.name.charAt(0).toUpperCase()}
                   </div>
                   <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 17, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedAgent.name}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>Enter 4-digit PIN to authorise</div>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: isMobile ? 14 : 15, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedAgent.name}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Enter 4-digit PIN to authorise</div>
                   </div>
                 </div>
-              </div>
 
-              {/* Lockout banner */}
-              {pinIsLocked && (
-                <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 12, padding: "12px 16px" }}>
-                  <span style={{ fontSize: 20 }}>🔒</span>
-                  <div>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
-                    <div style={{ fontSize: 12, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
+                {/* ── Body: total + dots + numpad — compact, no gaps ── */}
+                <div style={{ padding: isMobile ? "20px 14px 24px" : "24px 20px 28px", display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
+
+                  {/* Sale total */}
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 3 }}>Sale Total</div>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 26 : 30, color: theme.accent.gold, lineHeight: 1 }}>{fmt(grandTotal)}</div>
                   </div>
-                </div>
-              )}
 
-              {/* Attempt warning */}
-              {!pinIsLocked && pinFails >= 3 && (
-                <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 10, padding: "9px 14px", textAlign: "center" }}>
-                  ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
-                </div>
-              )}
+                  {/* Lockout / warning banners */}
+                  {(pinIsLocked || (!pinIsLocked && pinFails >= 3)) && (
+                    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6 }}>
+                      {pinIsLocked && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.22)", borderRadius: 10, padding: "10px 14px" }}>
+                          <span style={{ fontSize: 18 }}>🔒</span>
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
+                            <div style={{ fontSize: 11, color: "#f87171", fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
+                          </div>
+                        </div>
+                      )}
+                      {!pinIsLocked && pinFails >= 3 && (
+                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.06)", border: "1px solid rgba(234,179,8,0.18)", borderRadius: 8, padding: "7px 12px", textAlign: "center", width: "100%" }}>
+                          ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
+                        </div>
+                      )}
+                    </div>
+                  )}
 
-              {/* PIN dots */}
-              <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 14, justifyContent: "center", opacity: pinIsLocked ? 0.35 : 1 }}>
-                {[0, 1, 2, 3].map(i => (
-                  <div key={i} className={`pin-digit ${i < pin.length ? "filled" : ""}`}>
-                    {i < pin.length ? "●" : ""}
+                  {/* PIN dots */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
+                    <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 18, justifyContent: "center", opacity: pinIsLocked ? 0.3 : 1 }}>
+                      {[0, 1, 2, 3].map(i => (
+                        <div key={i} style={{
+                          width: isMobile ? 16 : 18, height: isMobile ? 16 : 18, borderRadius: "50%",
+                          background: i < pin.length ? theme.accent.cyan : "transparent",
+                          border: `2.5px solid ${i < pin.length ? theme.accent.cyan : "rgba(255,255,255,0.22)"}`,
+                          transition: "all 0.15s cubic-bezier(0.34,1.56,0.64,1)",
+                          boxShadow: i < pin.length ? `0 0 14px ${theme.accent.cyan}65` : "none",
+                          transform: i < pin.length ? "scale(1.15)" : "scale(1)",
+                        }} />
+                      ))}
+                    </div>
+                    {pinError && !pinIsLocked && (
+                      <div style={{ color: "#f87171", fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 8, padding: "6px 14px", textAlign: "center" }}>
+                        ⚠ {pinError}
+                      </div>
+                    )}
                   </div>
-                ))}
-              </div>
 
-              {/* PIN error */}
-              {pinError && !pinIsLocked && (
-                <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-                  ⚠ {pinError}
-                </div>
-              )}
-
-              {/* Numpad */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 10 }}>
-                {["1", "2", "3", "4", "5", "6", "7", "8", "9", "", "0", "⌫"].map(k => (
-                  <button key={k} disabled={!k || pinIsLocked}
-                    onClick={() => {
-                      if (pinIsLocked) return;
-                      if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
-                      else if (k) {
-                        setError("");
-                        // Use functional update to always read the latest pin value —
-                        // avoids stale closure when digits are tapped quickly.
-                        setPin(prev => {
-                          if (prev.length >= 4) return prev; // guard (shouldn't happen)
-                          const newPin = prev + k;
-                          if (newPin.length === 4 && selectedAgent) {
-                            const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
-                            if (!storedPin) {
-                              // PIN not configured in DB — show helpful message
-                              setPinError("This agent has no PIN set. Ask your owner to configure one.");
-                              setPinShake(true);
-                              setTimeout(() => setPinShake(false), 400);
-                              return ""; // clear immediately
-                            }
-                            if (newPin !== storedPin) {
-                              const next = pinFails + 1;
-                              setPinFails(next);
-                              if (next >= PIN_MAX_FAILS) {
-                                const until = Date.now() + PIN_LOCK_MS;
-                                startPinLock(until);
+                  {/* Numpad */}
+                  <div style={{ width: "100%" }}>
+                  <div style={{ background: "rgba(255,255,255,0.025)", border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: isMobile ? "10px 8px" : "12px 10px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: numGap }}>
+                    {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
+                      <button key={k}
+                        className={k === "⌫" ? "num-del" : k ? "num-btn" : ""}
+                        disabled={!k || pinIsLocked}
+                        onClick={() => {
+                          if (pinIsLocked) return;
+                          if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
+                          else if (k) {
+                            setError("");
+                            setPin(prev => {
+                              if (prev.length >= 4) return prev;
+                              const newPin = prev + k;
+                              if (newPin.length === 4 && selectedAgent) {
+                                const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
+                                if (!storedPin) {
+                                  setPinError("This agent has no PIN set. Ask your owner to configure one.");
+                                  setPinShake(true);
+                                  setTimeout(() => setPinShake(false), 400);
+                                  return "";
+                                }
+                                if (newPin !== storedPin) {
+                                  const next = pinFails + 1;
+                                  setPinFails(next);
+                                  if (next >= PIN_MAX_FAILS) {
+                                    const until = Date.now() + PIN_LOCK_MS;
+                                    startPinLock(until);
+                                  }
+                                  setPinError("Incorrect PIN. Try again.");
+                                  setPinShake(true);
+                                  setTimeout(() => setPinShake(false), 400);
+                                  return "";
+                                } else {
+                                  setPinError("");
+                                  setPinFails(0); setPinCountdown(0);
+                                  handleSubmitSale(selectedAgent);
+                                  return "";
+                                }
                               }
-                              setPinError("Incorrect PIN. Try again.");
-                              setPinShake(true);
-                              // Clear pin IMMEDIATELY so the next digit starts fresh;
-                              // only delay the shake dismissal (visual only).
-                              setTimeout(() => setPinShake(false), 400);
-                              return ""; // ← reset right away, not in a 400ms timeout
-                            } else {
-                              setPinError("");
-                              setPinFails(0); setPinCountdown(0);
-                              handleSubmitSale(selectedAgent);
-                              return "";
-                            }
+                              return newPin;
+                            });
+                            setPinError("");
                           }
-                          return newPin;
-                        });
-                        setPinError(""); // clear any prior error as user types
-                      }
-                    }}
-                    style={{ height: 66, border: `1px solid ${k ? "rgba(255,255,255,0.12)" : "transparent"}`, borderRadius: 14, background: k ? "rgba(255,255,255,0.05)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: theme.font.mono, fontSize: k === "⌫" ? 22 : 26, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1, transition: "background 0.12s" }}>
-                    {k}
-                  </button>
-                ))}
+                        }}
+                        style={{
+                          height: btnH,
+                          border: "none",
+                          borderRadius: 12,
+                          background: k === "⌫" ? "rgba(248,113,113,0.08)" : k ? "rgba(255,255,255,0.06)" : "transparent",
+                          color: k === "⌫" ? "#f87171" : theme.text.primary,
+                          fontFamily: theme.font.mono,
+                          fontSize: k === "⌫" ? 20 : isMobile ? 24 : 26,
+                          fontWeight: 400,
+                          cursor: k && !pinIsLocked ? "pointer" : "default",
+                          opacity: pinIsLocked ? 0.3 : 1,
+                          transition: "background 0.1s, transform 0.08s",
+                        }}>
+                        {k}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                </div>
               </div>
-
-              {/* Order total reminder */}
-              <div style={{ textAlign: "center", fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted }}>
-                Total: <span style={{ color: theme.accent.gold, fontWeight: 700, fontSize: 16 }}>{fmt(grandTotal)}</span>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        );
+      })()}
 
       {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
       {addingProduct && (

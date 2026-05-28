@@ -139,6 +139,8 @@ export default function PosTransactionsPage() {
   const [expandedQ,   setExpandedQ]     = useState<string | null>(null);
 
   const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
+  const [shopExpenses, setShopExpenses] = useState<{ id: string; amount: number; description: string; payment_method: string; created_at: string }[]>([]);
+  const [fetchError, setFetchError]     = useState<string | null>(null);
   const [loading, setLoading]           = useState(true);
   const [loadingMore, setLoadingMore]   = useState(false);
   const [hasMore, setHasMore]           = useState(false);
@@ -442,29 +444,55 @@ export default function PosTransactionsPage() {
     productMapRef.current = {};
     sellerMapRef.current  = {};
 
-    let query = supabase
-      .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
-      .eq("shop_id", shop.id)
-      .order("created_at", { ascending: false })
-      .range(0, PAGE_SIZE - 1);
-
+    let pStart: string | undefined;
+    let pEnd:   string | undefined;
     if (filter === "custom") {
       const range = getCustomRange(customMode, customValue);
-      if (range) {
-        query = query.gte("created_at", range.start.toISOString())
-                     .lte("created_at", range.end.toISOString());
-      }
+      if (range) { pStart = range.start.toISOString(); pEnd = range.end.toISOString(); }
     } else {
       const startDate = getStartDate(filter);
-      if (startDate) query = query.gte("created_at", startDate.toISOString());
+      if (startDate) pStart = startDate.toISOString();
     }
 
-    const { data: txData, error } = await query;
-    if (error || !txData) { setLoading(false); return; }
+    // Both queries use SECURITY DEFINER RPCs — bypass RLS regardless of JWT state
+    const [{ data: txData, error }, { data: expData }] = await Promise.all([
+      supabase.rpc("get_shop_transactions", {
+        p_shop_id: shop.id,
+        p_start:   pStart ?? null,
+        p_end:     pEnd   ?? null,
+        p_limit:   PAGE_SIZE,
+        p_offset:  0,
+      }),
+      supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
+    ]);
+    if (error) { console.error("shop_transactions fetch error:", error); setFetchError(error.message); setLoading(false); return; }
+    if (!txData) { setFetchError("No data returned"); setLoading(false); return; }
+    setFetchError(null);
+
+    // Filter expenses client-side to match the active date window
+    const allExps: { id: string; amount: number; description: string; payment_method: string; created_at: string }[] =
+      (expData || []).map((e: any) => ({
+        id:             e.id,
+        amount:         Number(e.amount) || 0,
+        description:    e.description || "Expense",
+        payment_method: e.payment_method || "cash",
+        created_at:     e.created_at,
+      }));
+
+    const filteredExps = allExps.filter(e => {
+      const d = new Date(e.created_at);
+      if (filter === "custom") {
+        const range = getCustomRange(customMode, customValue);
+        if (!range) return true;
+        return d >= range.start && d <= range.end;
+      }
+      const startDate = getStartDate(filter);
+      return startDate ? d >= startDate : true;
+    });
 
     const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
     setTransactions(enriched);
+    setShopExpenses(filteredExps);
     setOffset(PAGE_SIZE);
     setHasMore(txData.length === PAGE_SIZE);
     setLoading(false);
@@ -474,25 +502,23 @@ export default function PosTransactionsPage() {
     if (!shop || loadingMore) return;
     setLoadingMore(true);
 
-    let query = supabase
-      .from("shop_transactions")
-      .select("id, amount, quantity, payment_method, cash_amount, mpesa_amount, mpesa_ref, created_at, product_id, seller_agent_id, customer_phone, unit_price, receipt_sent, receipt_phone, status, commission_rate, commission_earned, credit_sale_id")
-      .eq("shop_id", shop.id)
-      .order("created_at", { ascending: false })
-      .range(offset, offset + PAGE_SIZE - 1);
-
+    let pStart: string | undefined;
+    let pEnd:   string | undefined;
     if (filter === "custom") {
       const range = getCustomRange(customMode, customValue);
-      if (range) {
-        query = query.gte("created_at", range.start.toISOString())
-                     .lte("created_at", range.end.toISOString());
-      }
+      if (range) { pStart = range.start.toISOString(); pEnd = range.end.toISOString(); }
     } else {
       const startDate = getStartDate(filter);
-      if (startDate) query = query.gte("created_at", startDate.toISOString());
+      if (startDate) pStart = startDate.toISOString();
     }
 
-    const { data: txData, error } = await query;
+    const { data: txData, error } = await supabase.rpc("get_shop_transactions", {
+      p_shop_id: shop.id,
+      p_start:   pStart ?? null,
+      p_end:     pEnd   ?? null,
+      p_limit:   PAGE_SIZE,
+      p_offset:  offset,
+    });
     if (error || !txData) { setLoadingMore(false); return; }
 
     const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
@@ -509,6 +535,10 @@ export default function PosTransactionsPage() {
     const ch = supabase.channel("pos-transactions-live")
       .on("postgres_changes", {
         event: "INSERT", schema: "public", table: "shop_transactions",
+        filter: `shop_id=eq.${shop.id}`,
+      }, fetchTransactions)
+      .on("postgres_changes", {
+        event: "*", schema: "public", table: "shop_expenses",
         filter: `shop_id=eq.${shop.id}`,
       }, fetchTransactions)
       .subscribe();
@@ -599,9 +629,13 @@ export default function PosTransactionsPage() {
     return matchesMethod && matchesSearch;
   });
 
-  const totalRevenue  = displayed.reduce((s, t) => s + t.amount, 0);
-  const totalCash     = displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0);
-  const totalMpesa    = displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
+  const expensesSum   = shopExpenses.reduce((s, e) => s + e.amount, 0);
+  const grossRevenue  = displayed.reduce((s, t) => s + t.amount, 0);
+  const totalRevenue  = Math.max(0, grossRevenue - expensesSum);
+  const cashExpenses  = shopExpenses.filter(e => e.payment_method !== "mpesa").reduce((s, e) => s + e.amount, 0);
+  const mpesaExpenses = shopExpenses.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + e.amount, 0);
+  const totalCash     = Math.max(0, displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0) - cashExpenses);
+  const totalMpesa    = Math.max(0, displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0) - mpesaExpenses);
   const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
 
   // Cap each return deduction at t.amount — credit sales (amount=0) contribute nothing to revenue
@@ -662,6 +696,29 @@ export default function PosTransactionsPage() {
 
   const grouped = groupByDate(displayed);
 
+  // Build unified date-keyed list including expense rows
+  type UnifiedItem = { kind: "tx"; data: LocalTransaction } | { kind: "exp"; data: typeof shopExpenses[number] };
+  const unifiedByDate: Record<string, UnifiedItem[]> = {};
+  for (const [date, txns] of Object.entries(grouped)) {
+    unifiedByDate[date] = txns.map(t => ({ kind: "tx" as const, data: t }));
+  }
+  for (const exp of shopExpenses) {
+    const key = new Date(exp.created_at).toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+    if (!unifiedByDate[key]) unifiedByDate[key] = [];
+    unifiedByDate[key].push({ kind: "exp" as const, data: exp });
+  }
+  // Sort each day's items by created_at descending and sort date keys descending
+  const sortedDateKeys = Object.keys(unifiedByDate).sort(
+    (a, b) => new Date(b).getTime() - new Date(a).getTime()
+  );
+  for (const key of sortedDateKeys) {
+    unifiedByDate[key].sort((a, b) => {
+      const da = a.kind === "tx" ? a.data.created_at : a.data.created_at;
+      const db = b.kind === "tx" ? b.data.created_at : b.data.created_at;
+      return db.localeCompare(da);
+    });
+  }
+
   // Receipt badge config
   const receiptBadge = (tx: LocalTransaction) => {
     if (tx.receipt_sent === true)  return { label: "📱 Receipt Sent",   color: "#34d399", bg: "rgba(52,211,153,0.10)",  border: "rgba(52,211,153,0.25)"  };
@@ -699,16 +756,12 @@ export default function PosTransactionsPage() {
           <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, letterSpacing: "-0.02em" }}>Transactions</div>
           <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>{shop?.name} · {shop?.shop_code}</div>
         </div>
-        <button onClick={fetchTransactions}
-          style={{ background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }}>
-          ↻
-        </button>
       </div>
 
       <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
 
         {/* Date filter pills */}
-        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
           {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
             <button key={f} className="filter-pill"
               onClick={() => {
@@ -717,7 +770,7 @@ export default function PosTransactionsPage() {
                 else setShowCustomPicker(false);
               }}
               style={{
-                padding: "7px 16px", borderRadius: 50,
+                padding: "7px 14px", borderRadius: 50,
                 border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
                 background: filter === f ? "rgba(6,182,212,0.15)" : "transparent",
                 color: filter === f ? theme.accent.cyan : theme.text.muted,
@@ -841,12 +894,12 @@ export default function PosTransactionsPage() {
         </div>
 
         {/* Payment method filter pills */}
-        <div style={{ display: "flex", gap: 8, overflowX: "auto", paddingBottom: 2 }}>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
           {([
-            { key: "all",   icon: "",   label: "All Methods" },
-            { key: "cash",  icon: "💵", label: "Cash"        },
-            { key: "mpesa", icon: "📱", label: "M-Pesa"      },
-            { key: "split", icon: "⚡", label: "Split"       },
+            { key: "all",   icon: "",   label: "Methods"  },
+            { key: "cash",  icon: "💵", label: "Cash"     },
+            { key: "mpesa", icon: "📱", label: "M-Pesa"   },
+            { key: "split", icon: "⚡", label: "Split"    },
           ] as const).map(({ key, icon, label }) => {
             const active = methodFilter === key;
             const colors: Record<string, string> = {
@@ -858,7 +911,7 @@ export default function PosTransactionsPage() {
               <button key={key} className="filter-pill"
                 onClick={() => setMethodFilter(key)}
                 style={{
-                  padding: "7px 16px", borderRadius: 50, whiteSpace: "nowrap",
+                  padding: "7px 14px", borderRadius: 50, whiteSpace: "nowrap",
                   border: `1px solid ${active ? col : theme.border.default}`,
                   background: active ? `${col}22` : "transparent",
                   color: active ? col : theme.text.muted,
@@ -872,8 +925,9 @@ export default function PosTransactionsPage() {
           })}
         </div>
 
-        {/* Summary strip */}
-        <div style={{ display: "grid", gridTemplateColumns: queuedSales.length > 0 ? "repeat(4,1fr)" : "repeat(3,1fr)", gap: 8 }}>
+        {/* Summary strip — auto-fit so 3 cards stay in one row on normal phones
+            and 4 cards (with queue) wrap to 2×2 on narrow screens */}
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(92px, 1fr))", gap: 8 }}>
           {[
             { label: "Net Total", value: fmt(totalRevenue - totalRefunded), color: theme.accent.gold },
             { label: "Cash",      value: fmt(totalCash - cashRefunded),     color: "#34d399"         },
@@ -882,9 +936,9 @@ export default function PosTransactionsPage() {
               ? [{ label: "Queued", value: fmt(queuedTotal), color: "#fbbf24" }]
               : []),
           ].map(({ label, value, color }) => (
-            <div key={label} style={{ background: label === "Queued" ? "rgba(251,191,36,0.06)" : theme.bg.card, border: `1px solid ${label === "Queued" ? "rgba(251,191,36,0.25)" : theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: label === "Queued" ? "#fbbf24" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>{label}</div>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color }}>{value}</div>
+            <div key={label} style={{ background: label === "Queued" ? "rgba(251,191,36,0.06)" : theme.bg.card, border: `1px solid ${label === "Queued" ? "rgba(251,191,36,0.25)" : theme.border.default}`, borderRadius: 12, padding: "11px 12px" }}>
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: label === "Queued" ? "#fbbf24" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 5 }}>{label}</div>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 14, color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
             </div>
           ))}
         </div>
@@ -1008,7 +1062,16 @@ export default function PosTransactionsPage() {
               <div style={{ width: 24, height: 24, border: "3px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto 10px" }} />
               <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>Loading transactions...</div>
             </div>
-          ) : displayed.length === 0 ? (
+          ) : fetchError ? (
+            <div style={{ padding: "40px 20px", textAlign: "center" }}>
+              <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
+              <div style={{ color: "#f87171", fontSize: 13, fontFamily: theme.font.mono, marginBottom: 6 }}>Failed to load transactions</div>
+              <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginBottom: 14, wordBreak: "break-all" }}>{fetchError}</div>
+              <button onClick={fetchTransactions} style={{ padding: "8px 18px", background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 10, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer" }}>
+                Retry
+              </button>
+            </div>
+          ) : displayed.length === 0 && shopExpenses.length === 0 ? (
             <div style={{ padding: "60px 20px", textAlign: "center" }}>
               <div style={{ fontSize: 40, opacity: 0.2, marginBottom: 12 }}>🧾</div>
               <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No transactions found</div>
@@ -1016,15 +1079,40 @@ export default function PosTransactionsPage() {
             </div>
           ) : (
             <div>
-              {Object.entries(grouped).map(([date, txns]) => (
+              {sortedDateKeys.map(date => {
+                const items = unifiedByDate[date];
+                const txnsForDate = items.filter(i => i.kind === "tx").map(i => i.data as LocalTransaction);
+                const expsForDate = items.filter(i => i.kind === "exp").map(i => i.data as typeof shopExpenses[number]);
+                const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0) - expsForDate.reduce((s, e) => s + e.amount, 0);
+                return (
                 <div key={date}>
                   {/* Date group header */}
                   <div style={{ padding: "8px 18px", background: "rgba(255,255,255,0.02)", borderBottom: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{date}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(txns.reduce((s, t) => s + t.amount, 0))}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(dayNet)}</div>
                   </div>
 
-                  {groupTransactions(txns).map((group, gi, arr) => {
+                  {/* Expense rows for this day */}
+                  {expsForDate.map(exp => {
+                    const pmLabel: Record<string, string> = { cash: "💵 Cash", mpesa: "📱 M-Pesa", split: "⚡ Split" };
+                    return (
+                      <div key={`exp-${exp.id}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(248,113,113,0.03)" }}>
+                        <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>💸</div>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontWeight: 600, fontSize: 13, color: "#f87171", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.description}</div>
+                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                            {pmLabel[exp.payment_method] ?? exp.payment_method} · {new Date(exp.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                          </div>
+                          <div style={{ display: "inline-block", marginTop: 4, background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#f87171", fontFamily: theme.font.mono, letterSpacing: "0.06em" }}>EXPENSE</div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0 }}>
+                          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(exp.amount)}</div>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {groupTransactions(txnsForDate).map((group, gi, arr) => {
                     const isMulti      = group.items.length > 1;
                     const isLast       = gi === arr.length - 1;
                     const isOpen       = expanded === group.key;
@@ -1265,7 +1353,8 @@ export default function PosTransactionsPage() {
                     );
                   })}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

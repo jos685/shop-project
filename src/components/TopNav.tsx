@@ -273,36 +273,62 @@ export default function TopNav() {
             {isMobile ? "🧭" : "🧭 Tour"}
           </button>
 
-          {/* Logout */}
+          {/* Refresh */}
+          <button className="tnav-btn"
+            onClick={() => window.location.reload()}
+            title="Refresh"
+            style={{
+              width:          isMobile ? 30 : 34,
+              height:         isMobile ? 30 : 34,
+              borderRadius:   "50%",
+              background:     "rgba(6,182,212,0.08)",
+              border:         "1px solid rgba(6,182,212,0.25)",
+              cursor:         "pointer",
+              display:        "flex",
+              alignItems:     "center",
+              justifyContent: "center",
+              flexShrink:     0,
+              WebkitTapHighlightColor: "transparent",
+            }}>
+            <svg width={isMobile ? 14 : 16} height={isMobile ? 14 : 16} viewBox="0 0 24 24" fill="none">
+              <path d="M23 4v6h-6" stroke="#06b6d4" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" stroke="#06b6d4" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+
+          {/* Sign Out */}
           <button className="tnav-btn"
             onClick={() => logoutReady && setShowLogout(true)}
+            title="Sign out"
             style={{
               display:        "flex",
               alignItems:     "center",
-              gap:            5,
-              padding:        isMobile ? "0" : "5px 12px",
+              gap:            6,
+              padding:        isMobile ? "0" : "6px 14px",
               width:          isMobile ? 30 : "auto",
               height:         isMobile ? 30 : "auto",
               justifyContent: "center",
-              background:     "rgba(248,113,113,0.1)",
-              border:         "1px solid rgba(248,113,113,0.25)",
+              background:     "rgba(248,113,113,0.08)",
+              border:         "1px solid rgba(248,113,113,0.22)",
               borderRadius:   isMobile ? "50%" : 50,
               color:          "#f87171",
               fontFamily:     theme.font.mono,
-              fontSize:       isMobile ? 14 : 11,
+              fontSize:       11,
               fontWeight:     600,
               cursor:         "pointer",
               whiteSpace:     "nowrap",
               flexShrink:     0,
+              WebkitTapHighlightColor: "transparent",
             }}>
-            {isMobile ? (
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-                {/* Arrow pointing right out of a box — universal "log out" icon */}
-                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <polyline points="16 17 21 12 16 7" stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                <line x1="21" y1="12" x2="9" y2="12" stroke="#f87171" strokeWidth="2" strokeLinecap="round"/>
-              </svg>
-            ) : "🚪 Logout"}
+            <svg width={isMobile ? 15 : 14} height={isMobile ? 15 : 14} viewBox="0 0 24 24" fill="none">
+              <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"
+                stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <polyline points="16 17 21 12 16 7"
+                stroke="#f87171" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+              <line x1="21" y1="12" x2="9" y2="12"
+                stroke="#f87171" strokeWidth="2" strokeLinecap="round"/>
+            </svg>
+            {!isMobile && "Sign Out"}
           </button>
         </div>
       </div>

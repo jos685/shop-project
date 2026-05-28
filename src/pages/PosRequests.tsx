@@ -174,15 +174,16 @@ export default function PosRequests() {
   const [expenses,      setExpenses]      = useState<Expense[]>([]);
   const [expLoading,    setExpLoading]    = useState(false);
 
-  const [logOpen,       setLogOpen]       = useState(false);
-  const [expAmount,     setExpAmount]     = useState("");
-  const [expDesc,       setExpDesc]       = useState("");
-  const [expAgent,      setExpAgent]      = useState<ShopAgent | null>(null);
-  const [expPin,        setExpPin]        = useState("");
-  const [expPinError,   setExpPinError]   = useState("");
-  const [expPinShake,   setExpPinShake]   = useState(false);
-  const [expProcessing, setExpProcessing] = useState(false);
-  const [expError,      setExpError]      = useState("");
+  const [logOpen,        setLogOpen]        = useState(false);
+  const [expAmount,      setExpAmount]      = useState("");
+  const [expDesc,        setExpDesc]        = useState("");
+  const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
+  const [expPin,         setExpPin]         = useState("");
+  const [expPinError,    setExpPinError]    = useState("");
+  const [expPinShake,    setExpPinShake]    = useState(false);
+  const [expProcessing,  setExpProcessing]  = useState(false);
+  const [expError,       setExpError]       = useState("");
+  const [shopSalesTotal, setShopSalesTotal] = useState<number | null>(null);
 
   const [editTarget,    setEditTarget]    = useState<Expense | null>(null);
   const [editAmount,    setEditAmount]    = useState("");
@@ -443,11 +444,31 @@ export default function PosRequests() {
     setTimeout(() => { setShowForm(false); setSuccessMsg(""); fetchData(); }, 1500);
   };
 
+  // ── Fetch shop sales total whenever the log-expense modal opens ─────
+  useEffect(() => {
+    if (!logOpen || !shop) return;
+    setShopSalesTotal(null);
+    supabase
+      .from("shop_transactions")
+      .select("amount")
+      .eq("shop_id", shop.id)
+      .then(({ data }) => {
+        const total = (data ?? []).reduce((s: number, t: { amount: number }) => s + (t.amount ?? 0), 0);
+        setShopSalesTotal(total);
+      });
+  }, [logOpen, shop]);
+
   // ── Expense handlers ──────────────────────────────────────────────────
   const handleLogExpense = async (agent: ShopAgent) => {
     const amount = parseFloat(expAmount);
     if (!amount || amount <= 0) { setExpError("Enter a valid amount."); return; }
     if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
+    const totalAlreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
+    const availableBalance = shopSalesTotal !== null ? Math.max(0, shopSalesTotal - totalAlreadyExpensed) : null;
+    if (availableBalance !== null && amount > availableBalance) {
+      setExpError(`Amount exceeds available shop balance of KSh ${availableBalance.toLocaleString()}.`);
+      return;
+    }
     setExpProcessing(true);
 
     if (!isOnline) {
@@ -1219,8 +1240,55 @@ export default function PosRequests() {
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount (KSh)</label>
               <input className="ki" type="number" value={expAmount}
                 onChange={e => { setExpAmount(sanitizeAmount(e.target.value)); setExpError(""); }}
-                placeholder="e.g. 500" min="0" />
+                placeholder="e.g. 500" min="0"
+                max={(() => {
+                  if (shopSalesTotal === null) return undefined;
+                  const alreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
+                  return Math.max(0, shopSalesTotal - alreadyExpensed);
+                })()} />
             </div>
+
+            {/* Available balance strip */}
+            {(() => {
+              const alreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
+              const available = shopSalesTotal !== null ? Math.max(0, shopSalesTotal - alreadyExpensed) : null;
+              const entered   = parseFloat(expAmount) || 0;
+              const overLimit = available !== null && entered > available;
+              return (
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  padding: "10px 14px",
+                  background: overLimit
+                    ? "rgba(248,113,113,0.07)"
+                    : available === null
+                    ? "rgba(255,255,255,0.03)"
+                    : "rgba(52,211,153,0.06)",
+                  border: `1px solid ${overLimit ? "rgba(248,113,113,0.25)" : available === null ? theme.border.default : "rgba(52,211,153,0.2)"}`,
+                  borderRadius: 10,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 14 }}>{overLimit ? "⚠️" : "💰"}</span>
+                    <div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                        Available in shop
+                      </div>
+                      {available !== null && alreadyExpensed > 0 && (
+                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>
+                          KSh {shopSalesTotal!.toLocaleString()} revenue − KSh {alreadyExpensed.toLocaleString()} expensed
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  {available === null ? (
+                    <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
+                  ) : (
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: overLimit ? "#f87171" : "#34d399" }}>
+                      KSh {available.toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>What was it for?</label>
