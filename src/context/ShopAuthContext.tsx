@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from "react";
-import { supabase, supabaseAdmin } from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 import type { ShopSession } from "../lib/supabase";
 import type { ReactNode } from "react";
 import { cachePosOfflineAuth, verifyPosOfflineCredentialsDetailed } from "../lib/offlineAuth";
@@ -225,40 +225,30 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (signInErr) {
-        // Auth user doesn't exist (or password mismatch). Try to create/repair it now.
-        console.warn("Shop auth sign-in failed — attempting auto-provision:", signInErr.message);
-
-        // The shop auth user's UUID MUST equal the shop's UUID so that
-        // auth.uid() = shop_id works in RLS policies (credit sales, etc.).
-        // Check if a user already exists with this email or with this shop UUID.
-        const { data: byId }    = await supabaseAdmin.auth.admin.getUserById(data.id);
-        const { data: listData } = await supabaseAdmin.auth.admin.listUsers();
-        const byEmail = listData?.users?.find(u => u.email === shopEmail);
-
-        if (byId?.user && byId.user.email === shopEmail) {
-          // Correct user exists (UUID matches shop UUID) — just update password.
-          await supabaseAdmin.auth.admin.updateUserById(data.id, { password: password.trim() });
-        } else {
-          // Delete any wrong-UUID user that has this email, then create correctly.
-          if (byEmail && byEmail.id !== data.id) {
-            await supabaseAdmin.auth.admin.deleteUser(byEmail.id);
-          }
-          await supabaseAdmin.auth.admin.createUser({
-            id:            data.id,          // ← shop UUID = auth user UUID (auth.uid() = shop_id)
-            email:         shopEmail,
+        // Auth user doesn't exist or password mismatch.
+        // Call the pos-provision-auth edge function (server-side, has service key)
+        // to create/repair the auth user with the correct UUID (auth.uid() = shop_id).
+        console.warn("Shop auth sign-in failed — calling pos-provision-auth:", signInErr.message);
+        const { data: provData } = await supabase.functions.invoke("pos-provision-auth", {
+          body: {
+            business_code: businessCode.trim(),
+            shop_code:     shopCode.trim(),
             password:      password.trim(),
-            email_confirm: true,
-            user_metadata: { role: "shop", shop_id: data.id, shop_code: shopCode.trim(), owner_id: data.owner_id },
-          });
-        }
-
-        // Second attempt — now the auth user exists with the correct password.
-        const { error: retryErr } = await supabase.auth.signInWithPassword({
-          email:    shopEmail,
-          password: password.trim(),
+          },
         });
-        authErr = retryErr ?? null;
-        if (authErr) console.warn("Shop auth retry failed:", authErr.message);
+
+        if (!provData?.success) {
+          console.warn("pos-provision-auth failed:", provData?.error);
+          authErr = { message: provData?.error ?? "Auth provisioning failed" };
+        } else {
+          // Second attempt — auth user now exists with the correct password.
+          const { error: retryErr } = await supabase.auth.signInWithPassword({
+            email:    shopEmail,
+            password: password.trim(),
+          });
+          authErr = retryErr ?? null;
+          if (authErr) console.warn("Shop auth retry failed:", authErr.message);
+        }
       }
 
       // Persist whether the Supabase Auth sign-in succeeded so other pages can

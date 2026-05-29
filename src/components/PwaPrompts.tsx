@@ -10,7 +10,7 @@ const isIos = () =>
   /iphone|ipad|ipod/i.test(navigator.userAgent) && !(window as unknown as { MSStream?: unknown }).MSStream;
 
 // Bump ICON_VERSION whenever the PWA icon changes so installed users see the nudge once
-const ICON_VERSION   = "1";
+const ICON_VERSION   = "2";
 const REINSTALL_KEY  = `pos_pwa_reinstall_seen_v${ICON_VERSION}`;
 // Session-only dismiss — banner reappears every new browser session
 const INSTALL_SESSION_KEY = "pos_pwa_install_dismissed_session";
@@ -154,13 +154,13 @@ export function PwaInstallBanner() {
         {/* Main row */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <img
-            src="/shop2.png"
-            alt="QASHUP POS"
+            src="/Qash.png"
+            alt="Q-SHOP"
             style={{ width: 44, height: 44, borderRadius: 12, objectFit: "cover", flexShrink: 0 }}
           />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#e2e8f0", fontFamily: "monospace" }}>
-              Add QASHUP to Home Screen
+              Add Q-SHOP to Home Screen
             </div>
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "monospace", marginTop: 2, lineHeight: 1.4 }}>
               Install for faster access and offline use

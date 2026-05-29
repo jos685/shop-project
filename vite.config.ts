@@ -7,11 +7,11 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
-      includeAssets: ['shop2.png'],
+      includeAssets: ['Qash.png'],
       manifest: {
         id: '/pos/',
-        name: 'QASHUP POS',
-        short_name: 'QASHUP POS',
+        name: 'Q-SHOP',
+        short_name: 'Q-SHOP',
         description: 'Shop point-of-sale terminal — process sales, manage stock, track performance.',
         theme_color: '#06b6d4',
         background_color: '#080c12',
@@ -21,19 +21,19 @@ export default defineConfig({
         start_url: '/pos',
         icons: [
           {
-            src: 'shop2.png',
+            src: 'Qash.png',
             sizes: '192x192',
             type: 'image/png',
             purpose: 'any',
           },
           {
-            src: 'shop2.png',
+            src: 'Qash.png',
             sizes: '512x512',
             type: 'image/png',
             purpose: 'any',
           },
           {
-            src: 'shop2.png',
+            src: 'Qash.png',
             sizes: '1254x1254',
             type: 'image/png',
             purpose: 'any maskable',

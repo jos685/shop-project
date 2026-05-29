@@ -124,11 +124,11 @@ export default function PosLogin() {
         }
 
         .est-panel-logo {
-          width: 72px; height: 72px;
+          width: 120px; height: 80px;
           background: rgba(255,255,255,0.2);
           backdrop-filter: blur(8px);
           border: 2px solid rgba(255,255,255,0.35);
-          border-radius: 20px;
+          border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
           overflow: hidden;
           margin-bottom: 28px;
@@ -390,10 +390,10 @@ export default function PosLogin() {
           }
 
           .est-panel-logo {
-            width: 56px; height: 56px;
+            width: 90px; height: 60px;
             font-size: 26px;
             margin-bottom: 0;
-            border-radius: 16px;
+            border-radius: 50%;
             flex-shrink: 0;
           }
 

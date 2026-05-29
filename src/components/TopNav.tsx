@@ -39,6 +39,7 @@ export default function TopNav() {
   // finger-lift from the login button tap to clear without triggering logout.
   const [logoutReady, setLogoutReady] = useState(false);
   useEffect(() => {
+    setShowLogout(false);
     setLogoutReady(false);
     const t = setTimeout(() => setLogoutReady(true), 700);
     return () => clearTimeout(t);
@@ -298,8 +299,9 @@ export default function TopNav() {
 
           {/* Sign Out */}
           <button className="tnav-btn"
-            onClick={() => logoutReady && setShowLogout(true)}
+            onClick={() => setShowLogout(true)}
             title="Sign out"
+            disabled={!logoutReady}
             style={{
               display:        "flex",
               alignItems:     "center",
@@ -319,6 +321,7 @@ export default function TopNav() {
               whiteSpace:     "nowrap",
               flexShrink:     0,
               WebkitTapHighlightColor: "transparent",
+              pointerEvents:  logoutReady ? "auto" : "none",
             }}>
             <svg width={isMobile ? 15 : 14} height={isMobile ? 15 : 14} viewBox="0 0 24 24" fill="none">
               <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"

@@ -109,6 +109,7 @@ export default function PosScan() {
   const [pinFails,     setPinFails]     = useState(0);
   const [pinCountdown, setPinCountdown] = useState(0);
   const pinLockRef     = useRef<ReturnType<typeof setInterval> | null>(null);
+  const submittingRef  = useRef(false);
 
   const startPinLock = useCallback((until: number) => {
     if (pinLockRef.current) clearInterval(pinLockRef.current);
@@ -480,6 +481,8 @@ export default function PosScan() {
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
     if (cart.length === 0) return;
+    if (submittingRef.current) return;
+    submittingRef.current = true;
 
     // Persist the active agent so the dashboard can greet them by name
     if (shop?.id) {
@@ -555,6 +558,7 @@ export default function PosScan() {
       setSavedBatchRef("OFFLINE");
       setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
       setStep("success");
+      submittingRef.current = false;
       return;
     }
 
@@ -593,12 +597,12 @@ export default function PosScan() {
         subtotal:      item.allocation.product.price * item.quantity,
       }));
 
-      const initPaid  = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
+      const initPaid   = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
       const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
+      const txStatus   = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
 
-      const { data: creditData, error: creditErr } = await supabase
-        .from("shop_credit_sales")
-        .insert({
+      const { data: fnData, error: fnErr } = await supabase.functions.invoke("insert-credit-sale", {
+        body: {
           shop_id:         shop?.id,
           owner_id:        shop?.owner_id,
           items:           creditItems,
@@ -609,60 +613,41 @@ export default function PosScan() {
           seller_agent_id: verifiedAgent.agent_id,
           seller_name:     verifiedAgent.name,
           status:          initStatus,
-        })
-        .select()
-        .single();
+          // Payment details for the upfront portion (sent only when initPaid > 0)
+          ...(initPaid > 0 && {
+            initial_payment_method: initialPayMethod,
+            tx_row: {
+              shop_id:           shop?.id,
+              owner_id:          shop?.owner_id,
+              seller_agent_id:   verifiedAgent.agent_id,
+              product_id:        cart[0].allocation.product.id,
+              quantity:          cart.reduce((s, i) => s + i.quantity, 0),
+              amount:            initPaid,
+              customer_phone:    customerPhone.trim(),
+              payment_method:    initialPayMethod,
+              cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
+              mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
+              mpesa_ref:         null,
+              status:            txStatus,
+              unit_price:        cart[0].allocation.product.price,
+              base_price:        cart[0].allocation.product.price,
+              commission_rate:   0,
+              commission_earned: 0,
+            },
+          }),
+        },
+      });
 
-      if (creditErr) {
-        console.error("shop_credit_sales insert error:", creditErr);
-        // Best-effort rollback — run in parallel so nothing blocks setProcessing
+      if (fnErr || !fnData?.success) {
+        console.error("insert-credit-sale error:", fnErr ?? fnData?.error);
         Promise.all(deducted.map(d =>
           supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
         )).catch(() => {});
-        setError(`Credit sale failed: ${creditErr.message || creditErr.code || "unknown error"}`);
+        setError(`Credit sale failed: ${fnData?.error ?? fnErr?.message ?? "unknown error"}`);
         return;
       }
 
-      // Record initial payment (if any) into credit_payments
-      if (initPaid > 0 && creditData?.id) {
-        supabase.from("shop_credit_payments").insert({
-          credit_sale_id: creditData.id,
-          shop_id:        shop?.id,
-          owner_id:       shop?.owner_id,
-          amount:         initPaid,
-          payment_method: initialPayMethod,
-          mpesa_ref:      null,
-        });
-      }
-
-      // Only record a shop_transaction when money was actually collected upfront.
-      // Zero-upfront credit sales belong only in shop_credit_sales + shop_credit_payments;
-      // a zero-amount shop_transaction would create ghost KSh 0 entries on the owner's dashboard.
-      if (initPaid > 0) {
-        const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
-        const { error: txCreditErr } = await supabase.rpc("insert_shop_transaction", {
-          p_rows: {
-            shop_id:           shop?.id,
-            owner_id:          shop?.owner_id,
-            seller_agent_id:   verifiedAgent.agent_id,
-            product_id:        cart[0].allocation.product.id,
-            quantity:          cart.reduce((s, i) => s + i.quantity, 0),
-            amount:            initPaid,
-            customer_phone:    customerPhone.trim(),
-            payment_method:    initialPayMethod,
-            cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
-            mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
-            mpesa_ref:         null,
-            status:            txStatus,
-            unit_price:        cart[0].allocation.product.price,
-            base_price:        cart[0].allocation.product.price,
-            commission_rate:   0,
-            commission_earned: 0,
-            credit_sale_id:    creditData?.id ?? null,
-          },
-        });
-        if (txCreditErr) console.error("credit transaction record error:", txCreditErr);
-      }
+      const creditData = fnData.data;
 
       setSavedBatchRef((creditData?.id ?? "").slice(0, 8).toUpperCase());
       setSelectedAgent(verifiedAgent);
@@ -787,6 +772,7 @@ export default function PosScan() {
       setError("An unexpected error occurred. Please try again.");
     } finally {
       setProcessing(false);
+      submittingRef.current = false;
     }
   };
 
@@ -1742,6 +1728,11 @@ export default function PosScan() {
                         ⚠ {pinError}
                       </div>
                     )}
+                    {error && !pinError && (
+                      <div style={{ color: "#f87171", fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 8, padding: "6px 14px", textAlign: "center" }}>
+                        ⚠ {error}
+                      </div>
+                    )}
                   </div>
 
                   {/* Numpad */}
@@ -1756,37 +1747,38 @@ export default function PosScan() {
                           if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
                           else if (k) {
                             setError("");
-                            setPin(prev => {
-                              if (prev.length >= 4) return prev;
-                              const newPin = prev + k;
-                              if (newPin.length === 4 && selectedAgent) {
-                                const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
-                                if (!storedPin) {
-                                  setPinError("This agent has no PIN set. Ask your owner to configure one.");
-                                  setPinShake(true);
-                                  setTimeout(() => setPinShake(false), 400);
-                                  return "";
-                                }
-                                if (newPin !== storedPin) {
-                                  const next = pinFails + 1;
-                                  setPinFails(next);
-                                  if (next >= PIN_MAX_FAILS) {
-                                    const until = Date.now() + PIN_LOCK_MS;
-                                    startPinLock(until);
-                                  }
-                                  setPinError("Incorrect PIN. Try again.");
-                                  setPinShake(true);
-                                  setTimeout(() => setPinShake(false), 400);
-                                  return "";
-                                } else {
-                                  setPinError("");
-                                  setPinFails(0); setPinCountdown(0);
-                                  handleSubmitSale(selectedAgent);
-                                  return "";
-                                }
+                            if (pin.length >= 4) return;
+                            const newPin = pin + k;
+                            if (newPin.length === 4 && selectedAgent) {
+                              const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
+                              if (!storedPin) {
+                                setPin("");
+                                setPinError("This agent has no PIN set. Ask your owner to configure one.");
+                                setPinShake(true);
+                                setTimeout(() => setPinShake(false), 400);
+                                return;
                               }
-                              return newPin;
-                            });
+                              if (newPin !== storedPin) {
+                                const next = pinFails + 1;
+                                setPinFails(next);
+                                if (next >= PIN_MAX_FAILS) {
+                                  const until = Date.now() + PIN_LOCK_MS;
+                                  startPinLock(until);
+                                }
+                                setPin("");
+                                setPinError("Incorrect PIN. Try again.");
+                                setPinShake(true);
+                                setTimeout(() => setPinShake(false), 400);
+                                return;
+                              } else {
+                                setPin("");
+                                setPinError("");
+                                setPinFails(0); setPinCountdown(0);
+                                handleSubmitSale(selectedAgent);
+                                return;
+                              }
+                            }
+                            setPin(newPin);
                             setPinError("");
                           }
                         }}

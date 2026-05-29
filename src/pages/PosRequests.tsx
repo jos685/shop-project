@@ -95,6 +95,17 @@ interface CreditSale {
   created_at: string;
 }
 
+interface CustomerCreditGroup {
+  key: string;
+  customer_name: string;
+  customer_phone: string;
+  sales: CreditSale[];
+  totalOutstanding: number;
+  totalPaid: number;
+  totalAmount: number;
+  hasOpen: boolean;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const REQUEST_TYPES: { value: RequestType; label: string; icon: string; desc: string; color: string }[] = [
@@ -177,6 +188,7 @@ export default function PosRequests() {
   const [logOpen,        setLogOpen]        = useState(false);
   const [expAmount,      setExpAmount]      = useState("");
   const [expDesc,        setExpDesc]        = useState("");
+  const [expPayment,     setExpPayment]     = useState<"cash" | "mpesa" | "split">("cash");
   const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
   const [expPin,         setExpPin]         = useState("");
   const [expPinError,    setExpPinError]    = useState("");
@@ -218,9 +230,17 @@ export default function PosRequests() {
   const [returnProcessing, setReturnProcessing] = useState(false);
   const [returnError,      setReturnError]      = useState("");
 
-  const [expandedCreditId, setExpandedCreditId] = useState<string | null>(null);
-  const [creditPayments,   setCreditPayments]   = useState<Record<string, CreditPayment[]>>({});
-  const [paymentsLoading,  setPaymentsLoading]  = useState<string | null>(null);
+  const [expandedCreditId,    setExpandedCreditId]    = useState<string | null>(null);
+  const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
+  const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
+  const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
+
+  const [businessName,    setBusinessName]    = useState("");
+  const [sendStmtGroup,   setSendStmtGroup]   = useState<CustomerCreditGroup | null>(null);
+  const [sendStmtPhone,   setSendStmtPhone]   = useState("");
+  const [sendStmtSending, setSendStmtSending] = useState(false);
+  const [sendStmtError,   setSendStmtError]   = useState("");
+  const [sendStmtSent,    setSendStmtSent]    = useState(false);
 
   // ── Shared PIN lockout ────────────────────────────────────────────────
   const PIN_MAX_FAILS   = 5;
@@ -346,6 +366,16 @@ export default function PosRequests() {
       window.removeEventListener("focus", fetchCreditSales);
     };
   }, [fetchCreditSales]);
+
+  useEffect(() => {
+    if (!shop?.owner_id) return;
+    supabase
+      .from("profiles")
+      .select("business_name")
+      .eq("id", shop.owner_id)
+      .single()
+      .then(({ data }) => { if (data?.business_name) setBusinessName(data.business_name); });
+  }, [shop?.owner_id]);
 
   // ── Fetch credit payments (SECURITY DEFINER) ──────────────────────────
   const fetchPaymentsFor = useCallback(async (creditSaleId: string) => {
@@ -475,10 +505,11 @@ export default function PosRequests() {
       enqueueExpense({
         shopId: shop!.id, ownerId: shop!.owner_id, amount,
         description: expDesc.trim(), loggedBy: agent.agent.id, loggedByName: agent.agent.name,
+        paymentMethod: expPayment,
       });
       refreshPendingCount();
       setLogOpen(false);
-      setExpAmount(""); setExpDesc(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
+      setExpAmount(""); setExpDesc(""); setExpPayment("cash"); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
       return;
     }
 
@@ -489,10 +520,11 @@ export default function PosRequests() {
       p_description:    expDesc.trim(),
       p_logged_by:      agent.agent.id,
       p_logged_by_name: agent.agent.name,
+      p_payment_method: expPayment,
     });
     if (error) { setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
     setLogOpen(false);
-    setExpAmount(""); setExpDesc(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
+    setExpAmount(""); setExpDesc(""); setExpPayment("cash"); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
     fetchExpenses();
   };
 
@@ -617,6 +649,69 @@ export default function PosRequests() {
 
   const statusColor = (s: string) => s === "paid" ? "#34d399" : s === "returned" ? "#6b7280" : s === "partial" ? "#fbbf24" : "#f87171";
   const statusLabel = (s: string) => s === "paid" ? "Paid" : s === "returned" ? "Returned" : s === "partial" ? "Partial" : "Pending";
+
+  function groupByCustomer(sales: CreditSale[]): CustomerCreditGroup[] {
+    const map = new Map<string, CustomerCreditGroup>();
+    for (const cs of sales) {
+      const key = (cs.customer_phone || cs.customer_name).toLowerCase().trim();
+      if (!map.has(key)) {
+        map.set(key, { key, customer_name: cs.customer_name, customer_phone: cs.customer_phone, sales: [], totalOutstanding: 0, totalPaid: 0, totalAmount: 0, hasOpen: false });
+      }
+      const g = map.get(key)!;
+      g.sales.push(cs);
+      g.totalAmount += cs.amount;
+      g.totalPaid   += cs.amount_paid;
+      if (cs.status === "pending" || cs.status === "partial") {
+        g.totalOutstanding += cs.amount - cs.amount_paid;
+        g.hasOpen = true;
+      }
+    }
+    return [...map.values()].sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+  }
+
+  async function handleSendStatement() {
+    if (!sendStmtGroup || !shop) return;
+    const phone = sendStmtPhone.trim();
+    if (!phone) { setSendStmtError("Please enter a phone number."); return; }
+
+    setSendStmtSending(true);
+    setSendStmtError("");
+
+    const openSales = sendStmtGroup.sales.filter(cs => cs.status === "pending" || cs.status === "partial");
+    const allItems  = openSales.flatMap(cs =>
+      cs.items.map(item => ({ name: item.product_name, quantity: item.quantity, unit_price: item.unit_price, total: item.subtotal }))
+    );
+    const totalAmount = openSales.reduce((s, cs) => s + cs.amount, 0);
+    const totalPaid   = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
+    const balanceDue  = totalAmount - totalPaid;
+
+    try {
+      const { data } = await supabase.functions.invoke("send-receipt", {
+        body: {
+          phone,
+          business_name: businessName || shop.name || "Business",
+          agent_name:    openSales[0]?.seller_name ?? "",
+          customer_name: sendStmtGroup.customer_name,
+          items:         allItems,
+          total_amount:  totalAmount,
+          payment_method: "credit",
+          initial_payment: totalPaid,
+          balance_due:   balanceDue,
+          message_type:  openSales.length > 1 ? "credit_statement" : "credit_sale",
+        },
+      });
+      if (data?.sent) {
+        setSendStmtSent(true);
+        setTimeout(() => { setSendStmtGroup(null); setSendStmtSent(false); setSendStmtPhone(""); }, 1500);
+      } else {
+        setSendStmtError("Failed to send. Check the phone number and try again.");
+      }
+    } catch (e: any) {
+      setSendStmtError(e?.message ?? "Unknown error");
+    } finally {
+      setSendStmtSending(false);
+    }
+  }
 
   // ── PIN keypad render helper ──────────────────────────────────────────
   const PinKeypad = ({
@@ -1102,117 +1197,180 @@ export default function PosRequests() {
             </div>
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {creditSales.map(cs => {
-                const balance    = cs.amount - cs.amount_paid;
-                const sc         = statusColor(cs.status);
-                const isOpen     = cs.status === "pending" || cs.status === "partial";
-                const isExpanded = expandedCreditId === cs.id;
-                const payments   = creditPayments[cs.id] || [];
-                const loadingPay = paymentsLoading === cs.id;
+              {groupByCustomer(creditSales).map(group => {
+                const isGroupExpanded = expandedCustomerKey === group.key;
+                const openCount = group.sales.filter(cs => cs.status === "pending" || cs.status === "partial").length;
                 return (
-                  <div key={cs.id} style={{ background: theme.bg.card, border: `1px solid ${isExpanded ? "rgba(6,182,212,0.25)" : theme.border.default}`, borderRadius: 16, overflow: "hidden", transition: "border-color 0.15s" }}>
-                    <button onClick={() => toggleCreditCard(cs.id)}
+                  <div key={group.key} style={{ background: theme.bg.card, border: `1px solid ${isGroupExpanded ? "rgba(192,132,252,0.3)" : group.hasOpen ? "rgba(248,113,113,0.2)" : theme.border.default}`, borderRadius: 16, overflow: "hidden", transition: "border-color 0.15s" }}>
+                    {/* Customer group header */}
+                    <button
+                      onClick={() => setExpandedCustomerKey(isGroupExpanded ? null : group.key)}
                       style={{ width: "100%", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                          <div style={{ fontWeight: 600, fontSize: 14, color: theme.text.primary }}>{cs.customer_name}</div>
-                          <div style={{ background: `${sc}20`, border: `1px solid ${sc}50`, borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: sc, fontWeight: 600 }}>
-                            {statusLabel(cs.status)}
-                          </div>
-                        </div>
-                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                          {cs.customer_phone && `${cs.customer_phone} · `}{cs.seller_name} · {new Date(cs.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })}
-                        </div>
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>CR-{cs.id.slice(0, 8).toUpperCase()}</div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
-                        <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: isOpen ? theme.accent.red : "#34d399" }}>
-                          {isOpen ? fmt(balance) : fmt(cs.amount)}
-                        </div>
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>{isOpen ? "balance" : "total"}</div>
-                        {cs.amount_paid > 0 && isOpen && (
-                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>{fmt(cs.amount_paid)} paid</div>
-                        )}
-                        <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 2 }}>{isExpanded ? "▲" : "▼"}</div>
-                      </div>
-                    </button>
-
-                    {isExpanded && (
-                      <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
-                        <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, background: "rgba(255,255,255,0.01)" }}>
-                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Items</div>
-                          {cs.items.map((item, idx) => (
-                            <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
-                              <span>{item.quantity}× {item.product_name}</span>
-                              <span>{fmt(item.subtotal)}</span>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                          <div style={{ fontWeight: 700, fontSize: 14, color: theme.text.primary }}>{group.customer_name}</div>
+                          {group.hasOpen && (
+                            <div style={{ background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
+                              {openCount} open
                             </div>
-                          ))}
-                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 4 }}>
-                            <span style={{ color: theme.text.muted }}>Total</span>
-                            <span style={{ color: theme.accent.gold, fontWeight: 700 }}>{fmt(cs.amount)}</span>
-                          </div>
-                        </div>
-
-                        <div style={{ padding: "10px 16px 12px", borderTop: `1px solid ${theme.border.default}` }}>
-                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-                            Payment History {payments.length > 0 && `(${payments.length})`}
-                          </div>
-                          {loadingPay ? (
-                            <div style={{ display: "flex", justifyContent: "center", padding: "10px 0" }}>
-                              <div style={{ width: 16, height: 16, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
-                            </div>
-                          ) : payments.length === 0 ? (
-                            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
-                          ) : (
-                            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                              {payments.map((p, idx) => (
-                                <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
-                                  <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, marginTop: 1 }}>
-                                    {idx + 1}
-                                  </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, fontWeight: 600 }}>{fmt(p.amount)}</div>
-                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                                      {p.payment_method === "cash" ? "💵 Cash" : "📱 M-Pesa"}{p.mpesa_ref ? ` · ${p.mpesa_ref}` : ""}
-                                    </div>
-                                    {p.collected_by_name && (
-                                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#60a5fa", marginTop: 2 }}>
-                                        Collected by {p.collected_by_name}
-                                        {p.collected_by_agent_id && ` (${p.collected_by_agent_id})`}
-                                      </div>
-                                    )}
-                                  </div>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>
-                                    {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })}
-                                  </div>
-                                </div>
-                              ))}
-                              <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 2, fontSize: 11, fontFamily: theme.font.mono }}>
-                                <span style={{ color: theme.text.muted }}>Total paid</span>
-                                <span style={{ color: "#34d399", fontWeight: 700 }}>{fmt(cs.amount_paid)}</span>
-                              </div>
-                              {isOpen && (
-                                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono }}>
-                                  <span style={{ color: theme.text.muted }}>Remaining</span>
-                                  <span style={{ color: theme.accent.red, fontWeight: 700 }}>{fmt(balance)}</span>
-                                </div>
-                              )}
+                          )}
+                          {group.sales.length > 1 && (
+                            <div style={{ background: "rgba(192,132,252,0.12)", border: "1px solid rgba(192,132,252,0.25)", borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", fontWeight: 600 }}>
+                              {group.sales.length} sales
                             </div>
                           )}
                         </div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                          {group.customer_phone || "No phone"}{group.totalPaid > 0 && group.hasOpen ? ` · ${fmt(group.totalPaid)} paid` : ""}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
+                        {group.hasOpen ? (
+                          <>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(group.totalOutstanding)}</div>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>outstanding</div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#34d399" }}>{fmt(group.totalAmount)}</div>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>all settled</div>
+                          </>
+                        )}
+                        <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 2 }}>{isGroupExpanded ? "▲" : "▼"}</div>
+                      </div>
+                    </button>
 
-                        {isOpen && (
-                          <div style={{ display: "flex", gap: 8, padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
-                            <button onClick={() => { setPayTarget(cs); setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
-                              style={{ flex: 1, padding: "10px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                              💰 Record Payment
-                            </button>
-                            <button onClick={() => { setReturnTarget(cs); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
-                              style={{ flex: 1, padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                              ↩ Mark Returned
+                    {isGroupExpanded && (
+                      <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
+
+                        {/* Send Statement button */}
+                        {group.hasOpen && (
+                          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${theme.border.default}` }}>
+                            <button
+                              onClick={() => { setSendStmtGroup(group); setSendStmtPhone(group.customer_phone || ""); setSendStmtError(""); setSendStmtSent(false); }}
+                              style={{ width: "100%", padding: "10px 14px", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 10, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                              📱 Send Statement to Customer
                             </button>
                           </div>
                         )}
+
+                        {/* Individual sales */}
+                        {group.sales.map((cs, csIdx) => {
+                          const balance    = cs.amount - cs.amount_paid;
+                          const sc         = statusColor(cs.status);
+                          const isOpen     = cs.status === "pending" || cs.status === "partial";
+                          const isExpanded = expandedCreditId === cs.id;
+                          const payments   = creditPayments[cs.id] || [];
+                          const loadingPay = paymentsLoading === cs.id;
+                          const isLast     = csIdx === group.sales.length - 1;
+                          return (
+                            <div key={cs.id} style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}` }}>
+                              <button onClick={() => toggleCreditCard(cs.id)}
+                                style={{ width: "100%", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: isExpanded ? "rgba(6,182,212,0.03)" : "transparent", border: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                                    <div style={{ background: `${sc}20`, border: `1px solid ${sc}50`, borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: sc, fontWeight: 600 }}>
+                                      {statusLabel(cs.status)}
+                                    </div>
+                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                      {new Date(cs.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} · {cs.seller_name}
+                                    </div>
+                                  </div>
+                                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
+                                    {cs.items.map(i => `${i.product_name} ×${i.quantity}`).join(", ")}
+                                  </div>
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>CR-{cs.id.slice(0, 8).toUpperCase()}</div>
+                                </div>
+                                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
+                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: isOpen ? "#f87171" : "#34d399" }}>
+                                    {isOpen ? fmt(balance) : fmt(cs.amount)}
+                                  </div>
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>{isOpen ? "balance" : "total"}</div>
+                                  {cs.amount_paid > 0 && isOpen && (
+                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>{fmt(cs.amount_paid)} paid</div>
+                                  )}
+                                  <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 1 }}>{isExpanded ? "▲" : "▼"}</div>
+                                </div>
+                              </button>
+
+                              {isExpanded && (
+                                <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
+                                  <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, background: "rgba(255,255,255,0.01)" }}>
+                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Items</div>
+                                    {cs.items.map((item, idx) => (
+                                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
+                                        <span>{item.quantity}× {item.product_name}</span>
+                                        <span>{fmt(item.subtotal)}</span>
+                                      </div>
+                                    ))}
+                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 4 }}>
+                                      <span style={{ color: theme.text.muted }}>Total</span>
+                                      <span style={{ color: theme.accent.gold, fontWeight: 700 }}>{fmt(cs.amount)}</span>
+                                    </div>
+                                  </div>
+
+                                  <div style={{ padding: "10px 16px 12px", borderTop: `1px solid ${theme.border.default}` }}>
+                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                                      Payment History {payments.length > 0 && `(${payments.length})`}
+                                    </div>
+                                    {loadingPay ? (
+                                      <div style={{ display: "flex", justifyContent: "center", padding: "10px 0" }}>
+                                        <div style={{ width: 16, height: 16, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+                                      </div>
+                                    ) : payments.length === 0 ? (
+                                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
+                                    ) : (
+                                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                                        {payments.map((p, idx) => (
+                                          <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                                            <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, marginTop: 1 }}>{idx + 1}</div>
+                                            <div style={{ flex: 1, minWidth: 0 }}>
+                                              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, fontWeight: 600 }}>{fmt(p.amount)}</div>
+                                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                                {p.payment_method === "cash" ? "💵 Cash" : "📱 M-Pesa"}{p.mpesa_ref ? ` · ${p.mpesa_ref}` : ""}
+                                              </div>
+                                              {p.collected_by_name && (
+                                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#60a5fa", marginTop: 2 }}>
+                                                  Collected by {p.collected_by_name}{p.collected_by_agent_id && ` (${p.collected_by_agent_id})`}
+                                                </div>
+                                              )}
+                                            </div>
+                                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>
+                                              {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })}
+                                            </div>
+                                          </div>
+                                        ))}
+                                        <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 2, fontSize: 11, fontFamily: theme.font.mono }}>
+                                          <span style={{ color: theme.text.muted }}>Total paid</span>
+                                          <span style={{ color: "#34d399", fontWeight: 700 }}>{fmt(cs.amount_paid)}</span>
+                                        </div>
+                                        {isOpen && (
+                                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono }}>
+                                            <span style={{ color: theme.text.muted }}>Remaining</span>
+                                            <span style={{ color: "#f87171", fontWeight: 700 }}>{fmt(balance)}</span>
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+
+                                  {isOpen && (
+                                    <div style={{ display: "flex", gap: 8, padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
+                                      <button onClick={() => { setPayTarget(cs); setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
+                                        style={{ flex: 1, padding: "10px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                        💰 Record Payment
+                                      </button>
+                                      <button onClick={() => { setReturnTarget(cs); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
+                                        style={{ flex: 1, padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                        ↩ Mark Returned
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     )}
                   </div>
@@ -1220,6 +1378,92 @@ export default function PosRequests() {
               })}
             </div>
           )}
+        </div>
+      )}
+
+      {/* ══ SEND STATEMENT MODAL ══ */}
+      {sendStmtGroup && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", zIndex: 60, display: "flex", alignItems: "flex-end", backdropFilter: "blur(4px)" }}
+          onClick={e => { if (e.target === e.currentTarget && !sendStmtSending) setSendStmtGroup(null); }}>
+          <div style={{ width: "100%", background: theme.bg.card, borderRadius: "20px 20px 0 0", border: `1px solid ${theme.border.default}`, borderBottom: "none", padding: "20px 18px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17, color: "#c084fc" }}>📱 Send Statement</div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                  {sendStmtGroup.customer_name} · {fmt(sendStmtGroup.totalOutstanding)} outstanding
+                </div>
+              </div>
+              <button onClick={() => setSendStmtGroup(null)} disabled={sendStmtSending}
+                style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center", opacity: sendStmtSending ? 0.4 : 1 }}>
+                ×
+              </button>
+            </div>
+
+            {/* Preview of what will be sent */}
+            <div style={{ background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>SMS Preview</div>
+              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, lineHeight: 1.6, whiteSpace: "pre-line" }}>
+                {(() => {
+                  const openSales = sendStmtGroup.sales.filter(cs => cs.status === "pending" || cs.status === "partial");
+                  const itemLines = openSales.flatMap(cs => cs.items).map(i => `${i.product_name} x${i.quantity} - ${fmt(i.subtotal)}`).join("\n");
+                  const total     = openSales.reduce((s, cs) => s + cs.amount, 0);
+                  const paid      = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
+                  const balance   = total - paid;
+                  const label     = openSales.length > 1 ? "[ CREDIT STATEMENT ]" : "[ CREDIT SALE ]";
+                  return [
+                    `Thank you for choosing ${businessName || shop?.name || "Business"}!`,
+                    label,
+                    "────────────",
+                    itemLines,
+                    "────────────",
+                    `Total: ${fmt(total)}`,
+                    ...(paid > 0 ? [`${openSales.length > 1 ? "Paid So Far" : "Paid Now"}: ${fmt(paid)}`] : []),
+                    `Amount to Pay: ${fmt(balance)}`,
+                    "────────────",
+                    `Please pay ${fmt(balance)} to clear your balance. Thank you!`,
+                  ].join("\n");
+                })()}
+              </div>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+                Phone Number
+              </div>
+              <input
+                type="tel"
+                value={sendStmtPhone}
+                onChange={e => { setSendStmtPhone(e.target.value); setSendStmtError(""); }}
+                placeholder="e.g. 0712345678"
+                disabled={sendStmtSending}
+                style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${sendStmtError ? "rgba(248,113,113,0.5)" : theme.border.default}`, borderRadius: 12, color: theme.text.primary, fontSize: 15, fontFamily: theme.font.mono, outline: "none" }}
+              />
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 5 }}>
+                You can edit this number before sending
+              </div>
+            </div>
+
+            {sendStmtError && (
+              <div style={{ padding: "10px 14px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>
+                ⚠ {sendStmtError}
+              </div>
+            )}
+
+            {sendStmtSent && (
+              <div style={{ padding: "10px 14px", background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10, fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", textAlign: "center" }}>
+                ✓ Statement sent successfully
+              </div>
+            )}
+
+            <button
+              onClick={handleSendStatement}
+              disabled={!sendStmtPhone.trim() || sendStmtSending || sendStmtSent}
+              style={{ padding: "14px 20px", background: sendStmtSent ? "rgba(52,211,153,0.15)" : "rgba(192,132,252,0.15)", border: `1px solid ${sendStmtSent ? "rgba(52,211,153,0.4)" : "rgba(192,132,252,0.4)"}`, borderRadius: 14, color: sendStmtSent ? "#34d399" : "#c084fc", fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, cursor: (!sendStmtPhone.trim() || sendStmtSending || sendStmtSent) ? "not-allowed" : "pointer", opacity: (!sendStmtPhone.trim() || sendStmtSending) ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+              {sendStmtSending
+                ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(192,132,252,0.3)", borderTopColor: "#c084fc", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
+                : sendStmtSent ? "✓ Sent" : `📱 Send to ${sendStmtPhone.trim() || "..."}`}
+            </button>
+          </div>
         </div>
       )}
 
@@ -1296,6 +1540,24 @@ export default function PosRequests() {
                 onChange={e => { setExpDesc(sanitizeText(e.target.value, 200)); setExpError(""); }}
                 placeholder="e.g. Lunch for agents, Transport to warehouse..."
                 rows={2} maxLength={200} style={{ resize: "none", lineHeight: 1.5 }} />
+            </div>
+
+            <div>
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
+              <div style={{ display: "flex", gap: 8 }}>
+                {([["cash", "💵 Cash"], ["mpesa", "📱 M-Pesa"], ["split", "⚡ Split"]] as const).map(([val, label]) => (
+                  <button key={val} type="button" onClick={() => setExpPayment(val)}
+                    style={{
+                      flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer",
+                      border: `1px solid ${expPayment === val ? theme.accent.cyan : theme.border.default}`,
+                      background: expPayment === val ? "rgba(6,182,212,0.12)" : "transparent",
+                      color: expPayment === val ? theme.accent.cyan : theme.text.muted,
+                      fontFamily: theme.font.mono, fontSize: 11, fontWeight: expPayment === val ? 700 : 400,
+                    }}>
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {expError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {expError}</div>}

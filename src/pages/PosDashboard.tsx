@@ -147,13 +147,14 @@ export default function PosDashboard() {
       return;
     }
     const today = new Date(); today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const [txRes, allocRes, reqRes] = await Promise.all([
-      supabase.from("shop_transactions")
-        .select("id, amount, product_id, payment_method, cash_amount, mpesa_amount, created_at")
-        .eq("shop_id", shop.id)
-        .gte("created_at", today.toISOString())
-        .order("created_at", { ascending: false }),
+    const [txRes, allocRes, reqRes, expRes] = await Promise.all([
+      supabase.rpc("get_shop_transactions", {
+        p_shop_id: shop.id,
+        p_start:   today.toISOString(),
+        p_end:     tomorrow.toISOString(),
+      }),
       supabase.from("shop_allocations")
         .select("product_id, remaining, allocated")
         .eq("shop_id", shop.id),
@@ -161,10 +162,21 @@ export default function PosDashboard() {
         .select("id")
         .eq("shop_id", shop.id)
         .eq("status", "pending"),
+      supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
     ]);
 
     const txData  = txRes.data   || [];
     const allocs  = allocRes.data || [];
+
+    // Today's expenses (filter client-side to today window)
+    const todayExps: { amount: number; payment_method: string }[] =
+      (expRes.data || []).filter((e: any) => {
+        const d = new Date(e.created_at);
+        return d >= today && d < tomorrow;
+      });
+    const expensesTotal = todayExps.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const cashExpenses  = todayExps.filter(e => e.payment_method !== "mpesa").reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const mpesaExpenses = todayExps.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + (Number(e.amount) || 0), 0);
 
     // Today totals (gross)
     const totalRev  = txData.reduce((s: number, t: any) => s + t.amount, 0);
@@ -200,9 +212,9 @@ export default function PosDashboard() {
       }
     }
     setReturnsAmt(returnsTotal);
-    setTodayRev(totalRev - returnsTotal);
-    setCashRev(cashTotal  - cashReturns);
-    setMpesaRev(mpesaTotal - mpesaReturns);
+    setTodayRev(Math.max(0, totalRev  - returnsTotal  - expensesTotal));
+    setCashRev(Math.max(0,  cashTotal  - cashReturns  - cashExpenses));
+    setMpesaRev(Math.max(0, mpesaTotal - mpesaReturns - mpesaExpenses));
 
     // Hourly (6AM–8PM)
     setHourlyData(HOURS.map(h => {

@@ -14,6 +14,18 @@ function normalizePhone(raw: string): string | null {
   return null;
 }
 
+function formatDateTime(d: Date): string {
+  const months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const day   = d.getDate();
+  const month = months[d.getMonth()];
+  const year  = d.getFullYear();
+  const h24   = d.getHours();
+  const min   = String(d.getMinutes()).padStart(2, "0");
+  const ampm  = h24 >= 12 ? "PM" : "AM";
+  const h12   = String(h24 % 12 || 12).padStart(2, "0");
+  return `${day} ${month} ${year}, ${h12}:${min} ${ampm}`;
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: CORS });
 
@@ -26,9 +38,10 @@ serve(async (req) => {
       total_amount,
       payment_method,
       mpesa_ref,
-      initial_payment,  // credit sales: amount paid upfront (may be 0)
-      balance_due,      // credit sales: remaining balance
-      customer_name,    // credit sales: customer name
+      initial_payment,   // credit: amount paid upfront / so far
+      balance_due,       // credit: remaining balance
+      customer_name,     // credit: customer name
+      message_type,      // "credit_sale" | "credit_statement" | undefined (regular)
     } = await req.json();
 
     const normalized = normalizePhone(phone ?? "");
@@ -39,50 +52,56 @@ serve(async (req) => {
       );
     }
 
-    // Build item lines
     const itemLines = (items as { name: string; quantity: number; unit_price: number; total: number }[])
-      .map(i => `${i.name} x${i.quantity} @ KSh ${i.unit_price.toLocaleString()} = KSh ${i.total.toLocaleString()}`)
+      .map(i => `${i.name} x${i.quantity} - KSh ${Number(i.total).toLocaleString()}`)
       .join("\n");
 
-    const now  = new Date();
-    const date = now.toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" });
-    const time = now.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+    const dateStr = formatDateTime(new Date());
+    const isCredit = payment_method === "credit" || message_type === "credit_sale" || message_type === "credit_statement";
+    const isStatement = message_type === "credit_statement";
 
-    let paymentSection: string;
+    let message: string;
 
-    if (payment_method === "credit") {
+    if (isCredit) {
       const paid    = Number(initial_payment ?? 0);
       const balance = Number(balance_due ?? total_amount);
-      const lines   = ["CREDIT SALE"];
-      if (customer_name) lines.push(`Customer: ${customer_name}`);
-      if (paid > 0) {
-        lines.push(`Paid upfront: KSh ${paid.toLocaleString()}`);
-        lines.push(`Balance owed: KSh ${balance.toLocaleString()}`);
-      } else {
-        lines.push(`Amount owed: KSh ${balance.toLocaleString()}`);
-      }
-      paymentSection = lines.join("\n");
+      const label   = isStatement ? "[ CREDIT STATEMENT ]" : "[ CREDIT SALE ]";
+      const paidLabel  = isStatement ? "Paid So Far" : "Paid Now";
+
+      const lines = [
+        `Thank you for choosing ${business_name}!`,
+        label,
+        "────────────",
+        itemLines,
+        "────────────",
+        `Total: KSh ${Number(total_amount).toLocaleString()}`,
+        ...(paid > 0 ? [`${paidLabel}: KSh ${paid.toLocaleString()}`] : []),
+        `Amount to Pay: KSh ${balance.toLocaleString()}`,
+      ];
+      if (!isStatement && agent_name) lines.push(`Agent: ${agent_name}`);
+      lines.push(`Date: ${dateStr}`);
+      lines.push("────────────");
+      lines.push(`Please pay KSh ${balance.toLocaleString()} to clear your balance. Thank you!`);
+      message = lines.join("\n");
     } else {
       const paymentLine =
         payment_method === "mpesa" ? `M-Pesa${mpesa_ref ? ` (${mpesa_ref})` : ""}` :
         payment_method === "split" ? `Cash + M-Pesa${mpesa_ref ? ` (${mpesa_ref})` : ""}` :
         "Cash";
-      paymentSection = `Payment: ${paymentLine}`;
-    }
 
-    const message = [
-      business_name,
-      "────────────",
-      itemLines,
-      "────────────",
-      `Total: KSh ${Number(total_amount).toLocaleString()}`,
-      paymentSection,
-      `Agent: ${agent_name}`,
-      `${date}, ${time}`,
-      "────────────",
-      "Thank you!",
-      "Epic Softwares-0768131905",
-    ].join("\n");
+      message = [
+        `Thank you for choosing ${business_name}!`,
+        "────────────",
+        itemLines,
+        "────────────",
+        `Total: KSh ${Number(total_amount).toLocaleString()}`,
+        `Payment: ${paymentLine}`,
+        ...(agent_name ? [`Agent: ${agent_name}`] : []),
+        `Date: ${dateStr}`,
+        "────────────",
+        "Thank you for your purchase!",
+      ].join("\n");
+    }
 
     const AT_USERNAME  = Deno.env.get("AT_USERNAME")!;
     const AT_API_KEY   = Deno.env.get("AT_API_KEY")!;

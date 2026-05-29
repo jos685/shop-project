@@ -154,6 +154,8 @@ export default function PosTransactionsPage() {
   const [typeFilter,   setTypeFilter]   = useState<"all" | "sales" | "expenses" | "returns">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [resendingId, setResendingId]   = useState<string | null>(null);
+  const [resendModal,  setResendModal]  = useState<LocalTransaction | null>(null);
+  const [resendPhone,  setResendPhone]  = useState("");
   const [businessName, setBusinessName] = useState("");
   const [returnsMap,       setReturnsMap]       = useState<Record<string, TransactionReturn[]>>({});
   const [returnModal,      setReturnModal]      = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
@@ -439,9 +441,9 @@ export default function PosTransactionsPage() {
     }));
   }, [shop]);
 
-  const fetchTransactions = useCallback(async () => {
+  const fetchTransactions = useCallback(async (silent = false) => {
     if (!shop) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     productMapRef.current = {};
     sellerMapRef.current  = {};
 
@@ -536,23 +538,23 @@ export default function PosTransactionsPage() {
 
     // window event: fired by PosScan/offlineQueue after a successful insert (same process, no JWT needed)
     const onNewSale = (e: Event) => {
-      if ((e as CustomEvent).detail?.shopId === shop.id) fetchTransactions();
+      if ((e as CustomEvent).detail?.shopId === shop.id) fetchTransactions(true);
     };
     window.addEventListener("shop:new_sale", onNewSale);
 
     // visibilitychange: refetch when user navigates back to this tab/page
-    const onVisible = () => { if (document.visibilityState === "visible") fetchTransactions(); };
+    const onVisible = () => { if (document.visibilityState === "visible") fetchTransactions(true); };
     document.addEventListener("visibilitychange", onVisible);
 
     // 30 s polling as a safety net (mirrors owner dashboard behaviour)
-    const poll = setInterval(fetchTransactions, 30_000);
+    const poll = setInterval(() => fetchTransactions(true), 30_000);
 
     // expenses: postgres_changes is fine here since the fetch is via SECURITY DEFINER RPC
     const expCh = supabase.channel(`shop-exp-changes-${shop.id}`)
       .on("postgres_changes", {
         event: "*", schema: "public", table: "shop_expenses",
         filter: `shop_id=eq.${shop.id}`,
-      }, fetchTransactions)
+      }, () => fetchTransactions(true))
       .subscribe();
 
     return () => {
@@ -590,8 +592,13 @@ export default function PosTransactionsPage() {
   }, [shop, transactions]);
 
   // ── Resend receipt ────────────────────────────────────────────────────
-  async function handleResend(tx: LocalTransaction) {
-    const phone = tx.receipt_phone ?? tx.customer_phone ?? "";
+  function openResendModal(tx: LocalTransaction) {
+    setResendModal(tx);
+    setResendPhone(tx.receipt_phone ?? tx.customer_phone ?? "");
+  }
+
+  async function handleResend(tx: LocalTransaction, phoneOverride?: string) {
+    const phone = phoneOverride ?? tx.receipt_phone ?? tx.customer_phone ?? "";
     if (!phone) return;
     setResendingId(tx.id);
     try {
@@ -1120,7 +1127,7 @@ export default function PosTransactionsPage() {
               <div style={{ fontSize: 32, marginBottom: 10 }}>⚠️</div>
               <div style={{ color: "#f87171", fontSize: 13, fontFamily: theme.font.mono, marginBottom: 6 }}>Failed to load transactions</div>
               <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginBottom: 14, wordBreak: "break-all" }}>{fetchError}</div>
-              <button onClick={fetchTransactions} style={{ padding: "8px 18px", background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 10, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer" }}>
+              <button onClick={() => fetchTransactions()} style={{ padding: "8px 18px", background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 10, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer" }}>
                 Retry
               </button>
             </div>
@@ -1271,9 +1278,7 @@ export default function PosTransactionsPage() {
                     // Single-item group — same display as before
                     const tx        = group.items[0];
                     const rcpt      = receiptBadge(tx);
-                    const isSending = resendingId === tx.id;
                     const phone     = tx.receipt_phone ?? tx.customer_phone;
-                    const canResend = !!phone && tx.receipt_sent !== true;
 
                     return (
                       <div key={group.key} className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ cursor: "pointer" }}>
@@ -1369,31 +1374,31 @@ export default function PosTransactionsPage() {
                                 </div>
                               );
                             })()}
-                            {(canResend || tx.receipt_sent === true) && (
-                              <div onClick={e => e.stopPropagation()}>
-                                {tx.receipt_sent === true ? (
-                                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10 }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <span>📱</span>
-                                      <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong></span>
-                                    </div>
-                                    <button onClick={() => handleResend(tx)} disabled={isSending} style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1 }}>
-                                      {isSending ? "Sending..." : "Resend"}
-                                    </button>
+                            <div onClick={e => e.stopPropagation()}>
+                              {tx.receipt_sent === true ? (
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10 }}>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                    <span>📱</span>
+                                    <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong></span>
                                   </div>
-                                ) : (
-                                  <button onClick={() => handleResend(tx)} disabled={isSending} style={{ width: "100%", padding: "12px 16px", background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)", border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`, borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700, cursor: isSending ? "not-allowed" : "pointer", opacity: isSending ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                                    {isSending
-                                      ? <><span style={{ width: 13, height: 13, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
-                                      : tx.receipt_sent === false ? `📵 Retry Receipt → ${phone}` : `📄 Send Receipt → ${phone}`}
+                                  <button onClick={() => openResendModal(tx)} style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                    Resend
                                   </button>
-                                )}
-                              </div>
-                            )}
+                                </div>
+                              ) : (
+                                <button
+                                  onClick={() => openResendModal(tx)}
+                                  style={{ width: "100%", padding: "12px 16px", background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)", border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`, borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                                  {tx.receipt_sent === false ? "📵 Retry Receipt" : "📄 Send Receipt"}
+                                </button>
+                              )}
+                            </div>
                             {!phone && (
-                              <div style={{ padding: "10px 14px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
-                                No phone number recorded — receipt cannot be sent
-                              </div>
+                              <button
+                                onClick={e => { e.stopPropagation(); openResendModal(tx); }}
+                                style={{ width: "100%", padding: "12px 16px", background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                                📄 Send Receipt (enter number)
+                              </button>
                             )}
                             {returnStatus !== "full" && tx.product_id && (
                               <button
@@ -1432,6 +1437,55 @@ export default function PosTransactionsPage() {
         </div>
 
       </div>
+
+      {/* ── Resend / Send Receipt Modal ──────────────────────────────────── */}
+    {resendModal && (
+      <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "flex-end", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
+        onClick={e => { if (e.target === e.currentTarget) setResendModal(null); }}>
+        <div style={{ width: "100%", background: theme.bg.card, borderRadius: "20px 20px 0 0", border: `1px solid ${theme.border.default}`, borderBottom: "none", padding: "20px 18px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>📄 Send Receipt</div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                {resendModal.product_name ?? "Transaction"} · {fmt(resendModal.amount)}
+              </div>
+            </div>
+            <button onClick={() => setResendModal(null)} style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              ×
+            </button>
+          </div>
+
+          <div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Phone Number
+            </div>
+            <input
+              type="tel"
+              value={resendPhone}
+              onChange={e => setResendPhone(e.target.value)}
+              placeholder="e.g. 0712345678"
+              style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 12, color: theme.text.primary, fontSize: 15, fontFamily: theme.font.mono, outline: "none" }}
+            />
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 5 }}>
+              You can edit this number before sending
+            </div>
+          </div>
+
+          <button
+            onClick={async () => {
+              if (!resendPhone.trim()) return;
+              await handleResend(resendModal, resendPhone.trim());
+              setResendModal(null);
+            }}
+            disabled={!resendPhone.trim() || resendingId === resendModal.id}
+            style={{ padding: "14px 20px", background: "linear-gradient(135deg,#0891b2,#06b6d4)", border: "none", borderRadius: 14, color: "#fff", fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, cursor: (!resendPhone.trim() || resendingId === resendModal.id) ? "not-allowed" : "pointer", opacity: (!resendPhone.trim() || resendingId === resendModal.id) ? 0.6 : 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+            {resendingId === resendModal.id
+              ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
+              : `📱 Send to ${resendPhone.trim() || "..."}`}
+          </button>
+        </div>
+      </div>
+    )}
 
       {/* ── Return Modal ─────────────────────────────────────────────────── */}
     {returnModal && (
