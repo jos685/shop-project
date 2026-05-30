@@ -212,6 +212,7 @@ export default function PosRequests() {
   const [creditLoading,  setCreditLoading]  = useState(false);
 
   const [payTarget,      setPayTarget]      = useState<CreditSale | null>(null);
+  const [payGroupSales,  setPayGroupSales]  = useState<CreditSale[] | null>(null); // group-level payment
   const [payAmount,      setPayAmount]      = useState("");
   const [payMethod2,     setPayMethod2]     = useState<"cash" | "mpesa">("cash");
   const [payMpesaRef,    setPayMpesaRef]    = useState("");
@@ -574,16 +575,70 @@ export default function PosRequests() {
 
   // ── Credit handlers ───────────────────────────────────────────────────
   const handleRecordPayment = async (agent: ShopAgent) => {
-    if (!payTarget) return;
+    if (!payTarget && !payGroupSales) return;
     if (!isOnline) { setPayError("Recording a credit payment requires an internet connection. Please reconnect and try again."); return; }
     const amount = parseFloat(payAmount);
     if (!amount || amount <= 0) { setPayError("Enter a valid payment amount."); return; }
-    const balance = payTarget.amount - payTarget.amount_paid;
+
+    // ── Group-level: distribute oldest-first across all open sales ──
+    if (payGroupSales) {
+      const openSales = payGroupSales
+        .filter(s => s.status === "pending" || s.status === "partial")
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      const totalOwed      = openSales.reduce((s, x) => s + (x.amount - x.amount_paid), 0);
+      const totalCreditAmt = openSales.reduce((s, x) => s + x.amount, 0);
+      const totalPaidBefore= openSales.reduce((s, x) => s + x.amount_paid, 0);
+      if (amount > totalOwed + 0.01) { setPayError(`Amount exceeds total balance of ${fmt(totalOwed)}.`); return; }
+      setPayProcessing(true);
+      let remaining = amount;
+      for (const sale of openSales) {
+        if (remaining <= 0.01) break;
+        const applying = Math.min(remaining, sale.amount - sale.amount_paid);
+        remaining -= applying;
+        const { error: insErr } = await supabase.rpc("record_credit_payment", {
+          p_credit_sale_id:        sale.id,
+          p_shop_id:               shop?.id,
+          p_owner_id:              shop?.owner_id,
+          p_amount:                applying,
+          p_payment_method:        payMethod2,
+          p_mpesa_ref:             payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+          p_collected_by_agent_id: agent.agent.agent_id,
+          p_collected_by_name:     agent.agent.name,
+        });
+        if (insErr) { setPayProcessing(false); setPayError(insErr.message || "Failed to record payment. Try again."); return; }
+        fetchPaymentsFor(sale.id);
+      }
+      // Fire payment receipt SMS — best effort
+      const custPhone = openSales[0]?.customer_phone;
+      if (custPhone) {
+        supabase.functions.invoke("send-receipt", { body: {
+          phone:          custPhone,
+          business_name:  shop?.name || "Shop",
+          customer_name:  openSales[0].customer_name,
+          agent_name:     agent.agent.name,
+          message_type:   "credit_payment",
+          payment_method: payMethod2,
+          mpesa_ref:      payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+          initial_payment: amount,
+          paid_so_far:    totalPaidBefore + amount,
+          balance_due:    Math.max(0, totalOwed - amount),
+          total_amount:   totalCreditAmt,
+          items:          [],
+        }});
+      }
+      setPayGroupSales(null);
+      setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef("");
+      setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); setPayProcessing(false);
+      fetchCreditSales();
+      return;
+    }
+
+    // ── Single-sale ──
+    const balance = payTarget!.amount - payTarget!.amount_paid;
     if (amount > balance) { setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`); return; }
     setPayProcessing(true);
-
     const { error: insErr } = await supabase.rpc("record_credit_payment", {
-      p_credit_sale_id:        payTarget.id,
+      p_credit_sale_id:        payTarget!.id,
       p_shop_id:               shop?.id,
       p_owner_id:              shop?.owner_id,
       p_amount:                amount,
@@ -593,9 +648,26 @@ export default function PosRequests() {
       p_collected_by_name:     agent.agent.name,
     });
     if (insErr) { setPayProcessing(false); setPayError(insErr.message || "Failed to record payment. Try again."); return; }
-    // Credit sale status is updated atomically inside record_credit_payment RPC.
 
-    const saleId = payTarget.id;
+    // Fire payment receipt SMS — best effort
+    if (payTarget!.customer_phone) {
+      supabase.functions.invoke("send-receipt", { body: {
+        phone:          payTarget!.customer_phone,
+        business_name:  shop?.name || "Shop",
+        customer_name:  payTarget!.customer_name,
+        agent_name:     agent.agent.name,
+        message_type:   "credit_payment",
+        payment_method: payMethod2,
+        mpesa_ref:      payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+        initial_payment: amount,
+        paid_so_far:    payTarget!.amount_paid + amount,
+        balance_due:    Math.max(0, balance - amount),
+        total_amount:   payTarget!.amount,
+        items:          [],
+      }});
+    }
+
+    const saleId = payTarget!.id;
     setPayTarget(null);
     setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef("");
     setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); setPayProcessing(false);
@@ -605,6 +677,7 @@ export default function PosRequests() {
 
   const resetPayModal = () => {
     setPayTarget(null);
+    setPayGroupSales(null);
     setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef("");
     setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); setPayProcessing(false);
     resetPinLockout();
@@ -1204,7 +1277,11 @@ export default function PosRequests() {
                   <div key={group.key} style={{ background: theme.bg.card, border: `1px solid ${isGroupExpanded ? "rgba(192,132,252,0.3)" : group.hasOpen ? "rgba(248,113,113,0.2)" : theme.border.default}`, borderRadius: 16, overflow: "hidden", transition: "border-color 0.15s" }}>
                     {/* Customer group header */}
                     <button
-                      onClick={() => setExpandedCustomerKey(isGroupExpanded ? null : group.key)}
+                      onClick={() => {
+                        const next = isGroupExpanded ? null : group.key;
+                        setExpandedCustomerKey(next);
+                        if (next) group.sales.forEach(s => { if (!creditPayments[s.id]) fetchPaymentsFor(s.id); });
+                      }}
                       style={{ width: "100%", padding: "14px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: "transparent", border: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
@@ -1243,16 +1320,84 @@ export default function PosRequests() {
                     {isGroupExpanded && (
                       <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
 
-                        {/* Send Statement button */}
+                        {/* Action buttons — Record Payment + Send Statement */}
                         {group.hasOpen && (
-                          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${theme.border.default}` }}>
+                          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${theme.border.default}`, display: "flex", gap: 8 }}>
+                            <button
+                              onClick={() => { setPayGroupSales(group.sales.filter(s => s.status === "pending" || s.status === "partial")); setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
+                              style={{ flex: 1, padding: "10px 14px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                              💰 Record Payment
+                            </button>
                             <button
                               onClick={() => { setSendStmtGroup(group); setSendStmtPhone(group.customer_phone || ""); setSendStmtError(""); setSendStmtSent(false); }}
-                              style={{ width: "100%", padding: "10px 14px", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 10, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                              📱 Send Statement to Customer
+                              style={{ flex: 1, padding: "10px 14px", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 10, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                              📱 Send Statement
                             </button>
                           </div>
                         )}
+
+                        {/* ── Unified Payment History ── */}
+                        {(() => {
+                          const allPmts = group.sales
+                            .flatMap(s => (creditPayments[s.id] ?? []))
+                            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+                          const allLoaded = group.sales.every(s => creditPayments[s.id] !== undefined);
+                          const totalCredit = group.totalAmount;
+                          return (
+                            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}` }}>
+                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                                Payment History {allLoaded ? `(${allPmts.length})` : ""}
+                              </div>
+                              {!allLoaded ? (
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <div style={{ width: 14, height: 14, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
+                                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Loading…</span>
+                                </div>
+                              ) : allPmts.length === 0 ? (
+                                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 0, background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border.default}`, borderRadius: 10, overflow: "hidden" }}>
+                                  {allPmts.map((p, idx) => {
+                                    const cumulativePaid   = allPmts.slice(0, idx + 1).reduce((s, x) => s + Number(x.amount), 0);
+                                    const runningBalance   = Math.max(0, totalCredit - cumulativePaid);
+                                    return (
+                                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < allPmts.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
+                                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, flexShrink: 0 }}>{idx + 1}</div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#34d399" }}>+{fmt(Number(p.amount))}</span>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: p.payment_method === "mpesa" ? "#06b6d4" : "#34d399", background: p.payment_method === "mpesa" ? "rgba(6,182,212,0.1)" : "rgba(52,211,153,0.1)", border: `1px solid ${p.payment_method === "mpesa" ? "rgba(6,182,212,0.25)" : "rgba(52,211,153,0.25)"}`, borderRadius: 4, padding: "1px 6px" }}>
+                                              {p.payment_method === "mpesa" ? "M-Pesa" : "Cash"}
+                                            </span>
+                                          </div>
+                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                              {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} {new Date(p.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                                              {p.collected_by_name ? ` · ${p.collected_by_name}` : ""}
+                                            </span>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: runningBalance > 0 ? "rgba(248,113,113,0.7)" : "#34d399" }}>
+                                              Bal: {fmt(runningBalance)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderTop: `1px solid ${theme.border.default}` }}>
+                                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Total Paid</span>
+                                    <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#34d399" }}>{fmt(group.totalPaid)}</span>
+                                  </div>
+                                  {group.hasOpen && (
+                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(248,113,113,0.04)" }}>
+                                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Still Owed</span>
+                                      <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171" }}>{fmt(group.totalOutstanding)}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Individual sales */}
                         {group.sales.map((cs, csIdx) => {
@@ -1355,13 +1500,9 @@ export default function PosRequests() {
                                   </div>
 
                                   {isOpen && (
-                                    <div style={{ display: "flex", gap: 8, padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
-                                      <button onClick={() => { setPayTarget(cs); setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
-                                        style={{ flex: 1, padding: "10px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                        💰 Record Payment
-                                      </button>
+                                    <div style={{ padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
                                       <button onClick={() => { setReturnTarget(cs); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
-                                        style={{ flex: 1, padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                        style={{ width: "100%", padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                         ↩ Mark Returned
                                       </button>
                                     </div>
@@ -1638,7 +1779,12 @@ export default function PosRequests() {
       )}
 
       {/* ══ RECORD PAYMENT MODAL ══ */}
-      {payTarget && (
+      {(payTarget || payGroupSales) && (() => {
+        const custName  = payGroupSales ? payGroupSales[0].customer_name : payTarget!.customer_name;
+        const totalOwed = payGroupSales
+          ? payGroupSales.reduce((s, x) => s + (x.amount - x.amount_paid), 0)
+          : payTarget!.amount - payTarget!.amount_paid;
+        return (
         <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
           onClick={e => { if (e.target === e.currentTarget) resetPayModal(); }}>
           <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
@@ -1646,7 +1792,7 @@ export default function PosRequests() {
               <div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>Record Payment</div>
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                  {payTarget.customer_name} · Balance: {fmt(payTarget.amount - payTarget.amount_paid)}
+                  {custName} · {payGroupSales ? `${payGroupSales.length} open sale${payGroupSales.length !== 1 ? "s" : ""}` : "Single sale"} · Owes {fmt(totalOwed)}
                 </div>
               </div>
               <button onClick={resetPayModal} style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px" }}>✕</button>
@@ -1656,13 +1802,12 @@ export default function PosRequests() {
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount Paid (KSh)</label>
               <input className="ki" type="number" value={payAmount}
                 onChange={e => {
-                  const clean   = sanitizeAmount(e.target.value);
-                  const balance = payTarget.amount - payTarget.amount_paid;
-                  const val     = Number(clean) || 0;
-                  setPayAmount(val > balance ? String(balance) : clean);
+                  const clean = sanitizeAmount(e.target.value);
+                  const val   = Number(clean) || 0;
+                  setPayAmount(val > totalOwed ? String(totalOwed) : clean);
                   setPayError("");
                 }}
-                placeholder={`Balance: ${fmt(payTarget.amount - payTarget.amount_paid)}`}
+                placeholder={`Max: ${fmt(totalOwed)}`}
                 min="0" />
             </div>
 
@@ -1703,7 +1848,8 @@ export default function PosRequests() {
             )}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ══ MARK RETURNED MODAL ══ */}
       {returnTarget && (

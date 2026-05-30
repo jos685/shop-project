@@ -39,9 +39,10 @@ serve(async (req) => {
       payment_method,
       mpesa_ref,
       initial_payment,   // credit: amount paid upfront / so far
+      paid_so_far,       // credit_payment: cumulative total paid after this payment
       balance_due,       // credit: remaining balance
       customer_name,     // credit: customer name
-      message_type,      // "credit_sale" | "credit_statement" | undefined (regular)
+      message_type,      // "credit_sale" | "credit_statement" | "credit_payment" | undefined (regular)
     } = await req.json();
 
     const normalized = normalizePhone(phone ?? "");
@@ -52,17 +53,40 @@ serve(async (req) => {
       );
     }
 
-    const itemLines = (items as { name: string; quantity: number; unit_price: number; total: number }[])
+    const itemLines = ((items ?? []) as { name: string; quantity: number; unit_price: number; total: number }[])
       .map(i => `${i.name} x${i.quantity} - KSh ${Number(i.total).toLocaleString()}`)
       .join("\n");
 
     const dateStr = formatDateTime(new Date());
-    const isCredit = payment_method === "credit" || message_type === "credit_sale" || message_type === "credit_statement";
+    const isCredit    = payment_method === "credit" || message_type === "credit_sale" || message_type === "credit_statement";
     const isStatement = message_type === "credit_statement";
+    const isPayment   = message_type === "credit_payment";
 
     let message: string;
 
-    if (isCredit) {
+    if (isPayment) {
+      // Payment receipt — sent after a credit customer makes a payment
+      const amountPaid  = Number(initial_payment ?? 0);
+      const totalPaid   = Number(paid_so_far   ?? amountPaid);
+      const balance     = Number(balance_due   ?? 0);
+      const methodLabel = payment_method === "mpesa"
+        ? `M-Pesa${mpesa_ref ? ` (${mpesa_ref})` : ""}`
+        : "Cash";
+      message = [
+        `[ PAYMENT RECEIVED ] - ${business_name}`,
+        "────────────",
+        `Customer: ${customer_name}`,
+        `Paid Now: KSh ${amountPaid.toLocaleString()} (${methodLabel})`,
+        "────────────",
+        `Total Credit: KSh ${Number(total_amount).toLocaleString()}`,
+        `Total Paid: KSh ${totalPaid.toLocaleString()}`,
+        `Remaining: KSh ${balance.toLocaleString()}`,
+        "────────────",
+        ...(agent_name ? [`Collected by: ${agent_name}`] : []),
+        `Date: ${dateStr}`,
+        balance <= 0 ? "Your balance is fully cleared. Thank you!" : `Please clear KSh ${balance.toLocaleString()} balance. Thank you!`,
+      ].join("\n");
+    } else if (isCredit) {
       const paid    = Number(initial_payment ?? 0);
       const balance = Number(balance_due ?? total_amount);
       const label   = isStatement ? "[ CREDIT STATEMENT ]" : "[ CREDIT SALE ]";
