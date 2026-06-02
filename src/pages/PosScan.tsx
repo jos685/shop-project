@@ -1217,15 +1217,14 @@ export default function PosScan() {
                     <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
                       Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
                     </label>
-                    <input className="ki" type="number" value={initialPayment}
+                    <input className="ki" type="text" inputMode="numeric" value={initialPayment}
                       onChange={e => {
                         const clean = sanitizeAmount(e.target.value);
                         const val   = Number(clean) || 0;
                         const cap   = Math.round(grandTotal);
                         setInitialPayment(val > cap ? String(cap) : clean);
                       }}
-                      placeholder={`e.g. 500 of ${fmt(grandTotal)}`}
-                      min="0" max={Math.round(grandTotal)} />
+                      placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
                     {Number(initialPayment) > 0 && (
                       <>
                         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -1251,15 +1250,15 @@ export default function PosScan() {
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
                     <div>
                       <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
-                      <input className="ki" type="number" value={cashAmount}
-                        onChange={e => { const v = sanitizeAmount(e.target.value); setCashAmount(v); setMpesaAmount(String(Math.max(0, grandTotal - (Number(v) || 0)))); }}
-                        placeholder="0" min="0" />
+                      <input className="ki" type="text" inputMode="numeric" value={cashAmount}
+                        onChange={e => { const v = sanitizeAmount(e.target.value); setCashAmount(v); setMpesaAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0))))); }}
+                        placeholder="0" />
                     </div>
                     <div>
                       <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                      <input className="ki" type="number" value={mpesaAmount}
-                        onChange={e => { const v = sanitizeAmount(e.target.value); setMpesaAmount(v); setCashAmount(String(Math.max(0, grandTotal - (Number(v) || 0)))); }}
-                        placeholder="0" min="0" />
+                      <input className="ki" type="text" inputMode="numeric" value={mpesaAmount}
+                        onChange={e => { const v = sanitizeAmount(e.target.value); setMpesaAmount(v); setCashAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0))))); }}
+                        placeholder="0" />
                     </div>
                   </div>
                 </div>

@@ -191,9 +191,7 @@ export default function PosDashboard() {
     let returnsTotal = 0, cashReturns = 0, mpesaReturns = 0;
     if (txIds.length > 0) {
       const { data: returnsData } = await supabase
-        .from("transaction_returns")
-        .select("original_transaction_id, amount_refunded")
-        .in("original_transaction_id", txIds);
+        .rpc("get_transaction_returns", { p_transaction_ids: txIds });
       for (const r of returnsData ?? []) {
         const orig = txData.find((t: any) => t.id === r.original_transaction_id);
         // Cap deduction at what was actually received — credit sales (amount=0) deduct nothing
@@ -373,7 +371,16 @@ export default function PosDashboard() {
                   {loading ? <span style={{ opacity: 0.25, fontSize: 20 }}>—</span> : c.value}
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end" }}>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "85%" }}>{loading ? "" : c.sub}</div>
+                  {loading ? <div /> : c.key === "sales" ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0, overflow: "hidden" }}>
+                      <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 15 : 17, color: "#fbbf24", lineHeight: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {fmt(todayRev)}
+                      </span>
+                      <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>net today</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.35, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "85%" }}>{c.sub}</div>
+                  )}
                   <span style={{ fontSize: 11, color: "rgba(255,255,255,0.18)", flexShrink: 0 }}>→</span>
                 </div>
               </button>

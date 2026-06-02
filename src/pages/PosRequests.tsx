@@ -57,6 +57,7 @@ interface Expense {
   id: string;
   amount: number;
   description: string;
+  payment_method: string;
   logged_by: string;
   logged_by_name: string;
   created_at: string;
@@ -189,13 +190,16 @@ export default function PosRequests() {
   const [expAmount,      setExpAmount]      = useState("");
   const [expDesc,        setExpDesc]        = useState("");
   const [expPayment,     setExpPayment]     = useState<"cash" | "mpesa" | "split">("cash");
+  const [expCashAmount,  setExpCashAmount]  = useState("");
+  const [expMpesaAmount, setExpMpesaAmount] = useState("");
   const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
   const [expPin,         setExpPin]         = useState("");
   const [expPinError,    setExpPinError]    = useState("");
   const [expPinShake,    setExpPinShake]    = useState(false);
   const [expProcessing,  setExpProcessing]  = useState(false);
   const [expError,       setExpError]       = useState("");
-  const [shopSalesTotal, setShopSalesTotal] = useState<number | null>(null);
+  const [shopCashTotal,   setShopCashTotal]   = useState<number | null>(null);
+  const [shopMpesaTotal,  setShopMpesaTotal]  = useState<number | null>(null);
 
   const [editTarget,    setEditTarget]    = useState<Expense | null>(null);
   const [editAmount,    setEditAmount]    = useState("");
@@ -214,7 +218,9 @@ export default function PosRequests() {
   const [payTarget,      setPayTarget]      = useState<CreditSale | null>(null);
   const [payGroupSales,  setPayGroupSales]  = useState<CreditSale[] | null>(null); // group-level payment
   const [payAmount,      setPayAmount]      = useState("");
-  const [payMethod2,     setPayMethod2]     = useState<"cash" | "mpesa">("cash");
+  const [payMethod2,     setPayMethod2]     = useState<"cash" | "mpesa" | "split">("cash");
+  const [payCashAmount,  setPayCashAmount]  = useState("");
+  const [payMpesaAmount, setPayMpesaAmount] = useState("");
   const [payMpesaRef,    setPayMpesaRef]    = useState("");
   const [payAgent,       setPayAgent]       = useState<ShopAgent | null>(null);
   const [payPin,         setPayPin]         = useState("");
@@ -223,13 +229,16 @@ export default function PosRequests() {
   const [payProcessing,  setPayProcessing]  = useState(false);
   const [payError,       setPayError]       = useState("");
 
-  const [returnTarget,     setReturnTarget]     = useState<CreditSale | null>(null);
-  const [returnAgent,      setReturnAgent]      = useState<ShopAgent | null>(null);
-  const [returnPin,        setReturnPin]        = useState("");
-  const [returnPinError,   setReturnPinError]   = useState("");
-  const [returnPinShake,   setReturnPinShake]   = useState(false);
-  const [returnProcessing, setReturnProcessing] = useState(false);
-  const [returnError,      setReturnError]      = useState("");
+  const [returnTarget,       setReturnTarget]       = useState<CreditSale | null>(null);
+  const [returnRefundMethod, setReturnRefundMethod] = useState<"cash" | "mpesa" | "split">("cash");
+  const [returnCashRefund,   setReturnCashRefund]   = useState("");
+  const [returnMpesaRefund,  setReturnMpesaRefund]  = useState("");
+  const [returnAgent,        setReturnAgent]        = useState<ShopAgent | null>(null);
+  const [returnPin,          setReturnPin]          = useState("");
+  const [returnPinError,     setReturnPinError]     = useState("");
+  const [returnPinShake,     setReturnPinShake]     = useState(false);
+  const [returnProcessing,   setReturnProcessing]   = useState(false);
+  const [returnError,        setReturnError]        = useState("");
 
   const [expandedCreditId,    setExpandedCreditId]    = useState<string | null>(null);
   const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
@@ -475,17 +484,18 @@ export default function PosRequests() {
     setTimeout(() => { setShowForm(false); setSuccessMsg(""); fetchData(); }, 1500);
   };
 
-  // ── Fetch shop sales total whenever the log-expense modal opens ─────
+  // ── Fetch shop sales totals (overall + per payment method) when expense modal opens ──
   useEffect(() => {
     if (!logOpen || !shop) return;
-    setShopSalesTotal(null);
+    setShopCashTotal(null); setShopMpesaTotal(null);
     supabase
       .from("shop_transactions")
-      .select("amount")
+      .select("cash_amount, mpesa_amount")
       .eq("shop_id", shop.id)
       .then(({ data }) => {
-        const total = (data ?? []).reduce((s: number, t: { amount: number }) => s + (t.amount ?? 0), 0);
-        setShopSalesTotal(total);
+        const rows = data ?? [];
+        setShopCashTotal(rows.reduce((s: number, t: any) => s + (t.cash_amount ?? 0), 0));
+        setShopMpesaTotal(rows.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
       });
   }, [logOpen, shop]);
 
@@ -494,11 +504,26 @@ export default function PosRequests() {
     const amount = parseFloat(expAmount);
     if (!amount || amount <= 0) { setExpError("Enter a valid amount."); return; }
     if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
-    const totalAlreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
-    const availableBalance = shopSalesTotal !== null ? Math.max(0, shopSalesTotal - totalAlreadyExpensed) : null;
-    if (availableBalance !== null && amount > availableBalance) {
-      setExpError(`Amount exceeds available shop balance of KSh ${availableBalance.toLocaleString()}.`);
-      return;
+    if (expPayment === "split") {
+      const c = Number(expCashAmount) || 0, m = Number(expMpesaAmount) || 0;
+      if (!expCashAmount || !expMpesaAmount) { setExpError("Enter both Cash and M-Pesa amounts for split."); return; }
+      if (Math.abs(c + m - amount) > 0.5) { setExpError(`Cash + M-Pesa must equal ${fmt(amount)}.`); return; }
+    }
+    const cashExpensed  = expenses.filter(e => e.payment_method === "cash").reduce((s, e) => s + e.amount, 0);
+    const mpesaExpensed = expenses.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + e.amount, 0);
+    const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
+    const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
+
+    if (expPayment === "cash" && cashAvail !== null && amount > cashAvail) {
+      setExpError(`Amount exceeds cash available in shop (KSh ${cashAvail.toLocaleString()}).`); return;
+    }
+    if (expPayment === "mpesa" && mpesaAvail !== null && amount > mpesaAvail) {
+      setExpError(`Amount exceeds M-Pesa available in shop (KSh ${mpesaAvail.toLocaleString()}).`); return;
+    }
+    if (expPayment === "split") {
+      const c = Number(expCashAmount) || 0, m = Number(expMpesaAmount) || 0;
+      if (cashAvail !== null && c > cashAvail) { setExpError(`Cash portion exceeds cash available (KSh ${cashAvail.toLocaleString()}).`); return; }
+      if (mpesaAvail !== null && m > mpesaAvail) { setExpError(`M-Pesa portion exceeds M-Pesa available (KSh ${mpesaAvail.toLocaleString()}).`); return; }
     }
     setExpProcessing(true);
 
@@ -525,7 +550,7 @@ export default function PosRequests() {
     });
     if (error) { setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
     setLogOpen(false);
-    setExpAmount(""); setExpDesc(""); setExpPayment("cash"); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
+    setExpAmount(""); setExpDesc(""); setExpPayment("cash"); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
     fetchExpenses();
   };
 
@@ -579,6 +604,11 @@ export default function PosRequests() {
     if (!isOnline) { setPayError("Recording a credit payment requires an internet connection. Please reconnect and try again."); return; }
     const amount = parseFloat(payAmount);
     if (!amount || amount <= 0) { setPayError("Enter a valid payment amount."); return; }
+    if (payMethod2 === "split") {
+      const c = Number(payCashAmount) || 0, m = Number(payMpesaAmount) || 0;
+      if (!payCashAmount || !payMpesaAmount) { setPayError("Enter both Cash and M-Pesa amounts for split."); return; }
+      if (Math.abs(c + m - amount) > 0.5) { setPayError(`Cash + M-Pesa must equal ${fmt(amount)}.`); return; }
+    }
 
     // ── Group-level: distribute oldest-first across all open sales ──
     if (payGroupSales) {
@@ -627,7 +657,7 @@ export default function PosRequests() {
         }});
       }
       setPayGroupSales(null);
-      setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef("");
+      setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayCashAmount(""); setPayMpesaAmount("");
       setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); setPayProcessing(false);
       fetchCreditSales();
       return;
@@ -643,7 +673,7 @@ export default function PosRequests() {
       p_owner_id:              shop?.owner_id,
       p_amount:                amount,
       p_payment_method:        payMethod2,
-      p_mpesa_ref:             payMethod2 === "mpesa" ? payMpesaRef.trim() || null : null,
+      p_mpesa_ref:             (payMethod2 === "mpesa" || payMethod2 === "split") ? payMpesaRef.trim() || null : null,
       p_collected_by_agent_id: agent.agent.agent_id,
       p_collected_by_name:     agent.agent.name,
     });
@@ -678,7 +708,7 @@ export default function PosRequests() {
   const resetPayModal = () => {
     setPayTarget(null);
     setPayGroupSales(null);
-    setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef("");
+    setPayAmount(""); setPayMethod2("cash"); setPayMpesaRef(""); setPayCashAmount(""); setPayMpesaAmount("");
     setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); setPayProcessing(false);
     resetPinLockout();
   };
@@ -686,6 +716,12 @@ export default function PosRequests() {
   const handleMarkReturned = async (_agent: ShopAgent) => {
     if (!returnTarget || !shop) return;
     if (!isOnline) { setReturnError("Marking a return requires an internet connection. This restores stock on the server and cannot be done offline."); return; }
+    const totalRefund = returnTarget.items.reduce((s, i) => s + i.subtotal, 0);
+    if (returnRefundMethod === "split") {
+      const c = Number(returnCashRefund) || 0, m = Number(returnMpesaRefund) || 0;
+      if (!returnCashRefund || !returnMpesaRefund) { setReturnError("Enter both Cash and M-Pesa amounts for split refund."); return; }
+      if (Math.abs(c + m - totalRefund) > 0.5) { setReturnError(`Cash + M-Pesa must equal ${fmt(totalRefund)}.`); return; }
+    }
     setReturnProcessing(true);
 
     // Single RPC: restores stock + marks returned + inserts transaction_returns atomically
@@ -703,13 +739,13 @@ export default function PosRequests() {
       return;
     }
 
-    setReturnTarget(null);
-    setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); setReturnProcessing(false);
+    resetReturnModal();
     fetchCreditSales();
   };
 
   const resetReturnModal = () => {
     setReturnTarget(null);
+    setReturnRefundMethod("cash"); setReturnCashRefund(""); setReturnMpesaRefund("");
     setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); setReturnProcessing(false);
     resetPinLockout();
   };
@@ -1399,15 +1435,15 @@ export default function PosRequests() {
                           );
                         })()}
 
-                        {/* Individual sales */}
-                        {group.sales.map((cs, csIdx) => {
+                        {/* Individual sales — hide fully returned */}
+                        {group.sales.filter(cs => cs.status !== "returned").map((cs, csIdx, arr) => {
                           const balance    = cs.amount - cs.amount_paid;
                           const sc         = statusColor(cs.status);
                           const isOpen     = cs.status === "pending" || cs.status === "partial";
                           const isExpanded = expandedCreditId === cs.id;
                           const payments   = creditPayments[cs.id] || [];
                           const loadingPay = paymentsLoading === cs.id;
-                          const isLast     = csIdx === group.sales.length - 1;
+                          const isLast     = csIdx === arr.length - 1;
                           return (
                             <div key={cs.id} style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}` }}>
                               <button onClick={() => toggleCreditCard(cs.id)}
@@ -1501,7 +1537,7 @@ export default function PosRequests() {
 
                                   {isOpen && (
                                     <div style={{ padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
-                                      <button onClick={() => { setReturnTarget(cs); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
+                                      <button onClick={() => { setReturnTarget(cs); setReturnRefundMethod("cash"); setReturnCashRefund(""); setReturnMpesaRefund(""); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
                                         style={{ width: "100%", padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                                         ↩ Mark Returned
                                       </button>
@@ -1623,54 +1659,48 @@ export default function PosRequests() {
 
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount (KSh)</label>
-              <input className="ki" type="number" value={expAmount}
+              <input className="ki" type="text" inputMode="numeric" value={expAmount}
                 onChange={e => { setExpAmount(sanitizeAmount(e.target.value)); setExpError(""); }}
-                placeholder="e.g. 500" min="0"
-                max={(() => {
-                  if (shopSalesTotal === null) return undefined;
-                  const alreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
-                  return Math.max(0, shopSalesTotal - alreadyExpensed);
-                })()} />
+                placeholder="e.g. 500" />
             </div>
 
-            {/* Available balance strip */}
+            {/* Per-method balance strips */}
             {(() => {
-              const alreadyExpensed = expenses.reduce((s, e) => s + e.amount, 0);
-              const available = shopSalesTotal !== null ? Math.max(0, shopSalesTotal - alreadyExpensed) : null;
-              const entered   = parseFloat(expAmount) || 0;
-              const overLimit = available !== null && entered > available;
+              const cashExpensed  = expenses.filter(e => e.payment_method === "cash").reduce((s, e) => s + e.amount, 0);
+              const mpesaExpensed = expenses.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + e.amount, 0);
+              const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
+              const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
+              const entered    = parseFloat(expAmount) || 0;
+              const loading    = shopCashTotal === null || shopMpesaTotal === null;
+
+              const rows = [
+                { icon: "💵", label: "Cash available",   avail: cashAvail,  active: expPayment === "cash"  || expPayment === "split" },
+                { icon: "📱", label: "M-Pesa available", avail: mpesaAvail, active: expPayment === "mpesa" || expPayment === "split" },
+              ];
               return (
-                <div style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between",
-                  padding: "10px 14px",
-                  background: overLimit
-                    ? "rgba(248,113,113,0.07)"
-                    : available === null
-                    ? "rgba(255,255,255,0.03)"
-                    : "rgba(52,211,153,0.06)",
-                  border: `1px solid ${overLimit ? "rgba(248,113,113,0.25)" : available === null ? theme.border.default : "rgba(52,211,153,0.2)"}`,
-                  borderRadius: 10,
-                }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 14 }}>{overLimit ? "⚠️" : "💰"}</span>
-                    <div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                        Available in shop
-                      </div>
-                      {available !== null && alreadyExpensed > 0 && (
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>
-                          KSh {shopSalesTotal!.toLocaleString()} revenue − KSh {alreadyExpensed.toLocaleString()} expensed
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {rows.map(r => {
+                    const over = r.active && r.avail !== null && entered > 0 && (
+                      expPayment === "split"
+                        ? (r.label.includes("Cash") ? (Number(expCashAmount) || 0) > (r.avail ?? 0) : (Number(expMpesaAmount) || 0) > (r.avail ?? 0))
+                        : entered > (r.avail ?? 0)
+                    );
+                    return (
+                      <div key={r.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", background: over ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${over ? "rgba(248,113,113,0.3)" : theme.border.default}`, borderRadius: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          <span style={{ fontSize: 14 }}>{over ? "⚠️" : r.icon}</span>
+                          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: over ? "#f87171" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{r.label}</span>
                         </div>
-                      )}
-                    </div>
-                  </div>
-                  {available === null ? (
-                    <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
-                  ) : (
-                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: overLimit ? "#f87171" : "#34d399" }}>
-                      KSh {available.toLocaleString()}
-                    </div>
-                  )}
+                        {loading ? (
+                          <span style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
+                        ) : (
+                          <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: over ? "#f87171" : r.avail === 0 ? theme.text.muted : "#34d399" }}>
+                            {fmt(r.avail ?? 0)}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
                 </div>
               );
             })()}
@@ -1687,7 +1717,7 @@ export default function PosRequests() {
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
               <div style={{ display: "flex", gap: 8 }}>
                 {([["cash", "💵 Cash"], ["mpesa", "📱 M-Pesa"], ["split", "⚡ Split"]] as const).map(([val, label]) => (
-                  <button key={val} type="button" onClick={() => setExpPayment(val)}
+                  <button key={val} type="button" onClick={() => { setExpPayment(val); setExpCashAmount(""); setExpMpesaAmount(""); }}
                     style={{
                       flex: 1, padding: "9px 0", borderRadius: 10, cursor: "pointer",
                       border: `1px solid ${expPayment === val ? theme.accent.cyan : theme.border.default}`,
@@ -1700,6 +1730,26 @@ export default function PosRequests() {
                 ))}
               </div>
             </div>
+
+            {expPayment === "split" && (
+              <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24", marginBottom: 2 }}>⚡ Split — Total: {fmt(Number(expAmount) || 0)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
+                    <input className="ki" type="text" inputMode="numeric" value={expCashAmount}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpCashAmount(v); setExpMpesaAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
+                      placeholder="0" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                    <input className="ki" type="text" inputMode="numeric" value={expMpesaAmount}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpMpesaAmount(v); setExpCashAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
+                      placeholder="0" />
+                  </div>
+                </div>
+              </div>
+            )}
 
             {expError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {expError}</div>}
 
@@ -1813,9 +1863,9 @@ export default function PosRequests() {
 
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }] as const).map(({ key, icon, label, col }) => (
-                  <button key={key} onClick={() => setPayMethod2(key)}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
+                  <button key={key} onClick={() => { setPayMethod2(key); setPayCashAmount(""); setPayMpesaAmount(""); setPayMpesaRef(""); }}
                     style={{ padding: "10px 8px", border: `1px solid ${payMethod2 === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: payMethod2 === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
                     <span style={{ fontSize: 18 }}>{icon}</span>
                     <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: payMethod2 === key ? col : theme.text.muted }}>{label}</span>
@@ -1823,6 +1873,30 @@ export default function PosRequests() {
                 ))}
               </div>
             </div>
+
+            {payMethod2 === "split" && (
+              <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24", marginBottom: 2 }}>⚡ Split — Total: {fmt(Number(payAmount) || 0)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
+                    <input className="ki" type="text" inputMode="numeric" value={payCashAmount}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayCashAmount(v); setPayMpesaAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
+                      placeholder="0" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                    <input className="ki" type="text" inputMode="numeric" value={payMpesaAmount}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayMpesaAmount(v); setPayCashAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
+                      placeholder="0" />
+                  </div>
+                </div>
+                <div>
+                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>M-Pesa Ref (optional)</label>
+                  <input className="ki" value={payMpesaRef} onChange={e => setPayMpesaRef(sanitizeCode(e.target.value, 20))} placeholder="e.g. QHX7K3LM2P" maxLength={20} spellCheck={false} />
+                </div>
+              </div>
+            )}
 
             {payMethod2 === "mpesa" && (
               <div>
@@ -1875,6 +1949,48 @@ export default function PosRequests() {
                 </div>
               ))}
             </div>
+
+            {/* Refund method */}
+            {(() => {
+              const totalRefund = returnTarget.items.reduce((s, i) => s + i.subtotal, 0);
+              return (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                      Refund Method · Total: {fmt(totalRefund)}
+                    </label>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                      {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
+                        <button key={key} type="button" onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
+                          style={{ padding: "10px 8px", border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: returnRefundMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                          <span style={{ fontSize: 18 }}>{icon}</span>
+                          <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  {returnRefundMethod === "split" && (
+                    <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24" }}>⚡ Split refund — Total: {fmt(totalRefund)}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        <div>
+                          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
+                          <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                            onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                            placeholder="0" />
+                        </div>
+                        <div>
+                          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                          <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                            onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                            placeholder="0" />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
               ⚠ This will restore stock and mark the sale as returned. This cannot be undone.
