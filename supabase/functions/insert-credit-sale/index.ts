@@ -99,11 +99,13 @@ serve(async (req) => {
     });
   }
 
-  // Record shop_transaction for the upfront portion (so owner dashboard shows it)
+  // Record shop_transaction for the upfront portion (so owner dashboard shows it).
+  // p_rows must be an ARRAY — same as regular sales in PosScan.tsx.
   if (amount_paid > 0 && body.tx_row) {
-    await db.rpc("insert_shop_transaction", {
-      p_rows: { ...body.tx_row, credit_sale_id: creditData.id },
+    const { error: txErr } = await db.rpc("insert_shop_transaction", {
+      p_rows: [{ ...body.tx_row, credit_sale_id: creditData.id }],
     });
+    if (txErr) console.error("insert_shop_transaction error (credit partial):", txErr.message);
   }
 
   return respond({ success: true, data: creditData });

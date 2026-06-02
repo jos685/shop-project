@@ -589,6 +589,25 @@ export default function PosTransactionsPage() {
     };
   }, [shop, fetchTransactions]);
 
+  // ── Realtime: owner flags/unflags shop transactions ─────────────────────
+  useEffect(() => {
+    if (!shop?.id) return;
+    const ch = supabase
+      .channel(`shop-flags-${shop.id}`)
+      .on(
+        "postgres_changes",
+        { event: "UPDATE", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` },
+        (payload) => {
+          const updated = payload.new as { id: string; status: string | null };
+          setTransactions(prev =>
+            prev.map(t => t.id === updated.id ? { ...t, status: updated.status } : t)
+          );
+        }
+      )
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [shop?.id]);
+
   // Refetch returnsMap when user comes back to this page (catches returns done on Credit tab)
   useEffect(() => {
     const refetchReturns = () => {
@@ -658,6 +677,8 @@ export default function PosTransactionsPage() {
     if (method === "mpesa") return { icon: "📱", color: "#60a5fa", label: "M-Pesa" };
     return                         { icon: "⚡", color: "#fbbf24", label: "Split"  };
   };
+
+  const flaggedCount = transactions.filter(t => t.status === "review").length;
 
   const displayed = transactions.filter(tx => {
     const isCredit = tx.status === "credit" || tx.status === "credit_partial";
@@ -819,6 +840,27 @@ export default function PosTransactionsPage() {
       </div>
 
       <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+        {/* Flag banner — shown when owner has flagged transactions */}
+        {flaggedCount > 0 && (
+          <div style={{
+            background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.3)",
+            borderRadius: 12, padding: "14px 18px",
+            display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontSize: 22 }}>⚠️</span>
+              <div>
+                <div style={{ fontWeight: 700, fontSize: 14, color: "#f87171", fontFamily: theme.font.body }}>
+                  {flaggedCount} {flaggedCount === 1 ? "transaction has" : "transactions have"} been flagged for review
+                </div>
+                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                  Your manager has marked {flaggedCount === 1 ? "this sale" : "these sales"}. Check each one below.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* Type filter pills */}
         <div style={{ display: "flex", gap: 7 }}>
@@ -1228,6 +1270,11 @@ export default function PosTransactionsPage() {
                                     {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
                                   </span>
                                 )}
+                                {group.items.some(t => t.status === "review") && (
+                                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 20, padding: "2px 8px" }}>
+                                    🚩 Flagged for Review
+                                  </span>
+                                )}
                               </div>
                             </div>
                             <div style={{ textAlign: "right", flexShrink: 0 }}>
@@ -1329,6 +1376,13 @@ export default function PosTransactionsPage() {
                               <div style={{ marginTop: 5 }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 8px" }}>
                                   {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
+                                </span>
+                              </div>
+                            )}
+                            {tx.status === "review" && (
+                              <div style={{ marginTop: 5 }}>
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 20, padding: "2px 8px" }}>
+                                  🚩 Flagged for Review
                                 </span>
                               </div>
                             )}
