@@ -309,11 +309,9 @@ export default function PosScan() {
 
   const saveCustomer = useCallback(async (name: string, phone: string) => {
     if (!shop || !name.trim() || !phone.trim()) return;
-    const already = savedCustomers.some(
-      c => c.phone === phone.trim() || c.name.toLowerCase() === name.trim().toLowerCase()
-    );
+    const already = savedCustomers.some(c => c.phone === phone.trim());
     if (already) return;
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from("shop_customers")
       .insert({ shop_id: shop.id, owner_id: shop.owner_id, name: name.trim(), phone: phone.trim() })
       .select("id, name, phone")
@@ -324,6 +322,18 @@ export default function PosScan() {
         if (customersKey) { try { localStorage.setItem(customersKey, JSON.stringify(next)); } catch {} }
         return next;
       });
+    } else {
+      console.warn("saveCustomer insert failed:", error?.message, error?.code);
+      // Re-fetch to sync local state with whatever is actually in the DB
+      const { data: fresh } = await supabase
+        .from("shop_customers")
+        .select("id, name, phone")
+        .eq("shop_id", shop.id)
+        .order("name");
+      if (fresh) {
+        setSavedCustomers(fresh as SavedCustomer[]);
+        if (customersKey) { try { localStorage.setItem(customersKey, JSON.stringify(fresh)); } catch {} }
+      }
     }
   }, [shop, savedCustomers, customersKey]);
 
@@ -1838,8 +1848,8 @@ export default function PosScan() {
                     {q}
                   </button>
                 ))}
-                <input className="ki" type="number" value={addQty} onChange={e => setAddQty(e.target.value)}
-                  style={{ width: 70, textAlign: "center" }} min="1" max={addingProduct.remaining} />
+                <input className="ki" type="text" inputMode="numeric" value={addQty} onChange={e => setAddQty(e.target.value)}
+                  style={{ width: 70, textAlign: "center" }} />
               </div>
             </div>
 
@@ -1859,11 +1869,9 @@ export default function PosScan() {
                   </label>
                   {canEdit ? (
                     <>
-                      <input className="ki" type="number"
+                      <input className="ki" type="text" inputMode="numeric"
                         value={addSellPrice}
                         onChange={e => { setAddSellPrice(sanitizeAmount(e.target.value)); setError(""); }}
-                        min={addingProduct.product.price}
-                        step="1"
                       />
                       {markup > 0 && (
                         <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>

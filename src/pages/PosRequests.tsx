@@ -58,6 +58,8 @@ interface Expense {
   amount: number;
   description: string;
   payment_method: string;
+  cash_amount: number;
+  mpesa_amount: number;
   logged_by: string;
   logged_by_name: string;
   created_at: string;
@@ -509,8 +511,8 @@ export default function PosRequests() {
       if (!expCashAmount || !expMpesaAmount) { setExpError("Enter both Cash and M-Pesa amounts for split."); return; }
       if (Math.abs(c + m - amount) > 0.5) { setExpError(`Cash + M-Pesa must equal ${fmt(amount)}.`); return; }
     }
-    const cashExpensed  = expenses.filter(e => e.payment_method === "cash").reduce((s, e) => s + e.amount, 0);
-    const mpesaExpensed = expenses.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + e.amount, 0);
+    const cashExpensed  = expenses.reduce((s, e) => s + (e.cash_amount  ?? (e.payment_method === "cash"  ? e.amount : 0)), 0);
+    const mpesaExpensed = expenses.reduce((s, e) => s + (e.mpesa_amount ?? (e.payment_method === "mpesa" ? e.amount : 0)), 0);
     const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
     const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
 
@@ -539,7 +541,7 @@ export default function PosRequests() {
       return;
     }
 
-    const { error } = await supabase.rpc("insert_shop_expense", {
+    const rpcParams: Record<string, unknown> = {
       p_shop_id:        shop?.id,
       p_owner_id:       shop?.owner_id,
       p_amount:         amount,
@@ -547,8 +549,13 @@ export default function PosRequests() {
       p_logged_by:      agent.agent.id,
       p_logged_by_name: agent.agent.name,
       p_payment_method: expPayment,
-    });
-    if (error) { setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
+    };
+    if (expPayment === "split") {
+      rpcParams.p_cash_amount  = Number(expCashAmount)  || 0;
+      rpcParams.p_mpesa_amount = Number(expMpesaAmount) || 0;
+    }
+    const { error } = await supabase.rpc("insert_shop_expense", rpcParams);
+    if (error) { console.error("insert_shop_expense error:", error.message, error.code, error.details); setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
     setLogOpen(false);
     setExpAmount(""); setExpDesc(""); setExpPayment("cash"); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
     fetchExpenses();
@@ -1041,7 +1048,7 @@ export default function PosRequests() {
                     <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.06em" }}>
                       {type === "damage_report" ? "Units Damaged / Lost" : "Quantity Requested"}
                     </div>
-                    <input type="number" min="1" max="9999" value={quantity}
+                    <input type="text" inputMode="numeric" value={quantity}
                       onChange={e => setQuantity(sanitizeInteger(e.target.value, 9999))}
                       placeholder="Enter quantity..."
                       style={{ width: "100%", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
@@ -1738,13 +1745,13 @@ export default function PosRequests() {
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
                     <input className="ki" type="text" inputMode="numeric" value={expCashAmount}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpCashAmount(v); setExpMpesaAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpCashAmount(v); if (!expMpesaAmount) setExpMpesaAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
                       placeholder="0" />
                   </div>
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
                     <input className="ki" type="text" inputMode="numeric" value={expMpesaAmount}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpMpesaAmount(v); setExpCashAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setExpMpesaAmount(v); if (!expCashAmount) setExpCashAmount(String(Math.max(0, Math.round((Number(expAmount) || 0) - (Number(v) || 0))))); setExpError(""); }}
                       placeholder="0" />
                   </div>
                 </div>
@@ -1783,9 +1790,9 @@ export default function PosRequests() {
 
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount (KSh)</label>
-              <input className="ki" type="number" value={editAmount}
+              <input className="ki" type="text" inputMode="numeric" value={editAmount}
                 onChange={e => { setEditAmount(sanitizeAmount(e.target.value)); setEditError(""); }}
-                placeholder="e.g. 500" min="0" />
+                placeholder="e.g. 500" />
             </div>
 
             <div>
@@ -1850,7 +1857,7 @@ export default function PosRequests() {
 
             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Amount Paid (KSh)</label>
-              <input className="ki" type="number" value={payAmount}
+              <input className="ki" type="text" inputMode="numeric" value={payAmount}
                 onChange={e => {
                   const clean = sanitizeAmount(e.target.value);
                   const val   = Number(clean) || 0;
@@ -1881,13 +1888,13 @@ export default function PosRequests() {
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
                     <input className="ki" type="text" inputMode="numeric" value={payCashAmount}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayCashAmount(v); setPayMpesaAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayCashAmount(v); if (!payMpesaAmount) setPayMpesaAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
                       placeholder="0" />
                   </div>
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
                     <input className="ki" type="text" inputMode="numeric" value={payMpesaAmount}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayMpesaAmount(v); setPayCashAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setPayMpesaAmount(v); if (!payCashAmount) setPayCashAmount(String(Math.max(0, Math.round((Number(payAmount) || 0) - (Number(v) || 0))))); setPayError(""); }}
                       placeholder="0" />
                   </div>
                 </div>

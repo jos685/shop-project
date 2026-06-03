@@ -138,8 +138,10 @@ export default function PosTransactionsPage() {
   const [queuedSales, setQueuedSales]   = useState<QueuedSale[]>([]);
   const [expandedQ,   setExpandedQ]     = useState<string | null>(null);
 
+  type CreditPaymentRow = { id: string; credit_sale_id: string; amount: number; payment_method: string; cash_amount: number; mpesa_amount: number; mpesa_ref: string | null; customer_name: string | null; customer_phone: string | null; created_at: string };
   const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
-  const [shopExpenses, setShopExpenses] = useState<{ id: string; amount: number; description: string; payment_method: string; created_at: string }[]>([]);
+  const [shopExpenses, setShopExpenses] = useState<{ id: string; amount: number; description: string; payment_method: string; cash_amount: number; mpesa_amount: number; logged_by: string; logged_by_name: string; created_at: string }[]>([]);
+  const [creditPaymentRows, setCreditPaymentRows] = useState<CreditPaymentRow[]>([]);
   const [fetchError, setFetchError]     = useState<string | null>(null);
   const [loading, setLoading]           = useState(true);
   const [loadingMore, setLoadingMore]   = useState(false);
@@ -462,9 +464,9 @@ export default function PosTransactionsPage() {
       if (startDate) pStart = startDate.toISOString();
     }
 
-    // Both queries use SECURITY DEFINER RPCs — bypass RLS regardless of JWT state
-    // Promise.allSettled so a blipping expenses fetch never kills the transaction load
-    const [txResult, expResult] = await Promise.allSettled([
+    // All queries use SECURITY DEFINER RPCs — bypass RLS regardless of JWT state
+    // Promise.allSettled so a blipping fetch never kills the transaction load
+    const [txResult, expResult, cpResult] = await Promise.allSettled([
       supabase.rpc("get_shop_transactions", {
         p_shop_id: shop.id,
         p_start:   pStart ?? null,
@@ -473,6 +475,7 @@ export default function PosTransactionsPage() {
         p_offset:  0,
       }),
       supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
+      supabase.rpc("get_shop_credit_payments_all", { p_shop_id: shop.id }),
     ]);
 
     // Auto-retry transactions once on transient network failure
@@ -491,18 +494,23 @@ export default function PosTransactionsPage() {
       txError = retry.error;
     }
     const expData = expResult.status === "fulfilled" ? expResult.value.data : null;
+    const cpData  = cpResult.status  === "fulfilled" ? cpResult.value.data  : null;
 
     if (txError) { console.error("shop_transactions fetch error:", txError); setFetchError(txError.message); setLoading(false); return; }
     if (!txData) { setFetchError("No data returned"); setLoading(false); return; }
     setFetchError(null);
 
     // Filter expenses client-side to match the active date window
-    const allExps: { id: string; amount: number; description: string; payment_method: string; created_at: string }[] =
+    const allExps: { id: string; amount: number; description: string; payment_method: string; cash_amount: number; mpesa_amount: number; logged_by: string; logged_by_name: string; created_at: string }[] =
       (expData || []).map((e: any) => ({
         id:             e.id,
         amount:         Number(e.amount) || 0,
         description:    e.description || "Expense",
         payment_method: e.payment_method || "cash",
+        cash_amount:    Number(e.cash_amount)  || 0,
+        mpesa_amount:   Number(e.mpesa_amount) || 0,
+        logged_by:      e.logged_by      || "",
+        logged_by_name: e.logged_by_name || "",
         created_at:     e.created_at,
       }));
 
@@ -517,9 +525,34 @@ export default function PosTransactionsPage() {
       return startDate ? d >= startDate : true;
     });
 
+    const allCPs = (cpData || []).map((c: any) => ({
+      id:               c.id,
+      credit_sale_id:   c.credit_sale_id,
+      amount:           Number(c.amount) || 0,
+      payment_method:   c.payment_method || "cash",
+      cash_amount:      Number(c.cash_amount)  || 0,
+      mpesa_amount:     Number(c.mpesa_amount) || 0,
+      mpesa_ref:        c.mpesa_ref        || null,
+      customer_name:    c.customer_name    || null,
+      customer_phone:   c.customer_phone   || null,
+      created_at:       c.created_at,
+    }));
+
+    const filteredCPs = allCPs.filter((c: CreditPaymentRow) => {
+      const d = new Date(c.created_at);
+      if (filter === "custom") {
+        const range = getCustomRange(customMode, customValue);
+        if (!range) return true;
+        return d >= range.start && d <= range.end;
+      }
+      const startDate = getStartDate(filter);
+      return startDate ? d >= startDate : true;
+    });
+
     const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
     setTransactions(enriched);
     setShopExpenses(filteredExps);
+    setCreditPaymentRows(filteredCPs);
     setOffset(PAGE_SIZE);
     setHasMore(txData.length === PAGE_SIZE);
     setLoading(false);
@@ -573,10 +606,14 @@ export default function PosTransactionsPage() {
     // 30 s polling as a safety net (mirrors owner dashboard behaviour)
     const poll = setInterval(() => fetchTransactions(true), 30_000);
 
-    // expenses: postgres_changes is fine here since the fetch is via SECURITY DEFINER RPC
+    // expenses + credit_payments: postgres_changes is fine here since fetch is via SECURITY DEFINER RPC
     const expCh = supabase.channel(`shop-exp-changes-${shop.id}`)
       .on("postgres_changes", {
         event: "*", schema: "public", table: "shop_expenses",
+        filter: `shop_id=eq.${shop.id}`,
+      }, () => fetchTransactions(true))
+      .on("postgres_changes", {
+        event: "*", schema: "public", table: "credit_payments",
         filter: `shop_id=eq.${shop.id}`,
       }, () => fetchTransactions(true))
       .subscribe();
@@ -697,12 +734,15 @@ export default function PosTransactionsPage() {
   });
 
   const expensesSum   = shopExpenses.reduce((s, e) => s + e.amount, 0);
-  const grossRevenue  = displayed.reduce((s, t) => s + t.amount, 0);
+  const cpTotal       = creditPaymentRows.reduce((s, c) => s + c.amount, 0);
+  const grossRevenue  = displayed.reduce((s, t) => s + t.amount, 0) + cpTotal;
   const totalRevenue  = Math.max(0, grossRevenue - expensesSum);
-  const cashExpenses  = shopExpenses.filter(e => e.payment_method !== "mpesa").reduce((s, e) => s + e.amount, 0);
-  const mpesaExpenses = shopExpenses.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + e.amount, 0);
-  const totalCash     = Math.max(0, displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0) - cashExpenses);
-  const totalMpesa    = Math.max(0, displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0) - mpesaExpenses);
+  const cashExpenses  = shopExpenses.reduce((s, e) => s + (e.cash_amount  || (e.payment_method === "cash"  ? e.amount : 0)), 0);
+  const mpesaExpenses = shopExpenses.reduce((s, e) => s + (e.mpesa_amount || (e.payment_method === "mpesa" ? e.amount : 0)), 0);
+  const cpCash        = creditPaymentRows.reduce((s, c) => s + c.cash_amount,  0);
+  const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
+  const totalCash     = Math.max(0, displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0) + cpCash  - cashExpenses);
+  const totalMpesa    = Math.max(0, displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0) + cpMpesa - mpesaExpenses);
   const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
 
   // Cap each return deduction at t.amount — credit sales (amount=0) contribute nothing to revenue
@@ -780,7 +820,7 @@ export default function PosTransactionsPage() {
   const grouped = groupByDate(displayedForType);
 
   // Build unified date-keyed list — typeFilter controls which kinds appear
-  type UnifiedItem = { kind: "tx"; data: LocalTransaction } | { kind: "exp"; data: typeof shopExpenses[number] };
+  type UnifiedItem = { kind: "tx"; data: LocalTransaction } | { kind: "exp"; data: typeof shopExpenses[number] } | { kind: "cp"; data: CreditPaymentRow };
   const unifiedByDate: Record<string, UnifiedItem[]> = {};
   if (typeFilter !== "expenses") {
     for (const [date, txns] of Object.entries(grouped)) {
@@ -792,6 +832,11 @@ export default function PosTransactionsPage() {
       const key = dateKey(exp.created_at);
       if (!unifiedByDate[key]) unifiedByDate[key] = [];
       unifiedByDate[key].push({ kind: "exp" as const, data: exp });
+    }
+    for (const cp of creditPaymentRows) {
+      const key = dateKey(cp.created_at);
+      if (!unifiedByDate[key]) unifiedByDate[key] = [];
+      unifiedByDate[key].push({ kind: "cp" as const, data: cp });
     }
   }
   // YYYY-MM-DD keys sort correctly as strings — newest first
@@ -1208,7 +1253,19 @@ export default function PosTransactionsPage() {
                 const items = unifiedByDate[date];
                 const txnsForDate = items.filter(i => i.kind === "tx").map(i => i.data as LocalTransaction);
                 const expsForDate = items.filter(i => i.kind === "exp").map(i => i.data as typeof shopExpenses[number]);
-                const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0) - expsForDate.reduce((s, e) => s + e.amount, 0);
+                const cpsForDate  = items.filter(i => i.kind === "cp").map(i => i.data as CreditPaymentRow);
+                const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0) + cpsForDate.reduce((s, c) => s + c.amount, 0) - expsForDate.reduce((s, e) => s + e.amount, 0);
+                // Merge all item types into one time-sorted list so the render order matches real time
+                type DayItem =
+                  | { kind: "exp";   data: typeof expsForDate[number] }
+                  | { kind: "cp";    data: CreditPaymentRow }
+                  | { kind: "group"; data: SaleGroup };
+                const txGroups = groupTransactions(txnsForDate);
+                const dayItems: DayItem[] = [
+                  ...expsForDate.map(d => ({ kind: "exp"   as const, data: d })),
+                  ...cpsForDate .map(d => ({ kind: "cp"    as const, data: d })),
+                  ...txGroups   .map(d => ({ kind: "group" as const, data: d })),
+                ].sort((a, b) => new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime());
                 return (
                 <div key={date}>
                   {/* Date group header */}
@@ -1217,33 +1274,69 @@ export default function PosTransactionsPage() {
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.gold }}>{fmt(dayNet)}</div>
                   </div>
 
-                  {/* Expense rows for this day */}
-                  {expsForDate.map(exp => {
-                    const pmLabel: Record<string, string> = { cash: "💵 Cash", mpesa: "📱 M-Pesa", split: "⚡ Split" };
-                    return (
-                      <div key={`exp-${exp.id}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(248,113,113,0.03)" }}>
-                        <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>💸</div>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <div style={{ fontWeight: 600, fontSize: 13, color: "#f87171", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.description}</div>
-                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                            {pmLabel[exp.payment_method] ?? exp.payment_method} · {new Date(exp.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                  {/* All rows merged and sorted strictly by time */}
+                  {dayItems.map((item, _di) => {
+                    if (item.kind === "exp") {
+                      const exp = item.data;
+                      const pmLabel: Record<string, string> = { cash: "💵 Cash", mpesa: "📱 M-Pesa", split: "⚡ Split" };
+                      return (
+                        <div key={`exp-${exp.id}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(248,113,113,0.03)" }}>
+                          <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>💸</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: "#f87171", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.description}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                              {pmLabel[exp.payment_method] ?? exp.payment_method} · {new Date(exp.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                            {exp.payment_method === "split" && exp.cash_amount > 0 && exp.mpesa_amount > 0 && (
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                                <span style={{ color: "#34d399" }}>💵 {fmt(exp.cash_amount)}</span>
+                                <span style={{ margin: "0 6px", color: theme.border.default }}>·</span>
+                                <span style={{ color: "#06b6d4" }}>📱 {fmt(exp.mpesa_amount)}</span>
+                              </div>
+                            )}
+                            <div style={{ display: "inline-block", marginTop: 4, background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#f87171", fontFamily: theme.font.mono, letterSpacing: "0.06em" }}>EXPENSE</div>
                           </div>
-                          <div style={{ display: "inline-block", marginTop: 4, background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#f87171", fontFamily: theme.font.mono, letterSpacing: "0.06em" }}>EXPENSE</div>
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(exp.amount)}</div>
+                          </div>
                         </div>
-                        <div style={{ textAlign: "right", flexShrink: 0 }}>
-                          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(exp.amount)}</div>
+                      );
+                    }
+                    if (item.kind === "cp") {
+                      const cp = item.data;
+                      const pmLabel: Record<string, string> = { cash: "💵 Cash", mpesa: "📱 M-Pesa", split: "⚡ Split" };
+                      return (
+                        <div key={`cp-${cp.id}`} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(192,132,252,0.03)" }}>
+                          <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(192,132,252,0.12)", border: "1px solid rgba(192,132,252,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>💳</div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontWeight: 600, fontSize: 13, color: "#c084fc", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{cp.customer_name ?? "Credit Payment"}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                              {pmLabel[cp.payment_method] ?? cp.payment_method}{" · "}{new Date(cp.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                            {cp.payment_method === "split" && cp.cash_amount > 0 && cp.mpesa_amount > 0 && (
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                                <span style={{ color: "#34d399" }}>💵 {fmt(cp.cash_amount)}</span>
+                                <span style={{ margin: "0 6px" }}>·</span>
+                                <span style={{ color: "#06b6d4" }}>📱 {fmt(cp.mpesa_amount)}</span>
+                              </div>
+                            )}
+                            {cp.mpesa_ref && <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>Ref: {cp.mpesa_ref}</div>}
+                            <div style={{ display: "inline-block", marginTop: 4, background: "rgba(192,132,252,0.15)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#c084fc", fontFamily: theme.font.mono, letterSpacing: "0.06em" }}>CREDIT PAYMENT</div>
+                          </div>
+                          <div style={{ textAlign: "right", flexShrink: 0 }}>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#c084fc" }}>+{fmt(cp.amount)}</div>
+                          </div>
                         </div>
-                      </div>
-                    );
-                  })}
-
-                  {groupTransactions(txnsForDate).map((group, gi, arr) => {
+                      );
+                    }
+                    // kind === "group"
+                    const group        = item.data;
                     const isMulti      = group.items.length > 1;
-                    const isLast       = gi === arr.length - 1;
                     const isOpen       = expanded === group.key;
                     const isCredit     = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
                     const badge        = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
                     const returnStatus = getReturnStatus(group);
+                    const isLast = _di === dayItems.length - 1;
 
                     if (isMulti) {
                       const label = `${group.items[0].product_name ?? "Item"} +${group.items.length - 1} more`;
@@ -1613,7 +1706,7 @@ export default function PosTransactionsPage() {
                       −
                     </button>
                     <input
-                      type="number" min={0} max={max} value={item.return_qty}
+                      type="text" inputMode="numeric" value={item.return_qty}
                       onChange={e => updateReturnQty(item.txn_id, parseInt(e.target.value) || 0)}
                       style={{ width: 54, textAlign: "center", padding: "6px 8px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, outline: "none" }}
                     />

@@ -212,10 +212,16 @@ export default function PosShopInfo() {
   const fetchStats = useCallback(async () => {
     if (!shop) return;
     if (!navigator.onLine) { setStatsLoading(false); return; }
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const { data } = await supabase.from("shop_transactions")
-      .select("amount, cash_amount, mpesa_amount")
-      .eq("shop_id", shop.id).gte("created_at", today.toISOString());
+    const today    = new Date(); today.setHours(0, 0, 0, 0);
+    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+    const { data, error } = await supabase.rpc("get_shop_transactions", {
+      p_shop_id: shop.id,
+      p_start:   today.toISOString(),
+      p_end:     tomorrow.toISOString(),
+      p_limit:   1000,
+      p_offset:  0,
+    });
+    if (error) console.error("fetchStats error:", error.message, error.code);
     if (data) {
       setTodaySales(data.length);
       setTodayRevenue(data.reduce((s: number, t: any) => s + t.amount, 0));

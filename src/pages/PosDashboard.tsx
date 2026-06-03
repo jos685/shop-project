@@ -25,7 +25,7 @@ const hourLabel = (h: number) =>
 
 interface HourData { hour: number; label: string; count: number; revenue: number; }
 interface StockRow { name: string; remaining: number; allocated: number; }
-interface RecentTx { id: string; amount: number; product_name: string; payment_method: string; created_at: string; }
+interface RecentTx { id: string; amount: number; product_name: string; payment_method: string; created_at: string; status: string | null; returned: boolean; partial_return: boolean; }
 
 // Smooth bezier path through points
 function smoothPath(xs: number[], ys: number[]): string {
@@ -149,11 +149,13 @@ export default function PosDashboard() {
     const today = new Date(); today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
 
-    const [txRes, allocRes, reqRes, expRes] = await Promise.all([
+    const [txRes, allocRes, reqRes, expRes, cpRes] = await Promise.all([
       supabase.rpc("get_shop_transactions", {
         p_shop_id: shop.id,
         p_start:   today.toISOString(),
         p_end:     tomorrow.toISOString(),
+        p_limit:   1000,
+        p_offset:  0,
       }),
       supabase.from("shop_allocations")
         .select("product_id, remaining, allocated")
@@ -163,10 +165,23 @@ export default function PosDashboard() {
         .eq("shop_id", shop.id)
         .eq("status", "pending"),
       supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
+      supabase.rpc("get_shop_credit_payments_all", { p_shop_id: shop.id }),
     ]);
 
+    if (txRes.error)  console.error("Dashboard tx error:",  txRes.error.message,  txRes.error.code);
+    if (expRes.error) console.error("Dashboard exp error:", expRes.error.message, expRes.error.code);
+    if (cpRes.error)  console.error("Dashboard cp error:",  cpRes.error.message,  cpRes.error.code);
     const txData  = txRes.data   || [];
     const allocs  = allocRes.data || [];
+
+    // Today's credit payments
+    const todayCPs = (cpRes.data || []).filter((c: any) => {
+      const d = new Date(c.created_at);
+      return d >= today && d < tomorrow;
+    });
+    const cpCashTotal  = todayCPs.reduce((s: number, c: any) => s + (c.payment_method === "cash"  ? Number(c.amount) : 0), 0);
+    const cpMpesaTotal = todayCPs.reduce((s: number, c: any) => s + (c.payment_method === "mpesa" ? Number(c.amount) : 0), 0);
+    const cpTotal      = todayCPs.reduce((s: number, c: any) => s + Number(c.amount), 0);
 
     // Today's expenses (filter client-side to today window)
     const todayExps: { amount: number; payment_method: string }[] =
@@ -175,8 +190,8 @@ export default function PosDashboard() {
         return d >= today && d < tomorrow;
       });
     const expensesTotal = todayExps.reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const cashExpenses  = todayExps.filter(e => e.payment_method !== "mpesa").reduce((s, e) => s + (Number(e.amount) || 0), 0);
-    const mpesaExpenses = todayExps.filter(e => e.payment_method === "mpesa").reduce((s, e) => s + (Number(e.amount) || 0), 0);
+    const cashExpenses  = todayExps.reduce((s: number, e: any) => s + (e.cash_amount  ?? (e.payment_method === "cash"  ? Number(e.amount) : 0)), 0);
+    const mpesaExpenses = todayExps.reduce((s: number, e: any) => s + (e.mpesa_amount ?? (e.payment_method === "mpesa" ? Number(e.amount) : 0)), 0);
 
     // Today totals (gross)
     const totalRev  = txData.reduce((s: number, t: any) => s + t.amount, 0);
@@ -210,9 +225,9 @@ export default function PosDashboard() {
       }
     }
     setReturnsAmt(returnsTotal);
-    setTodayRev(Math.max(0, totalRev  - returnsTotal  - expensesTotal));
-    setCashRev(Math.max(0,  cashTotal  - cashReturns  - cashExpenses));
-    setMpesaRev(Math.max(0, mpesaTotal - mpesaReturns - mpesaExpenses));
+    setTodayRev(Math.max(0, totalRev  + cpTotal      - returnsTotal  - expensesTotal));
+    setCashRev(Math.max(0,  cashTotal  + cpCashTotal  - cashReturns  - cashExpenses));
+    setMpesaRev(Math.max(0, mpesaTotal + cpMpesaTotal - mpesaReturns - mpesaExpenses));
 
     // Hourly (6AM–8PM)
     setHourlyData(HOURS.map(h => {
@@ -251,12 +266,32 @@ export default function PosDashboard() {
       const { data: pd2 } = await supabase.from("products").select("id, name").in("id", pIds2);
       for (const p of pd2 || []) pm2[p.id] = p.name;
     }
-    setRecentTxs(recentRaw.map((t: any) => ({
-      id: t.id, amount: t.amount,
-      product_name:   pm2[t.product_id] || "—",
-      payment_method: t.payment_method,
-      created_at:     t.created_at,
-    })));
+
+    // Fetch returns for the recent transactions to show return badges
+    const recentIds = recentRaw.map((t: any) => t.id);
+    const returnsMap: Record<string, { qty: number; total: number }> = {};
+    if (recentIds.length > 0) {
+      const { data: retData } = await supabase.rpc("get_transaction_returns", { p_transaction_ids: recentIds });
+      for (const r of retData || []) {
+        if (!returnsMap[r.original_transaction_id]) returnsMap[r.original_transaction_id] = { qty: 0, total: 0 };
+        returnsMap[r.original_transaction_id].qty   += r.quantity_returned ?? 0;
+        returnsMap[r.original_transaction_id].total += r.amount_refunded   ?? 0;
+      }
+    }
+
+    setRecentTxs(recentRaw.map((t: any) => {
+      const ret = returnsMap[t.id];
+      const fullReturn = ret && ret.total >= t.amount;
+      return {
+        id: t.id, amount: t.amount,
+        product_name:   pm2[t.product_id] || t.product_name || "—",
+        payment_method: t.payment_method,
+        created_at:     t.created_at,
+        status:         t.status ?? null,
+        returned:       !!ret && fullReturn,
+        partial_return: !!ret && !fullReturn,
+      };
+    }));
 
     setLoading(false);
   }, [shop]);
@@ -534,7 +569,10 @@ export default function PosDashboard() {
                     );
                   })}
                   {/* Live synced entries */}
-                  {recentTxs.map((tx, i) => (
+                  {recentTxs.map((tx, i) => {
+                    const isCredit = tx.status === "credit" || tx.status === "credit_partial";
+                    const amtColor = tx.returned ? theme.text.muted : isCredit ? "#c084fc" : "#34d399";
+                    return (
                     <div key={tx.id} className="tx-row"
                       style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: i < recentTxs.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
                       <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
@@ -545,10 +583,24 @@ export default function PosDashboard() {
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>
                           {tx.payment_method === "cash" ? "Cash" : tx.payment_method === "mpesa" ? "M-Pesa" : tx.payment_method === "split" ? "Split" : "Credit"} · {timeAgo(tx.created_at)}
                         </div>
+                        <div style={{ display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}>
+                          {tx.returned && (
+                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 7px" }}>↩ Returned</span>
+                          )}
+                          {tx.partial_return && (
+                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 7px" }}>↩ Partial Return</span>
+                          )}
+                          {isCredit && (
+                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#c084fc", background: "rgba(192,132,252,0.10)", border: "1px solid rgba(192,132,252,0.30)", borderRadius: 20, padding: "2px 7px" }}>
+                              {tx.status === "credit_partial" ? "📝 Partial Payment" : "📝 Unpaid"}
+                            </span>
+                          )}
+                        </div>
                       </div>
-                      <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 14, color: "#34d399", flexShrink: 0 }}>{fmt(tx.amount)}</div>
+                      <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 14, color: amtColor, flexShrink: 0, textDecoration: tx.returned ? "line-through" : "none" }}>{fmt(tx.amount)}</div>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )
           }
