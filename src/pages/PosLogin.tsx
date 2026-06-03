@@ -48,10 +48,10 @@ export default function PosLogin() {
         setError("No offline data found. Connect to the internet and sign in at least once before using offline mode on this device.");
       } else if (err === "offline_wrong_password") {
         security.onFailure();
-        setError("Incorrect password. Your offline credentials don't match — check your password and try again.");
+        setError("Invalid credentials. Please check your details and try again.");
       } else {
         security.onFailure();
-        setError(err);
+        setError("Invalid credentials. Please check your details and try again.");
       }
       setLoading(false);
       triggerShake();

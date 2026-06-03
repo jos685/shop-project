@@ -88,19 +88,12 @@ serve(async (req) => {
     return respond({ success: false, error: creditErr.message });
   }
 
-  // Record initial payment if any
-  if (amount_paid > 0 && creditData?.id && body.initial_payment_method) {
-    await db.from("shop_credit_payments").insert({
-      credit_sale_id: creditData.id,
-      shop_id, owner_id,
-      amount:         amount_paid,
-      payment_method: body.initial_payment_method,
-      mpesa_ref:      null,
-    });
-  }
-
   // Record shop_transaction for the upfront portion (so owner dashboard shows it).
   // p_rows must be an ARRAY — same as regular sales in PosScan.tsx.
+  // We do NOT also insert into shop_credit_payments for the initial payment:
+  // the balance is already tracked via shop_credit_sales.amount_paid, and inserting
+  // into shop_credit_payments would cause the owner's Transactions page to show it twice
+  // (once from shop_transactions, once from the shopCpTxs fetch).
   if (amount_paid > 0 && body.tx_row) {
     const { error: txErr } = await db.rpc("insert_shop_transaction", {
       p_rows: [{ ...body.tx_row, credit_sale_id: creditData.id }],
