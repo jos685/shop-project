@@ -1,6 +1,6 @@
 // components/TopNav.tsx — global top navigation bar (all authenticated pages)
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -21,29 +21,64 @@ function greeting() {
   return h < 12 ? "Good morning" : h < 17 ? "Good afternoon" : "Good evening";
 }
 
+function fmtAmt(n: number) {
+  return `KSh ${n.toLocaleString()}`;
+}
+
+function timeAgo(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 1)   return "just now";
+  if (m < 60)  return `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24)  return `${h}h ago`;
+  return `${Math.floor(h / 24)}d ago`;
+}
+
 export const TOP_NAV_HEIGHT = 58;
 
+// ── Notification types ────────────────────────────────────────
+type NotifType = "product_assigned" | "stock_updated" | "request_replied" | "tx_flagged";
+
+interface ShopNotif {
+  id:        string;
+  type:      NotifType;
+  title:     string;
+  body:      string;
+  timestamp: string;
+}
+
+const NOTIF_META: Record<NotifType, { icon: string; color: string; bg: string; border: string }> = {
+  product_assigned: { icon: "📦", color: "#34d399", bg: "rgba(52,211,153,0.1)",  border: "rgba(52,211,153,0.25)"  },
+  stock_updated:    { icon: "🔄", color: "#60a5fa", bg: "rgba(96,165,250,0.1)",  border: "rgba(96,165,250,0.25)"  },
+  request_replied:  { icon: "💬", color: "#a78bfa", bg: "rgba(167,139,250,0.1)", border: "rgba(167,139,250,0.25)" },
+  tx_flagged:       { icon: "⚠️", color: "#fbbf24", bg: "rgba(251,191,36,0.1)",  border: "rgba(251,191,36,0.25)"  },
+};
+
 export default function TopNav() {
-  const { shop, logout }     = useShopAuth();
+  const { shop, logout }      = useShopAuth();
   const { theme, toggleTheme } = useTheme();
-  const navigate             = useNavigate();
-  const width                = useWindowWidth();
-  const isMobile             = width < 640;
+  const navigate              = useNavigate();
+  const width                 = useWindowWidth();
+  const isMobile              = width < 640;
 
   const [time,        setTime]        = useState(new Date());
   const [showLogout,  setShowLogout]  = useState(false);
   const [alertCount,  setAlertCount]  = useState(0);
   // Guard against stray touch events propagating from the login screen.
-  // Reset to false every time a new shop session appears (login transition),
-  // then allow the logout button after 700 ms — enough time for the
-  // finger-lift from the login button tap to clear without triggering logout.
   const [logoutReady, setLogoutReady] = useState(false);
   useEffect(() => {
     setShowLogout(false);
     setLogoutReady(false);
     const t = setTimeout(() => setLogoutReady(true), 700);
     return () => clearTimeout(t);
-  }, [shop?.id]); // ← re-arm on every login, not just on mount
+  }, [shop?.id]);
+
+  // ── Notification bell state ───────────────────────────────────
+  const [displayNotifs, setDisplayNotifs] = useState<ShopNotif[]>([]);
+  const [unreadCount,   setUnreadCount]   = useState(0);
+  const [panelOpen,     setPanelOpen]     = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
 
   // Clock tick
   useEffect(() => {
@@ -58,7 +93,6 @@ export default function TopNav() {
       supabase.from("shop_allocations")
         .select("remaining, allocated", { count: "exact", head: false })
         .eq("shop_id", shop.id),
-      // Use SECURITY DEFINER RPC — works without an auth session
       supabase.rpc("get_shop_requests", { p_shop_id: shop.id }),
     ]);
     const lowStock = (allocRes.data ?? []).filter(
@@ -73,15 +107,136 @@ export default function TopNav() {
 
   useEffect(() => { fetchAlerts(); }, [fetchAlerts]);
 
+  // ── Notification fetch ────────────────────────────────────────
+  const fetchNotifications = useCallback(async () => {
+    if (!shop?.id || !navigator.onLine) return;
+    const lastSeen = localStorage.getItem(`pos_notif_seen_${shop.id}`) ?? new Date(0).toISOString();
+
+    const [allocRes, reqRes, txRes] = await Promise.all([
+      supabase
+        .from("shop_allocations")
+        .select("id, allocated, remaining, updated_at, created_at, product_id")
+        .eq("shop_id", shop.id)
+        .gt("updated_at", lastSeen),
+      supabase.rpc("get_shop_requests", { p_shop_id: shop.id }),
+      supabase
+        .from("shop_transactions")
+        .select("id, product_name, amount, updated_at, status")
+        .eq("shop_id", shop.id)
+        .eq("status", "review")
+        .gt("updated_at", lastSeen),
+    ]);
+
+    // Resolve product names for allocations
+    const productIds = [...new Set((allocRes.data ?? []).map((a: any) => a.product_id))].filter(Boolean);
+    let productMap: Record<string, string> = {};
+    if (productIds.length > 0) {
+      const { data: prods } = await supabase
+        .from("products")
+        .select("id, name")
+        .in("id", productIds as string[]);
+      productMap = Object.fromEntries((prods ?? []).map((p: any) => [p.id, p.name]));
+    }
+
+    const notifs: ShopNotif[] = [];
+
+    // New / updated allocations
+    (allocRes.data ?? []).forEach((a: any) => {
+      const productName = productMap[a.product_id] ?? "product";
+      const isNew = a.created_at > lastSeen;
+      notifs.push({
+        id:        `alloc-${a.id}`,
+        type:      isNew ? "product_assigned" : "stock_updated",
+        title:     isNew ? "Stock Assigned" : "Stock Updated",
+        body:      isNew
+          ? `Owner assigned ${a.allocated} units of ${productName} to your shop`
+          : `Owner updated ${productName} allocation — ${a.remaining} units remaining`,
+        timestamp: isNew ? a.created_at : a.updated_at,
+      });
+    });
+
+    // Request replies (approved / rejected since lastSeen)
+    (reqRes.data ?? [])
+      .filter((r: any) =>
+        (r.status === "approved" || r.status === "rejected") &&
+        r.updated_at > lastSeen
+      )
+      .forEach((r: any) => {
+        const label = r.type?.replace(/_/g, " ") ?? "request";
+        notifs.push({
+          id:        `req-${r.id}`,
+          type:      "request_replied",
+          title:     r.status === "approved" ? "Request Approved ✓" : "Request Rejected",
+          body:      r.owner_reply
+            ? `Owner: "${r.owner_reply}"`
+            : `Your ${label} was ${r.status}`,
+          timestamp: r.updated_at,
+        });
+      });
+
+    // Flagged transactions
+    (txRes.data ?? []).forEach((t: any) => {
+      notifs.push({
+        id:        `flag-${t.id}`,
+        type:      "tx_flagged",
+        title:     "Transaction Flagged",
+        body:      `${t.product_name ?? "A transaction"} (${fmtAmt(t.amount)}) was flagged for review`,
+        timestamp: t.updated_at,
+      });
+    });
+
+    notifs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    setDisplayNotifs(notifs);
+    setUnreadCount(notifs.length);
+  }, [shop?.id]);
+
+  // Fetch on mount + poll every 60 s
+  useEffect(() => {
+    fetchNotifications();
+    const t = setInterval(fetchNotifications, 60_000);
+    return () => clearInterval(t);
+  }, [fetchNotifications]);
+
+  // Close panel on outside click
+  useEffect(() => {
+    if (!panelOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setPanelOpen(false);
+        setDisplayNotifs([]);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [panelOpen]);
+
+  const handleBellClick = () => {
+    if (!panelOpen) {
+      setPanelOpen(true);
+      setUnreadCount(0);
+      if (shop?.id) {
+        localStorage.setItem(`pos_notif_seen_${shop.id}`, new Date().toISOString());
+      }
+    } else {
+      setPanelOpen(false);
+      setDisplayNotifs([]);
+    }
+  };
+
   if (!shop) return null;
 
   return (
     <>
       <style>{`
-        @keyframes slideIn { from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)} }
-        @keyframes spin { to{transform:rotate(360deg)} }
+        @keyframes slideIn  { from{opacity:0;transform:scale(0.95)}to{opacity:1;transform:scale(1)} }
+        @keyframes slideDown{ from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)} }
+        @keyframes spin     { to{transform:rotate(360deg)} }
+        @keyframes bellRing { 0%,100%{transform:rotate(0)} 20%{transform:rotate(-18deg)} 40%{transform:rotate(18deg)} 60%{transform:rotate(-12deg)} 80%{transform:rotate(12deg)} }
         .tnav-btn { transition: opacity 0.15s, transform 0.12s; }
         .tnav-btn:active { transform: scale(0.93); opacity: 0.8; }
+        .notif-item { transition: background 0.12s; }
+        .notif-item:hover { background: rgba(255,255,255,0.04) !important; }
+        .bell-ring { animation: bellRing 0.5s ease; }
       `}</style>
 
       {/* ── Fixed top bar ─────────────────────────────────────── */}
@@ -133,7 +288,7 @@ export default function TopNav() {
           {/* Divider */}
           <div style={{ width: 1, height: 32, background: theme.border.default, flexShrink: 0 }} />
 
-          {/* Avatar circle (moved from right) */}
+          {/* Avatar circle */}
           <div style={{
             width:          isMobile ? 34 : 42,
             height:         isMobile ? 34 : 42,
@@ -185,7 +340,7 @@ export default function TopNav() {
           </div>
         </div>
 
-        {/* ── RIGHT: clock · alerts · toggle · avatar · tour · logout ── */}
+        {/* ── RIGHT: clock · alerts · bell · toggle · tour · logout ── */}
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
 
           {/* Clock — desktop only */}
@@ -207,7 +362,7 @@ export default function TopNav() {
             </div>
           )}
 
-          {/* Alert pill */}
+          {/* Alert pill — low stock / pending requests */}
           {alertCount > 0 && (
             <button className="tnav-btn"
               onClick={() => navigate(alertCount > 0 ? "/pos/info" : "/pos/requests")}
@@ -227,6 +382,263 @@ export default function TopNav() {
               ⚠ {alertCount}
             </button>
           )}
+
+          {/* ── Notification Bell ─────────────────────────────── */}
+          <div style={{ position: "relative", flexShrink: 0 }} ref={panelRef}>
+            <button
+              className={`tnav-btn${unreadCount > 0 ? " bell-ring" : ""}`}
+              onClick={handleBellClick}
+              title="Notifications from owner"
+              style={{
+                position:       "relative",
+                width:          isMobile ? 34 : 38,
+                height:         isMobile ? 34 : 38,
+                borderRadius:   "50%",
+                background:     panelOpen
+                  ? "rgba(6,182,212,0.15)"
+                  : unreadCount > 0
+                    ? "rgba(251,191,36,0.12)"
+                    : theme.bg.card,
+                border:         panelOpen
+                  ? "1px solid rgba(6,182,212,0.4)"
+                  : unreadCount > 0
+                    ? "1px solid rgba(251,191,36,0.4)"
+                    : `1px solid ${theme.border.default}`,
+                cursor:         "pointer",
+                display:        "flex",
+                alignItems:     "center",
+                justifyContent: "center",
+                flexShrink:     0,
+                WebkitTapHighlightColor: "transparent",
+                transition:     "background 0.2s, border-color 0.2s",
+              }}
+            >
+              {/* Bell SVG */}
+              <svg width={isMobile ? 15 : 17} height={isMobile ? 15 : 17} viewBox="0 0 24 24" fill="none">
+                <path
+                  d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"
+                  stroke={unreadCount > 0 ? "#fbbf24" : panelOpen ? "#06b6d4" : theme.text.muted}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+                <path
+                  d="M13.73 21a2 2 0 0 1-3.46 0"
+                  stroke={unreadCount > 0 ? "#fbbf24" : panelOpen ? "#06b6d4" : theme.text.muted}
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+
+              {/* Badge */}
+              {unreadCount > 0 && (
+                <div style={{
+                  position:       "absolute",
+                  top:            -4,
+                  right:          -4,
+                  minWidth:       18,
+                  height:         18,
+                  borderRadius:   9,
+                  background:     "#ef4444",
+                  color:          "#fff",
+                  fontSize:       10,
+                  fontFamily:     theme.font.mono,
+                  fontWeight:     700,
+                  display:        "flex",
+                  alignItems:     "center",
+                  justifyContent: "center",
+                  padding:        "0 4px",
+                  border:         "2px solid " + (theme.isDark ? "#080c12" : "#ffffff"),
+                  pointerEvents:  "none",
+                }}>
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </div>
+              )}
+            </button>
+
+            {/* ── Notification Panel ─────────────────────────── */}
+            {panelOpen && (
+              <div style={{
+                position:    "fixed",
+                top:         TOP_NAV_HEIGHT + 8,
+                right:       isMobile ? 8 : 16,
+                width:       isMobile ? "calc(100vw - 16px)" : 340,
+                maxWidth:    400,
+                maxHeight:   420,
+                overflowY:   "auto",
+                background:  theme.isDark ? "#0d1117" : "#ffffff",
+                border:      `1px solid ${theme.border.default}`,
+                borderRadius: 14,
+                boxShadow:   theme.isDark
+                  ? "0 8px 32px rgba(0,0,0,0.6)"
+                  : "0 8px 32px rgba(0,0,0,0.12)",
+                zIndex:      200,
+                animation:   "slideDown 0.18s ease",
+              }}>
+
+                {/* Panel header */}
+                <div style={{
+                  display:       "flex",
+                  alignItems:    "center",
+                  justifyContent:"space-between",
+                  padding:       "14px 16px 12px",
+                  borderBottom:  `1px solid ${theme.border.default}`,
+                  position:      "sticky",
+                  top:           0,
+                  background:    theme.isDark ? "#0d1117" : "#ffffff",
+                  zIndex:        1,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <svg width={15} height={15} viewBox="0 0 24 24" fill="none">
+                      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" stroke="#06b6d4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                      <path d="M13.73 21a2 2 0 0 1-3.46 0" stroke="#06b6d4" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                    <span style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 14, color: theme.text.primary }}>
+                      Owner Updates
+                    </span>
+                  </div>
+                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    {displayNotifs.length === 0 ? "all caught up" : `${displayNotifs.length} new`}
+                  </span>
+                </div>
+
+                {/* Notification list */}
+                {displayNotifs.length === 0 ? (
+                  <div style={{ padding: "40px 16px", textAlign: "center" }}>
+                    <div style={{ fontSize: 32, marginBottom: 10 }}>🔔</div>
+                    <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted, lineHeight: 1.6 }}>
+                      No new updates from owner.<br />You're all caught up!
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    {displayNotifs.map((n, idx) => {
+                      const meta = NOTIF_META[n.type];
+                      return (
+                        <div
+                          key={n.id}
+                          className="notif-item"
+                          style={{
+                            display:       "flex",
+                            gap:           12,
+                            padding:       "12px 16px",
+                            borderBottom:  idx < displayNotifs.length - 1
+                              ? `1px solid ${theme.border.default}`
+                              : "none",
+                            cursor:        "default",
+                          }}
+                        >
+                          {/* Type icon */}
+                          <div style={{
+                            width:          36,
+                            height:         36,
+                            borderRadius:   10,
+                            background:     meta.bg,
+                            border:         `1px solid ${meta.border}`,
+                            display:        "flex",
+                            alignItems:     "center",
+                            justifyContent: "center",
+                            fontSize:       16,
+                            flexShrink:     0,
+                          }}>
+                            {meta.icon}
+                          </div>
+
+                          {/* Content */}
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{
+                              display:        "flex",
+                              justifyContent: "space-between",
+                              alignItems:     "flex-start",
+                              gap:            8,
+                              marginBottom:   3,
+                            }}>
+                              <span style={{
+                                fontFamily: theme.font.display,
+                                fontWeight: 700,
+                                fontSize:   13,
+                                color:      meta.color,
+                              }}>
+                                {n.title}
+                              </span>
+                              <span style={{
+                                fontSize:   9,
+                                fontFamily: theme.font.mono,
+                                color:      theme.text.muted,
+                                flexShrink: 0,
+                                whiteSpace: "nowrap",
+                              }}>
+                                {timeAgo(n.timestamp)}
+                              </span>
+                            </div>
+                            <div style={{
+                              fontSize:   12,
+                              fontFamily: theme.font.mono,
+                              color:      theme.text.secondary,
+                              lineHeight: 1.5,
+                              overflow:   "hidden",
+                              display:    "-webkit-box",
+                              WebkitLineClamp: 2,
+                              WebkitBoxOrient: "vertical" as any,
+                            }}>
+                              {n.body}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Panel footer */}
+                <div style={{
+                  padding:        "10px 16px",
+                  borderTop:      `1px solid ${theme.border.default}`,
+                  display:        "flex",
+                  gap:            8,
+                  position:       "sticky",
+                  bottom:         0,
+                  background:     theme.isDark ? "#0d1117" : "#ffffff",
+                }}>
+                  <button
+                    onClick={() => { navigate("/pos/info"); setPanelOpen(false); setDisplayNotifs([]); }}
+                    style={{
+                      flex:       1,
+                      padding:    "8px 0",
+                      borderRadius: 8,
+                      border:     "1px solid rgba(6,182,212,0.3)",
+                      background: "rgba(6,182,212,0.08)",
+                      color:      theme.accent.cyan,
+                      fontFamily: theme.font.mono,
+                      fontSize:   11,
+                      fontWeight: 600,
+                      cursor:     "pointer",
+                    }}
+                  >
+                    View Stock
+                  </button>
+                  <button
+                    onClick={() => { navigate("/pos/requests"); setPanelOpen(false); setDisplayNotifs([]); }}
+                    style={{
+                      flex:       1,
+                      padding:    "8px 0",
+                      borderRadius: 8,
+                      border:     "1px solid rgba(167,139,250,0.3)",
+                      background: "rgba(167,139,250,0.08)",
+                      color:      "#a78bfa",
+                      fontFamily: theme.font.mono,
+                      fontSize:   11,
+                      fontWeight: 600,
+                      cursor:     "pointer",
+                    }}
+                  >
+                    View Requests
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
 
           {/* Theme toggle */}
           <button className="tnav-btn"

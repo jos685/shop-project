@@ -977,14 +977,14 @@ export default function PosScan() {
               <div style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", borderRadius: 16, padding: "32px 20px", textAlign: "center" }}>
                 <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#e2e8f0", marginBottom: 8 }}>
-                  Camera Scan is a Hustler Feature
+                  Camera Scan Not Available
                 </div>
                 <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted, lineHeight: 1.7, marginBottom: 16 }}>
-                  This shop's plan doesn't include QR scanning.<br />
-                  Products can still be added manually from the list.
+                  This shop's current package does not include QR scanning.<br />
+                  You can still add products manually from the list.
                 </div>
                 <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: "rgba(168,85,247,0.7)", background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.18)", borderRadius: 8, padding: "8px 14px", display: "inline-block" }}>
-                  Ask the business owner to upgrade to Hustler to unlock scanning
+                  Ask the business owner to upgrade their package to enable camera scanning
                 </div>
               </div>
             )}

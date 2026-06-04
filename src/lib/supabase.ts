@@ -79,6 +79,7 @@ export interface Product {
   total_stock: number;
   unit: string;
   owner_id: string;
+  image_url?: string | null;
 }
 
 // Shop session stored in localStorage

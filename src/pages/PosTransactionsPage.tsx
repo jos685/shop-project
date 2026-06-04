@@ -20,6 +20,7 @@ interface LocalTransaction {
   product_name: string | null;
   product_sku: string | null;
   product_id: string | null;
+  product_image_url: string | null;
   seller_name: string | null;
   seller_code: string | null;
   seller_agent_id: string | null;
@@ -53,6 +54,9 @@ interface TransactionReturn {
   amount_refunded: number;
   reason: string;
   created_at: string;
+  refund_method?: string | null;
+  refund_cash_amount?: number;
+  refund_mpesa_amount?: number;
 }
 
 interface ReturnItem {
@@ -162,7 +166,6 @@ export default function PosTransactionsPage() {
   const [returnsMap,       setReturnsMap]       = useState<Record<string, TransactionReturn[]>>({});
   const [returnModal,        setReturnModal]        = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
   const [returnReason,       setReturnReason]       = useState("");
-  const [returnRefundMethod, setReturnRefundMethod] = useState<"cash" | "mpesa" | "split">("cash");
   const [returnCashRefund,   setReturnCashRefund]   = useState("");
   const [returnMpesaRefund,  setReturnMpesaRefund]  = useState("");
   const [returnProcessing,   setReturnProcessing]   = useState(false);
@@ -282,7 +285,7 @@ export default function PosTransactionsPage() {
 
     setReturnModal({ group, items });
     setReturnReason("");
-    setReturnRefundMethod("cash"); setReturnCashRefund(""); setReturnMpesaRefund("");
+    setReturnCashRefund(""); setReturnMpesaRefund("");
     setReturnError("");
     setReturnSuccess(false);
   }
@@ -307,34 +310,58 @@ export default function PosTransactionsPage() {
     const toReturn = returnModal.items.filter(i => i.return_qty > 0);
     if (toReturn.length === 0) { setReturnError("Select at least one item to return (qty > 0)."); return; }
     const totalRefund = toReturn.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
-    if (returnRefundMethod === "split") {
-      const c = Number(returnCashRefund) || 0, m = Number(returnMpesaRefund) || 0;
-      if (!returnCashRefund || !returnMpesaRefund) { setReturnError("Enter both Cash and M-Pesa amounts for split refund."); return; }
-      if (Math.abs(c + m - totalRefund) > 0.5) { setReturnError(`Cash + M-Pesa must equal ${fmt(totalRefund)}.`); return; }
+    const refundCashTotal  = Math.round(Number(returnCashRefund)  || 0);
+    const refundMpesaTotal = Math.round(Number(returnMpesaRefund) || 0);
+    if (refundCashTotal === 0 && refundMpesaTotal === 0) {
+      setReturnError("Enter a Cash or M-Pesa refund amount.");
+      return;
     }
 
     setReturnProcessing(true);
     setReturnError("");
     try {
-      const firstItem = returnModal.group.items[0];
-      const rows = toReturn.map(item => ({
-        owner_id:                shop.owner_id,
-        source:                  "shop",
-        original_transaction_id: item.txn_id,
-        shop_id:                 shop.id,
-        agent_id:                firstItem.seller_agent_id ?? null,
-        product_id:              item.product_id,
-        product_name:            item.product_name,
-        quantity_returned:       item.return_qty,
-        unit_price:              item.unit_price,
-        amount_refunded:         (item.status === "credit" || item.status === "credit_partial")
+      const firstItem  = returnModal.group.items[0];
+      const totalRefundAmt = totalRefund;
+      // Auto-detect method from what was actually entered
+      const autoMethod = refundCashTotal > 0 && refundMpesaTotal > 0 ? "split"
+                       : refundMpesaTotal > 0 ? "mpesa" : "cash";
+      let allocCash = 0, allocMpesa = 0;
+      const rows = toReturn.map((item, idx) => {
+        const amountRefunded = (item.status === "credit" || item.status === "credit_partial")
           ? Math.round((item.return_qty / item.original_qty) * item.tx_amount)
-          : item.unit_price * item.return_qty,
-        reason:                  returnReason.trim(),
-        actor_name:              firstItem.seller_name ?? null,
-        actor_code:              firstItem.seller_code ?? null,
-        refund_method:           returnRefundMethod,
-      }));
+          : Math.round(item.unit_price * item.return_qty);
+        const isLast = idx === toReturn.length - 1;
+        let itemCash: number, itemMpesa: number;
+        if (isLast) {
+          itemCash  = refundCashTotal  - allocCash;
+          itemMpesa = refundMpesaTotal - allocMpesa;
+        } else {
+          const ratio = totalRefundAmt > 0 ? amountRefunded / totalRefundAmt : 0;
+          itemCash  = Math.round(refundCashTotal  * ratio);
+          itemMpesa = Math.round(refundMpesaTotal * ratio);
+          allocCash  += itemCash;
+          allocMpesa += itemMpesa;
+        }
+        return {
+          owner_id:                shop.owner_id,
+          source:                  "shop",
+          original_transaction_id: item.txn_id,
+          shop_id:                 shop.id,
+          agent_id:                firstItem.seller_agent_id ?? null,
+          product_id:              item.product_id,
+          product_name:            item.product_name,
+          quantity_returned:       item.return_qty,
+          unit_price:              item.unit_price,
+          amount_refunded:         amountRefunded,
+          reason:                  returnReason.trim(),
+          actor_name:              firstItem.seller_name ?? null,
+          actor_code:              firstItem.seller_code ?? null,
+          refund_method:           autoMethod,
+          refund_payment_method:   autoMethod,
+          refund_cash_amount:      itemCash,
+          refund_mpesa_amount:     itemMpesa,
+        };
+      });
       const { error } = await supabase.rpc("insert_transaction_returns", { p_rows: rows });
       if (error) { setReturnError(error.message); setReturnProcessing(false); return; }
 
@@ -360,21 +387,25 @@ export default function PosTransactionsPage() {
         }
       }
 
-      // Update local returnsMap
+      // Update local returnsMap — reuse rows so cash/mpesa amounts match what was sent to DB
       setReturnsMap(prev => {
         const next = { ...prev };
-        for (const item of toReturn) {
-          if (!next[item.txn_id]) next[item.txn_id] = [];
-          next[item.txn_id] = [...next[item.txn_id], {
+        for (const row of rows) {
+          const tid = row.original_transaction_id;
+          if (!next[tid]) next[tid] = [];
+          next[tid] = [...next[tid], {
             id:                      crypto.randomUUID(),
-            original_transaction_id: item.txn_id,
-            product_id:              item.product_id,
-            product_name:            item.product_name,
-            quantity_returned:       item.return_qty,
-            unit_price:              item.unit_price,
-            amount_refunded:         item.unit_price * item.return_qty,
-            reason:                  returnReason.trim(),
+            original_transaction_id: tid,
+            product_id:              row.product_id,
+            product_name:            row.product_name,
+            quantity_returned:       row.quantity_returned,
+            unit_price:              row.unit_price,
+            amount_refunded:         row.amount_refunded,
+            reason:                  row.reason,
             created_at:              new Date().toISOString(),
+            refund_method:           row.refund_method,
+            refund_cash_amount:      row.refund_cash_amount,
+            refund_mpesa_amount:     row.refund_mpesa_amount,
           }];
         }
         return next;
@@ -393,7 +424,7 @@ export default function PosTransactionsPage() {
 
   const enrichRows = useCallback(async (
     txData: any[],
-    existingProductMap: Record<string, { name: string; sku: string }>,
+    existingProductMap: Record<string, { name: string; sku: string; image_url?: string | null }>,
     existingSellerMap: Record<string, { name: string; code: string }>,
   ): Promise<LocalTransaction[]> => {
     if (!shop) return [];
@@ -404,10 +435,10 @@ export default function PosTransactionsPage() {
     if (newProductIds.length > 0) {
       const { data: prodsData } = await supabase
         .from("products")
-        .select("id, name, sku")
+        .select("id, name, sku, image_url")
         .in("id", newProductIds);
       for (const p of prodsData ?? []) {
-        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "" };
+        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "", image_url: p.image_url ?? null };
       }
     }
 
@@ -431,9 +462,10 @@ export default function PosTransactionsPage() {
       mpesa_amount:   t.mpesa_amount,
       mpesa_ref:      t.mpesa_ref ?? null,
       created_at:     t.created_at,
-      product_name:   t.status === "credit_partial" ? "Credit Sale (Partial Payment)" : t.status === "credit" ? "Credit Sale (Unpaid)" : (existingProductMap[t.product_id]?.name ?? "—"),
-      product_sku:    existingProductMap[t.product_id]?.sku   ?? "",
-      product_id:     t.product_id ?? null,
+      product_name:      t.status === "credit_partial" ? "Credit Sale (Partial Payment)" : t.status === "credit" ? "Credit Sale (Unpaid)" : (existingProductMap[t.product_id]?.name ?? "—"),
+      product_sku:       existingProductMap[t.product_id]?.sku       ?? "",
+      product_image_url: existingProductMap[t.product_id]?.image_url ?? null,
+      product_id:        t.product_id ?? null,
       seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
       seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
       seller_agent_id: t.seller_agent_id ?? null,
@@ -750,22 +782,40 @@ export default function PosTransactionsPage() {
     (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
 
   const totalRefunded = displayed.reduce((s, t) => s + effectiveRefund(t), 0);
-  const cashRefunded = displayed.reduce((s, t) => {
-    const refunded = effectiveRefund(t);
-    if (!refunded) return s;
-    if (t.payment_method === "cash") return s + refunded;
-    if (t.payment_method === "split" && t.amount > 0)
-      return s + refunded * ((t.cash_amount ?? 0) / t.amount);
+  const cashRefunded = Math.round(displayed.reduce((s, t) => {
+    for (const r of (returnsMap[t.id] ?? [])) {
+      const method = r.refund_method ?? t.payment_method;
+      if (method === "cash") {
+        s += r.amount_refunded;
+      } else if (method === "split") {
+        const ca = r.refund_cash_amount ?? 0;
+        const ma = r.refund_mpesa_amount ?? 0;
+        if (ca > 0 || ma > 0) {
+          s += ca; // use stored exact value
+        } else if (t.amount > 0) {
+          s += r.amount_refunded * ((t.cash_amount ?? 0) / t.amount); // proportional fallback for old records
+        }
+      }
+    }
     return s;
-  }, 0);
-  const mpesaRefunded = displayed.reduce((s, t) => {
-    const refunded = effectiveRefund(t);
-    if (!refunded) return s;
-    if (t.payment_method === "mpesa") return s + refunded;
-    if (t.payment_method === "split" && t.amount > 0)
-      return s + refunded * ((t.mpesa_amount ?? 0) / t.amount);
+  }, 0));
+  const mpesaRefunded = Math.round(displayed.reduce((s, t) => {
+    for (const r of (returnsMap[t.id] ?? [])) {
+      const method = r.refund_method ?? t.payment_method;
+      if (method === "mpesa") {
+        s += r.amount_refunded;
+      } else if (method === "split") {
+        const ca = r.refund_cash_amount ?? 0;
+        const ma = r.refund_mpesa_amount ?? 0;
+        if (ca > 0 || ma > 0) {
+          s += ma; // use stored exact value
+        } else if (t.amount > 0) {
+          s += r.amount_refunded * ((t.mpesa_amount ?? 0) / t.amount); // proportional fallback for old records
+        }
+      }
+    }
     return s;
-  }, 0);
+  }, 0));
 
   // Derive clawback from return qty vs original commission — no DB column needed
   const calcClawback = (t: LocalTransaction) => {
@@ -1384,13 +1434,20 @@ export default function PosTransactionsPage() {
                               </div>
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
                               {group.items.map(tx => (
-                                <div key={tx.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
+                                <div key={tx.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
+                                  <div style={{ width: 32, height: 32, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, position: "relative" }}>
+                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                    {tx.product_image_url && (
+                                      <img src={tx.product_image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                    )}
+                                  </div>
                                   <div style={{ flex: 1, minWidth: 0 }}>
                                     <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
                                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}/unit</div>
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
                                   </div>
-                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.gold, flexShrink: 0, marginLeft: 12 }}>{fmt(tx.amount)}</div>
+                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.gold, flexShrink: 0 }}>{fmt(tx.amount)}</div>
                                 </div>
                               ))}
                               <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, marginTop: 2 }}>
@@ -1444,8 +1501,12 @@ export default function PosTransactionsPage() {
                     return (
                       <div key={group.key} className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ cursor: "pointer" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 18px", borderBottom: (!isOpen && isLast) ? "none" : `1px solid ${theme.border.default}`, background: isOpen ? "rgba(6,182,212,0.03)" : undefined }}>
-                          <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
-                            {badge.icon}
+                          <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, overflow: "hidden", position: "relative" }}>
+                            <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{badge.icon}</span>
+                            {tx.product_image_url && (
+                              <img src={tx.product_image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                            )}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
@@ -1784,43 +1845,57 @@ export default function PosTransactionsPage() {
             );
           })()}
 
-          {/* Refund method */}
+          {/* Refund amounts — always-visible dual fields, method auto-detected from what is entered */}
           {(() => {
             const totalRefund = returnModal.items.filter(i => i.return_qty > 0).reduce((s, i) => s + i.return_qty * i.unit_price, 0);
             if (totalRefund <= 0) return null;
+            const c   = Math.round(Number(returnCashRefund)  || 0);
+            const m   = Math.round(Number(returnMpesaRefund) || 0);
+            const tot = c + m;
+            const diff     = tot > 0 ? tot - totalRefund : null;
+            const balanced = diff !== null && diff === 0;
+            const balColor = diff === null ? theme.text.muted : balanced ? "#34d399" : diff > 0 ? "#f87171" : "#fbbf24";
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                  Refund amounts · Suggested: {fmt(totalRefund)}
+                </label>
+
+                {/* Cash field */}
                 <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                    Refund Method · {fmt(totalRefund)} to return
-                  </label>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                    {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
-                      <button key={key} type="button" onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
-                        style={{ padding: "10px 8px", border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: returnRefundMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                        <span style={{ fontSize: 18 }}>{icon}</span>
-                        <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                {returnRefundMethod === "split" && (
-                  <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24" }}>⚡ Split — Total: {fmt(totalRefund)}</div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                      <div>
-                        <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
-                        <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                          onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ""); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                          placeholder="0" style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 12px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
-                      </div>
-                      <div>
-                        <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                        <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                          onChange={e => { const v = e.target.value.replace(/[^0-9.]/g, ""); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                          placeholder="0" style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 12px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
-                      </div>
+                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
+                  <input type="text" inputMode="numeric" value={returnCashRefund}
+                    onChange={e => { setReturnCashRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
+                    placeholder="0"
+                    style={{ width: "100%", boxSizing: "border-box" as const, background: theme.bg.input, border: "1px solid rgba(52,211,153,0.4)", borderRadius: 10, padding: "11px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none" }} />
+                  {m > 0 && c === 0 && (
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", opacity: 0.6, marginTop: 3 }}>
+                      💡 Type {fmt(Math.max(0, totalRefund - m))} to balance
                     </div>
+                  )}
+                </div>
+
+                {/* M-Pesa field */}
+                <div>
+                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                  <input type="text" inputMode="numeric" value={returnMpesaRefund}
+                    onChange={e => { setReturnMpesaRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
+                    placeholder="0"
+                    style={{ width: "100%", boxSizing: "border-box" as const, background: theme.bg.input, border: `1px solid rgba(6,182,212,0.4)`, borderRadius: 10, padding: "11px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none" }} />
+                  {c > 0 && m === 0 && (
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#06b6d4", opacity: 0.6, marginTop: 3 }}>
+                      💡 Type {fmt(Math.max(0, totalRefund - c))} to balance
+                    </div>
+                  )}
+                </div>
+
+                {/* Running total */}
+                {tot > 0 && (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: balanced ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.03)", border: `1px solid ${balanced ? "rgba(52,211,153,0.25)" : theme.border.default}`, borderRadius: 9 }}>
+                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: balColor }}>
+                      {balanced ? "✓ Balanced" : diff !== null && diff > 0 ? `⚠ KSh ${diff.toLocaleString()} over` : diff !== null ? `⚠ KSh ${Math.abs(diff).toLocaleString()} under` : ""}
+                    </span>
+                    <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: balColor }}>{fmt(tot)}</span>
                   </div>
                 )}
               </div>

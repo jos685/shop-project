@@ -194,6 +194,8 @@ export interface QueuedExpense {
   loggedBy: string;
   loggedByName: string;
   paymentMethod: "cash" | "mpesa" | "split";
+  cashAmount?: number;
+  mpesaAmount?: number;
 }
 
 type MiscQueueItem = ({ kind: "request" } & QueuedRequest) | ({ kind: "expense" } & QueuedExpense);
@@ -243,6 +245,9 @@ async function syncAllMisc(): Promise<{ synced: number; failed: number }> {
       });
       err = error;
     } else {
+      const pm    = item.paymentMethod ?? "cash";
+      const vCash = item.cashAmount  ?? (pm === "cash"  ? item.amount : 0);
+      const vMpesa= item.mpesaAmount ?? (pm === "mpesa" ? item.amount : 0);
       const { error } = await supabase.from("shop_expenses").insert({
         shop_id:        item.shopId,
         owner_id:       item.ownerId,
@@ -250,7 +255,9 @@ async function syncAllMisc(): Promise<{ synced: number; failed: number }> {
         description:    item.description,
         logged_by:      item.loggedBy,
         logged_by_name: item.loggedByName,
-        payment_method: item.paymentMethod ?? "cash",
+        payment_method: pm,
+        cash_amount:    vCash,
+        mpesa_amount:   vMpesa,
       });
       err = error;
     }

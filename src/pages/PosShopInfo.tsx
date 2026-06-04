@@ -25,7 +25,7 @@ interface StockItem {
   id: string;
   allocated: number;
   remaining: number;
-  product: { id: string; name: string; sku: string; price: number; unit: string };
+  product: { id: string; name: string; sku: string; price: number; unit: string; image_url?: string | null };
 }
 
 interface ShopAgent {
@@ -145,7 +145,7 @@ export default function PosShopInfo() {
       if (productIds.length > 0) {
         const { data: prodsData, error: prodsError } = await supabase
           .from("products")
-          .select("id, name, sku, price, unit")
+          .select("id, name, sku, price, unit, image_url")
           .in("id", productIds);
         if (prodsError) console.error("products fetch error:", prodsError.message);
         for (const p of prodsData || []) productsMap[p.id] = p;
@@ -183,11 +183,12 @@ export default function PosShopInfo() {
           allocated: a.allocated,
           remaining: Math.max(0, a.remaining ?? 0),
           product: {
-            id:    a.product_id,
-            name:  productsMap[a.product_id]?.name  || a.product_name  || "—",
-            sku:   productsMap[a.product_id]?.sku   || a.product_sku   || "",
-            price: Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
-            unit:  productsMap[a.product_id]?.unit  || a.product_unit  || "",
+            id:        a.product_id,
+            name:      productsMap[a.product_id]?.name      || a.product_name  || "—",
+            sku:       productsMap[a.product_id]?.sku       || a.product_sku   || "",
+            price:     Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
+            unit:      productsMap[a.product_id]?.unit      || a.product_unit  || "",
+            image_url: productsMap[a.product_id]?.image_url ?? null,
           },
         }));
 
@@ -377,9 +378,18 @@ export default function PosShopInfo() {
                           {isMobile ? (
                             <div>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{item.product.name}</div>
-                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku}</div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                                  <div style={{ width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, position: "relative" }}>
+                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                    {item.product.image_url && (
+                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                    )}
+                                  </div>
+                                  <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{item.product.name}</div>
+                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku}</div>
+                                  </div>
                                 </div>
                                 <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
                                   <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>
@@ -410,9 +420,18 @@ export default function PosShopInfo() {
                           ) : (
                             <div>
                               <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 90px 90px", gap: 12, alignItems: "center", marginBottom: 8 }}>
-                                <div>
-                                  <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{item.product.name}</div>
-                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku} · {item.product.unit}</div>
+                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                                  <div style={{ width: 36, height: 36, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, position: "relative" }}>
+                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                    {item.product.image_url && (
+                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                    )}
+                                  </div>
+                                  <div>
+                                    <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{item.product.name}</div>
+                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku} · {item.product.unit}</div>
+                                  </div>
                                 </div>
                                 <div style={{ fontFamily: theme.font.mono, fontWeight: 600, color: theme.accent.gold }}>{fmt(item.product.price)}</div>
                                 <div style={{ fontFamily: theme.font.mono, color: theme.text.secondary }}>{item.allocated}</div>
