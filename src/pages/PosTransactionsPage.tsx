@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
-import { supabase } from "../lib/supabase";
+import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue, type QueuedSale } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
@@ -438,7 +438,7 @@ export default function PosTransactionsPage() {
         .select("id, name, sku, image_url")
         .in("id", newProductIds);
       for (const p of prodsData ?? []) {
-        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "", image_url: p.image_url ?? null };
+        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "", image_url: productImageUrl(p.image_url) };
       }
     }
 
@@ -1438,8 +1438,8 @@ export default function PosTransactionsPage() {
                                   <div style={{ width: 32, height: 32, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, position: "relative" }}>
                                     <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
                                     {tx.product_image_url && (
-                                      <img src={tx.product_image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                      <img src={tx.product_image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
                                     )}
                                   </div>
                                   <div style={{ flex: 1, minWidth: 0 }}>

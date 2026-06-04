@@ -1,6 +1,15 @@
 import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL        = import.meta.env.VITE_SUPABASE_URL         as string;
+
+/** Convert a product image_url to a fully-qualified public URL.
+ *  If it's already https:// just return it as-is. */
+export function productImageUrl(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  if (raw.startsWith("http")) return raw;
+  // Relative path — build Supabase public storage URL
+  return `${SUPABASE_URL}/storage/v1/object/public/${raw}`;
+}
 const SUPABASE_ANON_KEY   = import.meta.env.VITE_SUPABASE_ANON_KEY    as string;
 const SUPABASE_SERVICE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY as string;
 

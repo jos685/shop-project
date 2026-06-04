@@ -6,7 +6,7 @@ import { useLocation } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
-import { supabase } from "../lib/supabase";
+import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
@@ -188,7 +188,7 @@ export default function PosShopInfo() {
             sku:       productsMap[a.product_id]?.sku       || a.product_sku   || "",
             price:     Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
             unit:      productsMap[a.product_id]?.unit      || a.product_unit  || "",
-            image_url: productsMap[a.product_id]?.image_url ?? null,
+            image_url: productImageUrl(productsMap[a.product_id]?.image_url),
           },
         }));
 
@@ -380,10 +380,10 @@ export default function PosShopInfo() {
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
                                   <div style={{ width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, position: "relative" }}>
-                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                    <span style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
                                     {item.product.image_url && (
-                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
                                     )}
                                   </div>
                                   <div style={{ minWidth: 0 }}>
@@ -422,10 +422,10 @@ export default function PosShopInfo() {
                               <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 90px 90px", gap: 12, alignItems: "center", marginBottom: 8 }}>
                                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                                   <div style={{ width: 36, height: 36, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, position: "relative" }}>
-                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                    <span style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
                                     {item.product.image_url && (
-                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
                                     )}
                                   </div>
                                   <div>

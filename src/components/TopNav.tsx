@@ -308,9 +308,9 @@ export default function TopNav() {
             {shop.name?.slice(0, 2).toUpperCase() ?? "SH"}
           </div>
 
-          {/* Stacked greeting + shop name */}
-          <div style={{ minWidth: 0 }}>
-            {!isMobile && (
+          {/* Stacked greeting + shop name — desktop only */}
+          {!isMobile && (
+            <div style={{ minWidth: 0 }}>
               <div style={{
                 fontSize:      10,
                 fontFamily:    theme.font.mono,
@@ -322,22 +322,22 @@ export default function TopNav() {
               }}>
                 {greeting()} 👋
               </div>
-            )}
-            <div style={{
-              fontFamily:    theme.font.display,
-              fontWeight:    800,
-              fontSize:      isMobile ? 15 : 20,
-              color:         theme.text.primary,
-              letterSpacing: "-0.02em",
-              lineHeight:    1.2,
-              whiteSpace:    "nowrap",
-              overflow:      "hidden",
-              textOverflow:  "ellipsis",
-              maxWidth:      isMobile ? 120 : 220,
-            }}>
-              {shop.name}
+              <div style={{
+                fontFamily:    theme.font.display,
+                fontWeight:    800,
+                fontSize:      20,
+                color:         theme.text.primary,
+                letterSpacing: "-0.02em",
+                lineHeight:    1.2,
+                whiteSpace:    "nowrap",
+                overflow:      "hidden",
+                textOverflow:  "ellipsis",
+                maxWidth:      220,
+              }}>
+                {shop.name}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
         {/* ── RIGHT: clock · alerts · bell · toggle · tour · logout ── */}
