@@ -665,6 +665,12 @@ export default function PosScan() {
       setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
       setStep("success");
 
+      // Save customer contact for future lookups (credit sales always have name + phone)
+      if (customerName.trim() && customerPhone.trim()) {
+        saveCustomer(customerName.trim(), customerPhone.trim());
+        touchUsage(customerPhone.trim());
+      }
+
       // Fire credit receipt asynchronously — best effort
       if (customerPhone.trim()) {
         const paid    = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
