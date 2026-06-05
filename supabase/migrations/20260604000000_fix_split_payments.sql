@@ -10,7 +10,7 @@ ALTER TABLE transaction_returns
 
 -- Back-fill from existing refund_method (POS rows) or refund_payment_method
 UPDATE transaction_returns SET
-  refund_payment_method = COALESCE(refund_payment_method, refund_method),
+  refund_clpayment_method = COALESCE(refund_payment_method, refund_method),
   refund_cash_amount  = CASE WHEN COALESCE(refund_payment_method, refund_method) = 'cash'  THEN amount_refunded ELSE 0 END,
   refund_mpesa_amount = CASE WHEN COALESCE(refund_payment_method, refund_method) = 'mpesa' THEN amount_refunded ELSE 0 END
 WHERE refund_cash_amount = 0 AND refund_mpesa_amount = 0

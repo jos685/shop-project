@@ -289,22 +289,30 @@ export default function TopNav() {
           <div style={{ width: 1, height: 32, background: theme.border.default, flexShrink: 0 }} />
 
           {/* Avatar circle */}
-          <div style={{
-            width:          isMobile ? 34 : 42,
-            height:         isMobile ? 34 : 42,
-            borderRadius:   "50%",
-            background:     "linear-gradient(135deg,#06b6d4,#0891b2)",
-            display:        "flex",
-            alignItems:     "center",
-            justifyContent: "center",
-            fontFamily:     theme.font.display,
-            fontWeight:     800,
-            fontSize:       isMobile ? 12 : 15,
-            color:          "#fff",
-            flexShrink:     0,
-            letterSpacing:  "-0.02em",
-            boxShadow:      "0 2px 10px rgba(6,182,212,0.35)",
-          }}>
+          <div
+            onClick={() => navigate("/pos")}
+            title="Go to dashboard"
+            style={{
+              width:          isMobile ? 34 : 42,
+              height:         isMobile ? 34 : 42,
+              borderRadius:   "50%",
+              background:     "linear-gradient(135deg,#06b6d4,#0891b2)",
+              display:        "flex",
+              alignItems:     "center",
+              justifyContent: "center",
+              fontFamily:     theme.font.display,
+              fontWeight:     800,
+              fontSize:       isMobile ? 12 : 15,
+              color:          "#fff",
+              flexShrink:     0,
+              letterSpacing:  "-0.02em",
+              boxShadow:      "0 2px 10px rgba(6,182,212,0.35)",
+              cursor:         "pointer",
+              transition:     "opacity 0.15s, transform 0.12s",
+            }}
+            onMouseEnter={e => { (e.currentTarget as HTMLDivElement).style.opacity = "0.8"; (e.currentTarget as HTMLDivElement).style.transform = "scale(0.96)"; }}
+            onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.opacity = "1"; (e.currentTarget as HTMLDivElement).style.transform = "scale(1)"; }}
+          >
             {shop.name?.slice(0, 2).toUpperCase() ?? "SH"}
           </div>
 

@@ -33,8 +33,23 @@ export function PwaUpdatePrompt() {
     },
   });
 
-  const [reloading, setReloading] = useState(false);
+  const [reloading,  setReloading]  = useState(false);
+  const [countdown,  setCountdown]  = useState(10);
   const handleReload = () => { setReloading(true); updateServiceWorker(true); };
+
+  // Count down from 10 when update is available
+  useEffect(() => {
+    if (!needRefresh) return;
+    setCountdown(10);
+    const id = setInterval(() => setCountdown(c => c - 1), 1000);
+    return () => clearInterval(id);
+  }, [needRefresh]);
+
+  // Auto-reload when countdown hits 0
+  useEffect(() => {
+    if (!needRefresh || countdown > 0) return;
+    handleReload();
+  }, [countdown, needRefresh]);
 
   if (!needRefresh) return null;
 
@@ -42,47 +57,59 @@ export function PwaUpdatePrompt() {
     <>
       <style>{SHARED_STYLES}</style>
       <div style={{
-        position: "fixed", bottom: 88, left: "50%", transform: "translateX(-50%)",
-        zIndex: 99999, display: "flex", alignItems: "center", gap: 12,
+        position: "fixed", bottom: 88, left: 12, right: 12,
+        zIndex: 99999,
         background: "linear-gradient(135deg,#0d1117,#111827)",
         border: "1px solid rgba(6,182,212,0.45)",
         borderRadius: 16, padding: "14px 16px",
         boxShadow: "0 12px 40px rgba(0,0,0,0.6)",
         animation: "pwaSlideUp 0.35s cubic-bezier(0.16,1,0.3,1) both",
-        whiteSpace: "nowrap",
+        maxWidth: 480, marginLeft: "auto", marginRight: "auto",
+        overflow: "hidden",
       }}>
-        <div style={{
-          width: 36, height: 36, borderRadius: 10, flexShrink: 0,
-          background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)",
-          display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
-        }}>
-          {reloading
-            ? <span style={{ display: "inline-block", animation: "pwaSpin 0.8s linear infinite" }}>🔄</span>
-            : "⬆️"}
-        </div>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#06b6d4", fontFamily: "monospace", marginBottom: 1 }}>
-            Update available
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{
+            width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+            background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)",
+            display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
+          }}>
+            {reloading
+              ? <span style={{ display: "inline-block", animation: "pwaSpin 0.8s linear infinite" }}>🔄</span>
+              : "⬆️"}
           </div>
-          <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "monospace" }}>
-            New version ready — reload to apply
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#06b6d4", fontFamily: "monospace", marginBottom: 1 }}>
+              Update available
+            </div>
+            <div style={{ fontSize: 11, color: "rgba(255,255,255,0.45)", fontFamily: "monospace" }}>
+              {reloading ? "Reloading…" : `Auto-refreshing in ${countdown}s`}
+            </div>
           </div>
+          <button
+            onClick={handleReload}
+            disabled={reloading}
+            style={{
+              background: reloading ? "rgba(6,182,212,0.15)" : "linear-gradient(135deg,#0891b2,#06b6d4)",
+              border: "none", borderRadius: 9,
+              padding: "9px 16px", color: "#fff",
+              fontFamily: "monospace", fontSize: 12, fontWeight: 700,
+              cursor: reloading ? "not-allowed" : "pointer", flexShrink: 0,
+              transition: "background 0.2s", whiteSpace: "nowrap",
+            }}
+          >
+            {reloading ? "Reloading…" : `Reload (${countdown}s)`}
+          </button>
         </div>
-        <button
-          onClick={handleReload}
-          disabled={reloading}
-          style={{
-            background: reloading ? "rgba(6,182,212,0.15)" : "linear-gradient(135deg,#0891b2,#06b6d4)",
-            border: "none", borderRadius: 9,
-            padding: "9px 16px", color: "#fff",
-            fontFamily: "monospace", fontSize: 12, fontWeight: 700,
-            cursor: reloading ? "not-allowed" : "pointer", flexShrink: 0,
-            animation: reloading ? "none" : "pwaPulse 2s ease infinite",
-            transition: "background 0.2s",
-          }}
-        >
-          {reloading ? "Reloading…" : "Reload"}
-        </button>
+        {/* Countdown progress bar */}
+        {!reloading && (
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: 3, background: "rgba(6,182,212,0.12)" }}>
+            <div style={{
+              height: "100%", background: "#06b6d4",
+              width: `${(countdown / 10) * 100}%`,
+              transition: "width 1s linear",
+            }} />
+          </div>
+        )}
       </div>
     </>
   );

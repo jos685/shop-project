@@ -2,12 +2,25 @@ import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL        = import.meta.env.VITE_SUPABASE_URL         as string;
 
-/** Convert a product image_url to a fully-qualified public URL.
- *  If it's already https:// just return it as-is. */
+/**
+ * Normalise a product image_url to a public Supabase storage URL.
+ *
+ * The POS app has no Supabase auth session, so any signed (/sign/) URL will
+ * return 403 in production.  This helper rewrites those to the public
+ * (/object/public/) path so images load for unauthenticated shop terminals.
+ *
+ * Requires the storage bucket to be set to PUBLIC in the Supabase dashboard.
+ */
 export function productImageUrl(raw: string | null | undefined): string | null {
   if (!raw) return null;
+  // Already a full public URL — return as-is
+  if (raw.includes("/object/public/")) return raw;
+  // Signed URL → rewrite to public path
+  if (raw.includes("/object/sign/")) {
+    return raw.replace("/object/sign/", "/object/public/").split("?")[0];
+  }
+  // Relative path (e.g. "products/abc.jpg") → build full public URL
   if (raw.startsWith("http")) return raw;
-  // Relative path — build Supabase public storage URL
   return `${SUPABASE_URL}/storage/v1/object/public/${raw}`;
 }
 const SUPABASE_ANON_KEY   = import.meta.env.VITE_SUPABASE_ANON_KEY    as string;
