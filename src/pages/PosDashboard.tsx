@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
-import { supabase } from "../lib/supabase";
+import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
@@ -25,7 +25,7 @@ const hourLabel = (h: number) =>
 
 interface HourData { hour: number; label: string; count: number; revenue: number; }
 interface StockRow { name: string; remaining: number; allocated: number; }
-interface RecentTx { id: string; amount: number; product_name: string; payment_method: string; created_at: string; status: string | null; returned: boolean; partial_return: boolean; }
+interface RecentTx { id: string; amount: number; product_name: string; product_image_url: string | null; payment_method: string; created_at: string; status: string | null; returned: boolean; partial_return: boolean; }
 
 // Smooth bezier path through points
 function smoothPath(xs: number[], ys: number[]): string {
@@ -261,10 +261,10 @@ export default function PosDashboard() {
     // Recent txs (top 8 today)
     const recentRaw = txData.slice(0, 8);
     const pIds2 = [...new Set(recentRaw.map((t: any) => t.product_id).filter(Boolean))] as string[];
-    const pm2: Record<string, string> = {};
+    const pm2: Record<string, { name: string; image_url: string | null }> = {};
     if (pIds2.length > 0) {
-      const { data: pd2 } = await supabase.from("products").select("id, name").in("id", pIds2);
-      for (const p of pd2 || []) pm2[p.id] = p.name;
+      const { data: pd2 } = await supabase.from("products").select("id, name, image_url").in("id", pIds2);
+      for (const p of pd2 || []) pm2[p.id] = { name: p.name, image_url: productImageUrl(p.image_url) };
     }
 
     // Fetch returns for the recent transactions to show return badges
@@ -284,12 +284,13 @@ export default function PosDashboard() {
       const fullReturn = ret && ret.total >= t.amount;
       return {
         id: t.id, amount: t.amount,
-        product_name:   pm2[t.product_id] || t.product_name || "—",
-        payment_method: t.payment_method,
-        created_at:     t.created_at,
-        status:         t.status ?? null,
-        returned:       !!ret && fullReturn,
-        partial_return: !!ret && !fullReturn,
+        product_name:      pm2[t.product_id]?.name      || t.product_name || "—",
+        product_image_url: pm2[t.product_id]?.image_url ?? null,
+        payment_method:    t.payment_method,
+        created_at:        t.created_at,
+        status:            t.status ?? null,
+        returned:          !!ret && fullReturn,
+        partial_return:    !!ret && !fullReturn,
       };
     }));
 
@@ -575,8 +576,12 @@ export default function PosDashboard() {
                     return (
                     <div key={tx.id} className="tx-row"
                       style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 16px", borderBottom: i < recentTxs.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
-                      <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>
-                        {payIcon(tx.payment_method)}
+                      <div style={{ width: 34, height: 34, borderRadius: 9, background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0, overflow: "hidden", position: "relative" }}>
+                        <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>{payIcon(tx.payment_method)}</span>
+                        {tx.product_image_url && (
+                          <img src={tx.product_image_url} alt="" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                            onError={e => { (e.currentTarget as HTMLImageElement).style.display = "none"; }} />
+                        )}
                       </div>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name}</div>
