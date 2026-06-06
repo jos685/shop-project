@@ -23,6 +23,8 @@ export interface QueuedSale {
   customerName: string;
   customerPhone: string;
   initialPayment: number;
+  initialCashAmount: number;
+  initialMpesaAmount: number;  
   initialPayMethod: "cash" | "mpesa";
   verifiedAgent: { agent_id: string; name: string };
   commissionConfig: { enabled: boolean; rate: number };

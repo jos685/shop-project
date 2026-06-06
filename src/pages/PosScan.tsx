@@ -88,7 +88,9 @@ export default function PosScan() {
   const [customerQuery,    setCustomerQuery]    = useState("");
   const [showCustDropdown, setShowCustDropdown] = useState(false);
   const [usageMap, setUsageMap] = useState<Record<string, number>>({});
-  const [initialPayment,  setInitialPayment]  = useState("");
+  const [initialPayment, setInitialPayment] = useState("");
+  const [initialCashAmount, setInitialCashAmount] = useState("");
+  const [initialMpesaAmount, setInitialMpesaAmount] = useState("");
   const [initialPayMethod, setInitialPayMethod] = useState<"cash" | "mpesa">("cash");
   const [payMethod,     setPayMethod]     = useState<PayMethod>("cash");
   const [cashAmount,    setCashAmount]    = useState("");
@@ -520,6 +522,8 @@ export default function PosScan() {
         customerName:    customerName.trim(),
         customerPhone:   customerPhone.trim(),
         initialPayment:  Number(initialPayment) || 0,
+        initialCashAmount: Number(initialCashAmount) || 0,
+        initialMpesaAmount: Number(initialMpesaAmount) || 0,
         initialPayMethod,
         verifiedAgent:   { agent_id: verifiedAgent.agent_id, name: verifiedAgent.name },
         commissionConfig,
@@ -607,9 +611,11 @@ export default function PosScan() {
         subtotal:      item.allocation.product.price * item.quantity,
       }));
 
-      const initPaid   = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
+      const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
+      const initCashPaid = Math.min(Math.max(0, Number(initialCashAmount) || 0), initPaid);
+      const initMpesaPaid = initPaid - initCashPaid;
       const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
-      const txStatus   = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
+      const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
 
       const { data: fnData, error: fnErr } = await supabase.functions.invoke("insert-credit-sale", {
         body: {
@@ -625,7 +631,7 @@ export default function PosScan() {
           status:          initStatus,
           // Payment details for the upfront portion (sent only when initPaid > 0)
           ...(initPaid > 0 && {
-            initial_payment_method: initialPayMethod,
+            initial_payment_method: initMpesaPaid > 0 && initCashPaid > 0 ? "split" : initCashPaid > 0 ? "cash" : "mpesa",
             tx_row: {
               shop_id:           shop?.id,
               owner_id:          shop?.owner_id,
@@ -634,10 +640,10 @@ export default function PosScan() {
               quantity:          cart.reduce((s, i) => s + i.quantity, 0),
               amount:            initPaid,
               customer_phone:    customerPhone.trim(),
-              payment_method:    initialPayMethod,
-              cash_amount:       initialPayMethod === "cash"  ? initPaid : 0,
-              mpesa_amount:      initialPayMethod === "mpesa" ? initPaid : 0,
-              mpesa_ref:         null,
+              payment_method:    initMpesaPaid > 0 && initCashPaid > 0 ? "split" : initCashPaid > 0 ? "cash" : "mpesa",
+              cash_amount:       initCashPaid,
+              mpesa_amount:      initMpesaPaid,
+              mpesa_ref:         initMpesaPaid > 0 ? mpesaRef.trim() || null : null,
               status:            txStatus,
               unit_price:        cart[0].allocation.product.price,
               base_price:        cart[0].allocation.product.price,
@@ -815,7 +821,8 @@ export default function PosScan() {
     setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
     setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
-    setInitialPayment(""); setInitialPayMethod("cash"); setPayMethod("cash");
+    setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
+    setPayMethod("cash");
     setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
     setError(""); setScanFeedback(""); setProcessing(false); setFieldErrors({});
     setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
@@ -1218,7 +1225,7 @@ export default function PosScan() {
                 </div>
               </div>
 
-              {/* Credit notice + initial payment */}
+              {/* Credit notice + initial payment with split fields */}
               {payMethod === "credit" && (
                 <>
                   <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
@@ -1233,29 +1240,58 @@ export default function PosScan() {
                     <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
                       Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
                     </label>
-                    <input className="ki" type="text" inputMode="numeric" value={initialPayment}
-                      onChange={e => {
-                        const clean = sanitizeAmount(e.target.value);
-                        const val   = Number(clean) || 0;
-                        const cap   = Math.round(grandTotal);
-                        setInitialPayment(val > cap ? String(cap) : clean);
-                      }}
-                      placeholder={`e.g. 500 of ${fmt(grandTotal)}`} />
-                    {Number(initialPayment) > 0 && (
-                      <>
-                        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-                          {([{ key: "cash", icon: "💵", label: "Cash" }, { key: "mpesa", icon: "📱", label: "M-Pesa" }] as const).map(({ key, icon, label }) => (
-                            <button key={key} onClick={() => setInitialPayMethod(key)}
-                              style={{ flex: 1, padding: "8px", border: `1px solid ${initialPayMethod === key ? theme.accent.green + "80" : theme.border.default}`, borderRadius: 10, background: initialPayMethod === key ? theme.accent.green + "18" : "transparent", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, color: initialPayMethod === key ? theme.accent.green : theme.text.muted }}>
-                              {icon} {label}
-                            </button>
-                          ))}
+                    <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.gold }}>💰 Initial Payment — Total due: {fmt(grandTotal)}</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                        <div>
+                          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
+                          <input className="ki" type="text" inputMode="numeric" value={initialCashAmount}
+                            onChange={e => { 
+                              const v = sanitizeAmount(e.target.value);
+                              const cashVal = Number(v) || 0;
+                              const mpesaVal = Number(initialMpesaAmount) || 0;
+                              const total = cashVal + mpesaVal;
+                              const cap = Math.round(grandTotal);
+                              if (total > cap) {
+                                // If total exceeds grand total, adjust this field to keep within limit
+                                const maxForThis = Math.max(0, cap - mpesaVal);
+                                setInitialCashAmount(String(maxForThis));
+                                setInitialPayment(String(maxForThis + mpesaVal));
+                              } else {
+                                setInitialCashAmount(v);
+                                setInitialPayment(String(total));
+                              }
+                            }}
+                            placeholder="0" />
                         </div>
-                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6 }}>
+                        <div>
+                          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                          <input className="ki" type="text" inputMode="numeric" value={initialMpesaAmount}
+                            onChange={e => {
+                              const v = sanitizeAmount(e.target.value);
+                              const mpesaVal = Number(v) || 0;
+                              const cashVal = Number(initialCashAmount) || 0;
+                              const total = cashVal + mpesaVal;
+                              const cap = Math.round(grandTotal);
+                              if (total > cap) {
+                                // If total exceeds grand total, adjust this field to keep within limit
+                                const maxForThis = Math.max(0, cap - cashVal);
+                                setInitialMpesaAmount(String(maxForThis));
+                                setInitialPayment(String(cashVal + maxForThis));
+                              } else {
+                                setInitialMpesaAmount(v);
+                                setInitialPayment(String(total));
+                              }
+                            }}
+                            placeholder="0" />
+                        </div>
+                      </div>
+                      {Number(initialPayment) > 0 && (
+                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6, textAlign: "center", paddingTop: 6, borderTop: "1px solid rgba(234,179,8,0.15)" }}>
                           Balance after payment: {fmt(Math.max(0, grandTotal - Math.min(Number(initialPayment), grandTotal)))}
                         </div>
-                      </>
-                    )}
+                      )}
+                    </div>
                   </div>
                 </>
               )}
