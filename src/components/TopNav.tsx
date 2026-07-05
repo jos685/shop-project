@@ -79,6 +79,87 @@ export default function TopNav() {
   const [unreadCount,   setUnreadCount]   = useState(0);
   const [panelOpen,     setPanelOpen]     = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
+  const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
+    const stored = localStorage.getItem("shop_notif_sound_enabled");
+    return stored === null ? true : stored === "true";
+  });
+  const audioCtxRef     = useRef<AudioContext | null>(null);
+  const prevNotifIdsRef = useRef<Set<string> | null>(null); // null = haven't fetched yet
+  
+  const toggleSound = () => {
+    setSoundEnabled(prev => {
+      localStorage.setItem("shop_notif_sound_enabled", String(!prev));
+      return !prev;
+    });
+  };
+  
+  const playChime = useCallback(() => {
+    if (!soundEnabled) return;
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      // A backgrounded/interrupted tab can leave the context "closed" — that's
+      // terminal, it will never resume, so a fresh context has to be made or
+      // the chime silently stops firing forever after the first interruption.
+      if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+        audioCtxRef.current = new Ctx();
+      }
+      const ctx = audioCtxRef.current;
+
+      const fire = () => {
+        const now = ctx.currentTime; // recompute AFTER we know ctx is running
+        [880, 1320].forEach((freq, i) => {
+          const osc  = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = freq;
+          const start = now + i * 0.12;
+          gain.gain.setValueAtTime(0, start);
+          gain.gain.linearRampToValueAtTime(0.25, start + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + 0.28);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(start);
+          osc.stop(start + 0.3);
+        });
+      };
+  
+      if (ctx.state === "running") {
+        fire();
+      } else {
+        // suspended / interrupted (iOS) — wait for it to actually resume first
+        ctx.resume().then(fire).catch(() => {});
+      }
+    } catch { /* audio blocked or unsupported — fail silently */ }
+  }, [soundEnabled]);
+  
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!audioCtxRef.current || audioCtxRef.current.state === "closed") {
+          audioCtxRef.current = new Ctx();
+        }
+        if (audioCtxRef.current.state === "suspended") audioCtxRef.current.resume();
+      } catch { /* ignore */ }
+    };
+    // Not removed after first fire — every browser tap re-arms/resumes the
+    // context, which matters because mobile browsers can re-suspend or close
+    // it after the tab is backgrounded, and that's when the chime used to go
+    // silent for good.
+    document.addEventListener("click", unlock);
+    document.addEventListener("touchstart", unlock);
+
+    // Re-resume when the tab regains visibility — some browsers suspend the
+    // context on backgrounding without firing any interaction event first.
+    const onVisible = () => { if (document.visibilityState === "visible") unlock(); };
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
 
   // Clock tick
   useEffect(() => {
@@ -140,20 +221,43 @@ export default function TopNav() {
 
     const notifs: ShopNotif[] = [];
 
-    // New / updated allocations
+    // A sale only ever decrements `remaining` — the owner is the only one who
+    // ever changes `allocated` (assigning or editing a shop's stock grant).
+    // Compare against a locally-cached snapshot to tell the two apart, since
+    // `remaining` changes on every sale and can't be used on its own.
+    const snapshotKey = `pos_alloc_snapshot_${shop.id}`;
+    let snapshot: Record<string, number> = {};
+    try { snapshot = JSON.parse(localStorage.getItem(snapshotKey) ?? "{}"); } catch { /* corrupt cache, ignore */ }
+
     (allocRes.data ?? []).forEach((a: any) => {
       const productName = productMap[a.product_id] ?? "product";
       const isNew = a.created_at > lastSeen;
-      notifs.push({
-        id:        `alloc-${a.id}`,
-        type:      isNew ? "product_assigned" : "stock_updated",
-        title:     isNew ? "Stock Assigned" : "Stock Updated",
-        body:      isNew
-          ? `Owner assigned ${a.allocated} units of ${productName} to your shop`
-          : `Owner updated ${productName} allocation — ${a.remaining} units remaining`,
-        timestamp: isNew ? a.created_at : a.updated_at,
-      });
+      const prevAllocated = snapshot[a.id];
+      const ownerChangedAllocation = prevAllocated !== undefined && prevAllocated !== a.allocated;
+
+      if (isNew) {
+        notifs.push({
+          id:        `alloc-${a.id}`,
+          type:      "product_assigned",
+          title:     "Stock Assigned",
+          body:      `Owner assigned ${a.allocated} units of ${productName} to your shop`,
+          timestamp: a.created_at,
+        });
+      } else if (ownerChangedAllocation) {
+        notifs.push({
+          id:        `alloc-${a.id}`,
+          type:      "stock_updated",
+          title:     "Stock Updated",
+          body:      `Owner updated ${productName} allocation — ${a.remaining} units remaining`,
+          timestamp: a.updated_at,
+        });
+      }
+      // else: only `remaining` moved (a sale) — not owner-driven, skip.
+
+      snapshot[a.id] = a.allocated;
     });
+
+    try { localStorage.setItem(snapshotKey, JSON.stringify(snapshot)); } catch { /* storage full/unavailable, ignore */ }
 
     // Request replies (approved / rejected since lastSeen)
     (reqRes.data ?? [])
@@ -186,16 +290,38 @@ export default function TopNav() {
     });
 
     notifs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    // Play chime if there are new notifications since last fetch
+    if (prevNotifIdsRef.current) {  
+    const hasNew = notifs.some(n => !prevNotifIdsRef.current!.has(n.id));
+    if (hasNew) playChime();
+    }
+    prevNotifIdsRef.current = new Set(notifs.map(n => n.id));
+
     setDisplayNotifs(notifs);
     setUnreadCount(notifs.length);
   }, [shop?.id]);
-
-  // Fetch on mount + poll every 60 s
+  // Fetch on mount, then react to realtime changes instead of waiting on a
+  // slow poll — this is what made the chime lag by minutes. A long interval
+  // stays only as a fallback in case a realtime event is ever missed
+  // (reconnect gaps, dropped socket, etc).
   useEffect(() => {
     fetchNotifications();
-    const t = setInterval(fetchNotifications, 60_000);
+    const t = setInterval(fetchNotifications, 5 * 60_000);
     return () => clearInterval(t);
   }, [fetchNotifications]);
+
+  useEffect(() => {
+    if (!shop?.id) return;
+    const ch = supabase
+      .channel(`shop-notifs-${shop.id}`)
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_allocations", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_allocations", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_requests",    filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
+      .subscribe();
+    return () => { supabase.removeChannel(ch); };
+  }, [shop?.id, fetchNotifications]);
 
   // Close panel on outside click
   useEffect(() => {
@@ -506,9 +632,16 @@ export default function TopNav() {
                       Owner Updates
                     </span>
                   </div>
-                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                    {displayNotifs.length === 0 ? "all caught up" : `${displayNotifs.length} new`}
-                  </span>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+  <button onClick={toggleSound}
+    title={soundEnabled ? "Mute notification sound" : "Unmute notification sound"}
+    style={{ background: "none", border: "none", color: theme.text.muted, fontSize: 13, cursor: "pointer" }}>
+    {soundEnabled ? "🔊" : "🔇"}
+  </button>
+  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+    {displayNotifs.length === 0 ? "all caught up" : `${displayNotifs.length} new`}
+  </span>
+</div>
                 </div>
 
                 {/* Notification list */}

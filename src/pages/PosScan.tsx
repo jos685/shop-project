@@ -126,6 +126,70 @@ export default function PosScan() {
 
   useEffect(() => () => { if (pinLockRef.current) clearInterval(pinLockRef.current); }, []);
 
+  // ── Cash register sound — synthesized via Web Audio API, no external files ──
+  const cashAudioCtxRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => {
+    const unlock = () => {
+      try {
+        const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+        if (!cashAudioCtxRef.current || cashAudioCtxRef.current.state === "closed") {
+          cashAudioCtxRef.current = new Ctx();
+        }
+        if (cashAudioCtxRef.current.state === "suspended") cashAudioCtxRef.current.resume();
+      } catch { /* ignore */ }
+    };
+    document.addEventListener("click", unlock);
+    document.addEventListener("touchstart", unlock);
+    const onVisible = () => { if (document.visibilityState === "visible") unlock(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      document.removeEventListener("click", unlock);
+      document.removeEventListener("touchstart", unlock);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
+  const playCashSound = useCallback(() => {
+    try {
+      const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!cashAudioCtxRef.current || cashAudioCtxRef.current.state === "closed") {
+        cashAudioCtxRef.current = new Ctx();
+      }
+      const ctx = cashAudioCtxRef.current;
+
+      const fire = () => {
+        const now = ctx.currentTime;
+        [700, 1100, 1600].forEach((freq, i) => {
+          const osc  = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.type = "sine";
+          osc.frequency.value = freq;
+          const start = now + i * 0.09;
+          gain.gain.setValueAtTime(0, start);
+          gain.gain.linearRampToValueAtTime(0.3, start + 0.015);
+          gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.start(start);
+          osc.stop(start + 0.25);
+        });
+      };
+
+      if (ctx.state === "running") {
+        fire();
+      } else {
+        ctx.resume().then(fire).catch(() => {});
+      }
+    } catch { /* audio blocked or unsupported — fail silently */ }
+  }, []);
+
+  // Play the moment the success screen appears — same render pass as the sale,
+  // not gated behind any fetch/poll cycle.
+  useEffect(() => {
+    if (step === "success") playCashSound();
+  }, [step, playCashSound]);
+
   // ── Cart persistence ──────────────────────────────────────────────────
   const cartKey = shop ? `pos_cart_${shop.id}` : null;
 
