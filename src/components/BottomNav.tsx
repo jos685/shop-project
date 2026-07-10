@@ -6,7 +6,7 @@ import { useTheme } from "../context/ThemeContext";
 const tabs = [
   { path: "/pos",              icon: "🏠", label: "Dashboard", short: "Home", tour: "pos-home" },
   { path: "/pos/transactions", icon: "🧾", label: "Txns",      short: "Txns", tour: "pos-txns" },
-  { path: "/pos/scan",         icon: "cart", label: "Sell",    short: "Sell", tour: "pos-scan" },
+  { path: "/pos/scan",         icon: "cart", label: "Sell",    short: "Sell", tour: "pos-scan"},
   { path: "/pos/info",         icon: "📦", label: "Shop",      short: "Shop", tour: "pos-info" },
   { path: "/pos/requests",     icon: "📋", label: "Hub",       short: "Hub",  tour: "pos-hub"  },
 ];
@@ -77,45 +77,55 @@ export default function BottomNav() {
         {tabs.map(tab => {
           const isActive = location.pathname === tab.path;
           const isScan   = tab.path === "/pos/scan";
-
           if (isScan) {
             return (
-              <button
+              <div
                 key={tab.path}
-                data-tour={tab.tour}
-                className="bnav-btn bnav-scan-pill"
-                onClick={() => navigate(tab.path)}
                 style={{
                   flex: 1,
-                  margin: "0 2px",
-                  height: 46,
-                  borderRadius: 14,
-                  background: isActive
-                    ? "linear-gradient(135deg,#06b6d4,#0284c7)"
-                    : "linear-gradient(135deg,rgba(6,182,212,0.28),rgba(2,132,199,0.18))",
-                  boxShadow: isActive
-                    ? "0 0 20px rgba(6,182,212,0.5), inset 0 1px 0 rgba(255,255,255,0.15)"
-                    : "0 0 12px rgba(6,182,212,0.2), inset 0 1px 0 rgba(255,255,255,0.06)",
-                  border: `1px solid ${isActive ? "rgba(6,182,212,0.6)" : "rgba(6,182,212,0.3)"}`,
-                  cursor: "pointer",
+                  position: "relative",
+                  height: "100%",
                   display: "flex",
                   flexDirection: "column",
                   alignItems: "center",
-                  justifyContent: "center",
-                  gap: 2,
+                  justifyContent: "flex-end",
                 }}>
-                <CartIcon color={isActive ? "#fff" : "#67e8f9"} size={22} />
+                <button
+                  data-tour={tab.tour}
+                  className="bnav-btn bnav-scan-pill"
+                  onClick={() => navigate(tab.path)}
+                  style={{
+                    position: "absolute",
+                    top: -22,
+                    width: 58,
+                    height: 58,
+                    borderRadius: "50%",
+                    background: isActive
+                      ? "linear-gradient(135deg,#06b6d4,#0284c7)"
+                      : "linear-gradient(135deg,rgba(6,182,212,0.28),rgba(2,132,199,0.18))",
+                    boxShadow: isActive
+                      ? "0 0 20px rgba(6,182,212,0.55), 0 4px 12px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.15)"
+                      : "0 0 12px rgba(6,182,212,0.2), 0 4px 12px rgba(0,0,0,0.3), inset 0 1px 0 rgba(255,255,255,0.06)",
+                    border: `3px solid ${theme.bg.nav}`, // creates the "cutout" ring effect from the ref image
+                    cursor: "pointer",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}>
+                  <CartIcon color={isActive ? "#fff" : "#67e8f9"} size={24} />
+                </button>
                 <span style={{
                   fontSize: 9,
                   fontFamily: "DM Mono, monospace",
                   fontWeight: 700,
                   letterSpacing: "0.06em",
-                  color: isActive ? "#fff" : "#67e8f9",
+                  color: isActive ? theme.accent.cyan : theme.text.muted,
                   textTransform: "uppercase",
+                  marginBottom: 6,
                 }}>
                   {compact ? tab.short : tab.label}
                 </span>
-              </button>
+              </div>
             );
           }
 
