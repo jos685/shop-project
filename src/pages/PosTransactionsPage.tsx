@@ -6,6 +6,8 @@ import { useNetwork } from "../context/NetworkContext";
 import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue, type QueuedSale } from "../lib/offlineQueue";
 
+
+
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
 interface LocalTransaction {

@@ -20,7 +20,7 @@ interface ShopAuthContextType {
 const ShopAuthContext = createContext<ShopAuthContextType | null>(null);
 
 const SESSION_KEY    = "pos_shop_session";
-const TIMEOUT_MS     = 30 * 60 * 1000; // 30 minutes of inactivity
+// const TIMEOUT_MS     = 30 * 60 * 1000; // 30 minutes of inactivity
 const CHECK_INTERVAL = 60 * 1000;       // check every minute
 
 const SUPABASE_URL      = import.meta.env.VITE_SUPABASE_URL as string;
@@ -37,7 +37,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
   const [hasAuthSession, setHasAuthSession] = useState<boolean>(
     storedSession?.authProvisioned === true
   );
-  const lastActivityRef   = useRef<number>(Date.now());
+  // const lastActivityRef   = useRef<number>(Date.now());
   const sessionTokenRef   = useRef<string | null>(null);  // kept in sync for use in beforeunload
 
   // Keep sessionTokenRef + hasAuthSession in sync with Supabase auth state.
@@ -114,12 +114,12 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
   }, [clearLastSeen]);
 
   // Reset the inactivity clock on any user interaction
-  useEffect(() => {
-    const touch = () => { lastActivityRef.current = Date.now(); };
-    const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"];
-    events.forEach(e => document.addEventListener(e, touch, { passive: true }));
-    return () => events.forEach(e => document.removeEventListener(e, touch));
-  }, []);
+  // useEffect(() => {
+  //   const touch = () => { lastActivityRef.current = Date.now(); };
+  //   const events = ["mousemove", "mousedown", "keydown", "touchstart", "scroll", "click"];
+  //   events.forEach(e => document.addEventListener(e, touch, { passive: true }));
+  //   return () => events.forEach(e => document.removeEventListener(e, touch));
+  // }, []);
 
   // Clear last_seen when the tab/browser closes — prevents ghost "ONLINE" status
   useEffect(() => {
@@ -135,21 +135,21 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Check for inactivity every minute — auto-logout when session exists, also heartbeat last_seen
-  useEffect(() => {
-    const timer = setInterval(() => {
-      setShop(current => {
-        if (!current) return current;
-        if (Date.now() - lastActivityRef.current > TIMEOUT_MS) {
-          localStorage.removeItem(SESSION_KEY);
-          supabase.auth.signOut().catch(() => {}); // revoke JWT on inactivity timeout
-          return null;
-        }
-        pingLastSeen(current.id);
-        return current;
-      });
-    }, CHECK_INTERVAL);
-    return () => clearInterval(timer);
-  }, [pingLastSeen]);
+// Keep the shop presence updated every minute.
+// This does NOT log the user out for inactivity.
+useEffect(() => {
+  const timer = setInterval(() => {
+    setShop(current => {
+      if (!current) return current;
+
+      pingLastSeen(current.id);
+
+      return current;
+    });
+  }, CHECK_INTERVAL);
+
+  return () => clearInterval(timer);
+}, [pingLastSeen]);
 
   useEffect(() => {
     // Restore session from localStorage on load

@@ -4,10 +4,12 @@ import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
 import QrScanner from "../components/QrScanner";
-import { supabase } from "../lib/supabase";
+import { supabase, productImageUrl } from "../lib/supabase";
 import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
 import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
+
+
 
 type Step         = "scan" | "checkout" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
@@ -27,6 +29,7 @@ function useWindowWidth() {
 
 interface LocalProduct {
   id: string; name: string; sku: string; price: number; unit: string;
+  image_url: string | null;
 }
 interface LocalAlloc {
   id: string; allocated: number; remaining: number; product_id: string; product: LocalProduct;
@@ -43,6 +46,198 @@ interface CartItem {
 
 const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
 const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise", success: "Done" };
+
+// Reusable product image component with click-to-preview
+function ProductImage({ 
+  imageUrl, 
+  productName, 
+  size = 40, 
+  onClick 
+}: { 
+  imageUrl: string | null; 
+  productName: string; 
+  size?: number;
+  onClick?: () => void;
+}) {
+  const [showPreview, setShowPreview] = useState(false);
+  const [imgError, setImgError] = useState(false);
+  
+  const handleClick = (e: React.MouseEvent) => {
+    if (onClick) {
+      e.stopPropagation(); // Prevent parent onClick
+      onClick();
+    } else if (imageUrl && !imgError) {
+      e.stopPropagation();
+      setShowPreview(true);
+    }
+  };
+  
+  return (
+    <>
+      <div 
+        onClick={handleClick}
+        style={{ 
+          width: size, 
+          height: size, 
+          borderRadius: Math.max(9, size * 0.225), 
+          background: "rgba(255,255,255,0.05)", 
+          display: "flex", 
+          alignItems: "center", 
+          justifyContent: "center", 
+          fontSize: size * 0.45, 
+          flexShrink: 0, 
+          overflow: "hidden", 
+          position: "relative",
+          cursor: (imageUrl && !imgError) ? "zoom-in" : "default",
+          border: "1px solid rgba(255,255,255,0.08)",
+        }}
+      >
+        {imageUrl && !imgError ? (
+          <>
+            <img 
+              src={imageUrl} 
+              alt={productName}
+              style={{ 
+                width: "100%", 
+                height: "100%", 
+                objectFit: "cover",
+                position: "absolute",
+                top: 0,
+                left: 0,
+              }}
+              onError={() => setImgError(true)}
+            />
+            {/* Zoom indicator */}
+            <div style={{
+              position: "absolute",
+              bottom: 2,
+              right: 2,
+              background: "rgba(0,0,0,0.6)",
+              borderRadius: "50%",
+              width: size * 0.35,
+              height: size * 0.35,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: size * 0.2,
+              opacity: 0.7,
+            }}>
+              🔍
+            </div>
+          </>
+        ) : (
+          <span>📦</span>
+        )}
+      </div>
+      
+      {/* Preview Modal - Updated to close on outside click */}
+      {showPreview && (
+        <div
+          onClick={() => setShowPreview(false)}  // This closes when clicking the backdrop
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.85)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 1000,
+            padding: 20,
+            backdropFilter: "blur(4px)",
+            cursor: "zoom-out", // Add this to show zoom-out cursor on backdrop
+          }}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}  // This prevents closing when clicking inside the modal
+            style={{
+              maxWidth: 500,
+              width: "100%",
+              background: "#1a1a1a",
+              borderRadius: 16,
+              overflow: "hidden",
+              border: "1px solid rgba(255,255,255,0.1)",
+              cursor: "default", // Reset cursor for modal content
+            }}
+          >
+            {/* Large Image */}
+            <div style={{ position: "relative", background: "rgba(255,255,255,0.02)" }}>
+              {imageUrl && !imgError ? (
+                <img
+                  src={imageUrl}
+                  alt={productName}
+                  style={{
+                    width: "100%",
+                    height: 400,
+                    objectFit: "contain",
+                  }}
+                />
+              ) : (
+                <div
+                  style={{
+                    width: "100%",
+                    height: 400,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 80,
+                  }}
+                >
+                  📦
+                </div>
+              )}
+              
+              {/* Close button */}
+              <button
+                onClick={() => setShowPreview(false)}
+                style={{
+                  position: "absolute",
+                  top: 12,
+                  right: 12,
+                  width: 36,
+                  height: 36,
+                  borderRadius: "50%",
+                  background: "rgba(0,0,0,0.7)",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  color: "white",
+                  fontSize: 20,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Product Details */}
+            <div style={{ padding: 20 }}>
+              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, color: "#fff" }}>
+                {productName}
+              </h3>
+              <button
+                onClick={() => setShowPreview(false)}
+                style={{
+                  width: "100%",
+                  padding: 12,
+                  background: "rgba(255,255,255,0.1)",
+                  border: "1px solid rgba(255,255,255,0.2)",
+                  borderRadius: 8,
+                  color: "white",
+                  fontSize: 14,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
 
 export default function PosScan() {
   const { shop }  = useShopAuth();
@@ -61,7 +256,7 @@ export default function PosScan() {
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("pin");
 
   // scan
-  const [mode,           setMode]           = useState<"camera" | "manual">("camera");
+  const [mode,           setMode]           = useState<"camera" | "manual">("manual");
   const [cameraActive,   setCameraActive]   = useState(true);
   const [badgeActive,    setBadgeActive]    = useState(false);
   const [manualSku,      setManualSku]      = useState("");
@@ -290,7 +485,7 @@ export default function PosScan() {
       let productsMap: Record<string, any> = {};
       if (productIds.length > 0) {
         const { data: prodsData } = await supabase
-          .from("products").select("id, name, sku, price, unit").in("id", productIds);
+          .from("products").select("id, name, sku, price, unit, image_url").in("id", productIds);
         for (const p of prodsData || []) productsMap[p.id] = p;
       }
 
@@ -308,6 +503,7 @@ export default function PosScan() {
               sku:   p.sku   || a.product_sku   || "",
               price: Number(p.price ?? a.product_price ?? 0),
               unit:  p.unit  || a.product_unit  || "",
+              image_url: p.image_url ? productImageUrl(p.image_url) : null,
             },
           };
         });
@@ -424,7 +620,7 @@ export default function PosScan() {
 
     if (!data?.product_id) return null;
     const { data: prod } = await supabase
-      .from("products").select("id, name, sku, price, unit").eq("id", data.product_id).single();
+      .from("products").select("id, name, sku, price, unit, image_url").eq("id", data.product_id).single();
     return {
       id: data.id, allocated: data.allocated,
       remaining: Math.max(0, data.remaining ?? 0),
@@ -435,6 +631,7 @@ export default function PosScan() {
         sku:   prod?.sku   || data.product_sku   || "",
         price: Number(prod?.price ?? data.product_price ?? 0),
         unit:  prod?.unit  || data.product_unit  || "",
+        image_url: prod?.image_url ? productImageUrl(prod.image_url) : null,
       },
     };
   }, [shop, myProducts]);
@@ -575,6 +772,7 @@ export default function PosScan() {
           allocationId: item.allocation.id,
           productId:    item.allocation.product.id,
           productName:  item.allocation.product.name,
+          productImage: item.allocation.product.image_url,
           quantity:     item.quantity,
           sellPrice:    item.sellPrice,
           basePrice:    item.allocation.product.price,
@@ -1042,7 +1240,7 @@ export default function PosScan() {
             )}
 
             <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
-              {(["camera", "manual"] as const).map(m => (
+              {(["manual", "camera"] as const).map(m => (
                 <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
                   style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
                   {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
@@ -1118,9 +1316,10 @@ export default function PosScan() {
                   </div>
                 ) : (() => {
                   const q = productSearch.toLowerCase();
-                  const filtered = q
+                  const filtered = (q
                     ? myProducts.filter(a => a.product.name.toLowerCase().includes(q) || a.product.sku.toLowerCase().includes(q))
-                    : myProducts;
+                    : myProducts
+                  ).sort((a, b) => a.product.name.localeCompare(b.product.name)); 
                   return (
                     <div>
                       <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
@@ -1139,7 +1338,11 @@ export default function PosScan() {
                               style={{ padding: "13px 14px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 13, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, textAlign: "left", transition: "border-color 0.15s" }}
                               onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
                               onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
-                              <div style={{ width: 40, height: 40, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0 }}>📦</div>
+                                <ProductImage 
+                                  imageUrl={alloc.product.image_url} 
+                                  productName={alloc.product.name} 
+                                  size={36} 
+                                />
                               <div style={{ flex: 1, minWidth: 0 }}>
                                 <div style={{ fontSize: 14, fontWeight: 600, color: theme.text.primary, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
                                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 5 }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
@@ -1196,11 +1399,15 @@ export default function PosScan() {
                   const itemTotal = item.sellPrice * item.quantity;
                   return (
                     <div key={item.allocation.product_id} className="cart-row" style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12, transition: "background 0.15s" }}>
-                      <div style={{ width: 36, height: 36, borderRadius: 9, background: "rgba(255,255,255,0.05)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>📦</div>
+                    <ProductImage 
+                      imageUrl={item.allocation.product.image_url} 
+                      productName={item.allocation.product.name} 
+                      size={36} 
+                    />
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.allocation.product.name}</div>
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                          {fmt(item.sellPrice)} each
+                          {fmt(item.sellPrice)} each . {item.allocation.remaining} left
                           {item.sellPrice > item.allocation.product.price && (
                             <span style={{ color: "#34d399", marginLeft: 5 }}>+{fmt(item.sellPrice - item.allocation.product.price)} markup</span>
                           )}
@@ -1216,7 +1423,24 @@ export default function PosScan() {
                           style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
                           {item.quantity <= 1 ? "✕" : "−"}
                         </button>
-                        <span style={{ fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600, minWidth: 22, textAlign: "center" }}>{item.quantity}</span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          value={item.quantity}
+                          onChange={e => {
+                            const digits = e.target.value.replace(/[^0-9]/g, "");
+                            if (digits === "") { handleUpdateCartQty(item.allocation.product_id, 1); return; }
+                            const num = Math.min(parseInt(digits, 10), item.allocation.remaining);
+                            handleUpdateCartQty(item.allocation.product_id, num);
+                          }}
+                          onFocus={e => e.target.select()}
+                          style={{
+                            width: 44, height: 28, textAlign: "center",
+                            fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600,
+                            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
+                            borderRadius: 7, color: theme.text.primary, outline: "none",
+                          }}
+                        />
                         <button
                           onClick={() => { if (item.quantity < item.allocation.remaining) handleUpdateCartQty(item.allocation.product_id, item.quantity + 1); }}
                           disabled={item.quantity >= item.allocation.remaining}
@@ -1224,6 +1448,8 @@ export default function PosScan() {
                           +
                         </button>
                       </div>
+
+
                       <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>{fmt(itemTotal)}</div>
                     </div>
                   );
@@ -1930,7 +2156,11 @@ export default function PosScan() {
           <div className="overlay-sheet" style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Product info */}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{ width: 48, height: 48, borderRadius: 12, background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📦</div>
+                            <ProductImage 
+                  imageUrl={addingProduct.product.image_url} 
+                  productName={addingProduct.product.name} 
+                  size={48} 
+                />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{addingProduct.product.name}</div>
                 <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>

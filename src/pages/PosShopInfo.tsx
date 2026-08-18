@@ -50,6 +50,7 @@ export default function PosShopInfo() {
   const [loading,         setLoading]         = useState(true);
   const [isOfflineData,   setIsOfflineData]   = useState(false);
   const [tab,             setTab]             = useState<ActiveTab>("stock");
+  const [stockSearch, setStockSearch] = useState("");
 
   // Deep-link from dashboard: navigate("/pos/info", { state: { tab: "stock" } })
   useEffect(() => {
@@ -244,6 +245,13 @@ export default function PosShopInfo() {
 
   const totalStockValue     = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.remaining,  0);
   const totalAllocatedValue = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.allocated, 0);
+  const filteredStock = stock
+  .filter(item => {
+    const q = stockSearch.trim().toLowerCase();
+    if (!q) return true;
+    return item.product.name.toLowerCase().includes(q) || item.product.sku.toLowerCase().includes(q);
+  })
+    .sort((a, b) => a.product.name.localeCompare(b.product.name));
 
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
@@ -340,6 +348,38 @@ export default function PosShopInfo() {
                     <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Connect to the internet to load stock information</div>
                   </div>
                 )}
+
+                  {stock.length > 0 && (
+                    <div style={{ position: "relative", marginBottom: 16 }}>
+                      <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
+                      <input
+                        type="text"
+                        value={stockSearch}
+                        onChange={e => setStockSearch(e.target.value)}
+                        placeholder="Search by product name or SKU..."
+                        style={{
+                          width: "100%",
+                          boxSizing: "border-box",
+                          background: theme.bg.card,
+                          border: `1px solid ${theme.border.default}`,
+                          borderRadius: 12,
+                          padding: "10px 14px 10px 38px",
+                          color: theme.text.primary,
+                          fontFamily: theme.font.mono,
+                          fontSize: 13,
+                          outline: "none",
+                        }}
+                      />
+                      {stockSearch && (
+                        <button
+                          onClick={() => setStockSearch("")}
+                          style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 14, padding: 4 }}
+                        >
+                          ✕
+                        </button>
+                      )}
+                    </div>
+                  )}
                 <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 12, marginBottom: 24 }}>
                   {[
                     { label: "Products",       value: String(stock.length),     color: theme.accent.cyan  },
@@ -353,13 +393,26 @@ export default function PosShopInfo() {
                   ))}
                 </div>
 
-                {stock.length === 0 ? (
+                {filteredStock.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+                    {stockSearch ? (
+                          <>
+                            <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
+                            <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
+                          </>
+                        ) : (
+                          <>
+                            <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
+                            <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
+                            <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
+                          </>
+                        )}
                     <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
                     <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
                     <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
                   </div>
-                ) : (
+                ) 
+                : (
                   <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
                     {!isMobile && (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 90px 90px", gap: 12, padding: "12px 20px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.02)" }}>
@@ -368,13 +421,13 @@ export default function PosShopInfo() {
                         ))}
                       </div>
                     )}
-                    {stock.map((item, i) => {
+                    {filteredStock.map((item, i) => {
                       const sold = item.allocated - item.remaining;
                       const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
                       const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
                       return (
                         <div key={item.id} className="stock-row"
-                          style={{ borderBottom: i < stock.length - 1 ? `1px solid ${theme.border.default}` : "none", padding: isMobile ? "16px" : "16px 20px" }}>
+                          style={{ borderBottom: i < filteredStock.length - 1 ? `1px solid ${theme.border.default}` : "none", padding: isMobile ? "16px" : "16px 20px" }}>
                           {isMobile ? (
                             <div>
                               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
