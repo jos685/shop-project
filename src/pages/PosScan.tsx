@@ -643,9 +643,9 @@ export default function PosScan() {
       return;
     }
     const existing   = cart.find(i => i.allocation.product_id === alloc.product_id);
-    const canEdit    = commissionConfig.enabled && commissionConfig.rate > 0;
+    
     setAddQty(existing ? String(existing.quantity) : "1");
-    setAddSellPrice(canEdit && existing ? String(existing.sellPrice) : String(alloc.product.price));
+    setAddSellPrice(existing ? String(existing.sellPrice) : String(alloc.product.price));
     setAddingProduct(alloc);
     setError("");
   };
@@ -673,13 +673,12 @@ export default function PosScan() {
   const handleAddToCart = () => {
     if (!addingProduct) return;
     const qty      = Math.max(1, parseInt(addQty) || 1);
-    const canEdit  = commissionConfig.enabled && commissionConfig.rate > 0;
-    const sp       = canEdit ? (Number(addSellPrice) || addingProduct.product.price) : addingProduct.product.price;
+    const sp       = Number(addSellPrice) || addingProduct.product.price;
     if (qty > addingProduct.remaining) {
       setError(`Only ${addingProduct.remaining} units available.`);
       return;
     }
-    if (canEdit && sp < addingProduct.product.price) {
+    if (sp < addingProduct.product.price) {
       setError(`Sell price cannot be less than ${fmt(addingProduct.product.price)}.`);
       return;
     }
@@ -2191,20 +2190,17 @@ export default function PosScan() {
 
             {/* Sell Price */}
             {(() => {
-              const canEdit = commissionConfig.enabled && commissionConfig.rate > 0;
-              const sp      = Number(addSellPrice) || addingProduct.product.price;
-              const qty     = Math.max(1, parseInt(addQty) || 1);
-              const markup  = canEdit ? Math.max(0, sp - addingProduct.product.price) : 0;
-              return (
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                    Sell Price
-                    {!canEdit && (
-                      <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>fixed</span>
-                    )}
-                  </label>
-                  {canEdit ? (
-                    <>
+            
+                  const sp      = Number(addSellPrice) || addingProduct.product.price;
+                  const qty     = Math.max(1, parseInt(addQty) || 1);
+                  const markup  = Math.max(0, sp - addingProduct.product.price);
+                  const hasCommission = commissionConfig.enabled && commissionConfig.rate > 0;
+                  return (
+                    <div>
+                      <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                        Sell Price
+                        <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>custom</span>
+                      </label>
                       <input className="ki" type="text" inputMode="numeric"
                         value={addSellPrice}
                         onChange={e => { setAddSellPrice(sanitizeAmount(e.target.value)); setError(""); }}
@@ -2212,27 +2208,18 @@ export default function PosScan() {
                       {markup > 0 && (
                         <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
                           <span style={{ color: "#34d399" }}>Markup: {fmt(markup * qty)}</span>
-                          <span style={{ color: payMethod === "credit" ? "rgba(248,113,113,0.5)" : theme.accent.cyan }}>
-                            {payMethod === "credit"
-                              ? "No commission (Pay Later)"
-                              : `Commission: ${fmt(Math.round(markup * qty * commissionConfig.rate / 100))}`}
-                          </span>
+                          {hasCommission && (
+                            <span style={{ color: theme.accent.cyan }}>
+                              Commission: {fmt(Math.round(markup * qty * commissionConfig.rate / 100))}
+                            </span>
+                          )}
                         </div>
                       )}
-                    </>
-                  ) : (
-                    <div style={{
-                      padding: "12px 14px", background: "rgba(255,255,255,0.03)",
-                      border: `1px solid ${theme.border.default}`, borderRadius: 12,
-                      fontFamily: theme.font.mono, fontSize: 15, fontWeight: 600,
-                      color: theme.text.primary,
-                    }}>
-                      {fmt(addingProduct.product.price)}
                     </div>
-                  )}
-                </div>
-              );
-            })()}
+                  );
+                })()}
+
+
 
             {/* Subtotal preview */}
             <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
