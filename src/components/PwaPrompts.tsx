@@ -119,10 +119,11 @@ export function PwaUpdatePrompt() {
 // Dismissed per session only — reappears every time the user opens the browser.
 export function PwaInstallBanner() {
   type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
-  const [prompt, setPrompt]         = useState<BeforeInstallPromptEvent | null>(null);
-  const [visible, setVisible]       = useState(false);
+  const [prompt, setPrompt] = useState<BeforeInstallPromptEvent | null>(null);
+  const [visible, setVisible] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [showIosSteps, setShowIosSteps] = useState(false);
+
 
   useEffect(() => {
     // Already installed as a PWA — never show
@@ -130,15 +131,19 @@ export function PwaInstallBanner() {
     // User dismissed this session — don't show again until next session
     if (sessionStorage.getItem(INSTALL_SESSION_KEY)) return;
 
-    // Show the banner immediately regardless of browser/platform
+    // Show the banner immediately
     setVisible(true);
 
-    // Also listen for the native install prompt (Chrome/Edge/Android)
-    // so the Install button can trigger the real dialog when available
+   
+
+    // Listen for native install prompt
     const handler = (e: Event) => {
       e.preventDefault();
       setPrompt(e as BeforeInstallPromptEvent);
+      // We can set this even for desktop Chrome
+     
     };
+    
     window.addEventListener("beforeinstallprompt", handler);
     return () => window.removeEventListener("beforeinstallprompt", handler);
   }, []);
@@ -149,20 +154,114 @@ export function PwaInstallBanner() {
   };
 
   const install = async () => {
-    if (isIos()) { setShowIosSteps(v => !v); return; }
-    if (prompt) {
-      // Native one-tap install (Chrome / Edge / Android)
-      setInstalling(true);
-      await prompt.prompt();
-      setPrompt(null);
-      setVisible(false);
-    } else {
-      // Prompt not yet available — show instructions
-      setShowIosSteps(v => !v);
+    // iOS always shows instructions
+    if (isIos()) { 
+      setShowIosSteps(true); 
+      return; 
     }
+
+    // Android with native prompt available
+    if (prompt) {
+      setInstalling(true);
+      try {
+        await prompt.prompt();
+        setPrompt(null);
+        setVisible(false);
+      } catch (error) {
+        console.error("Install prompt failed:", error);
+      } finally {
+        setInstalling(false);
+      }
+      return;
+    }
+
+    // Chrome/Edge on desktop where the prompt might be in the address bar
+    if (!isIos() && !/android/i.test(navigator.userAgent)) {
+      // Check if we're in Chrome or Edge
+      if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
+        // Show a helpful message pointing to the address bar
+        setShowIosSteps(true);
+        return;
+      }
+    }
+
+    // Other browsers (Firefox, Safari on Mac, etc.)
+    // Android but not Chrome/Edge
+    if (/android/i.test(navigator.userAgent)) {
+      // Show Android-specific instructions
+      setShowIosSteps(true);
+      return;
+    }
+
+    // Fallback: show instructions
+    setShowIosSteps(true);
   };
 
   if (!visible) return null;
+
+  // Determine which instructions to show
+  const getInstructions = () => {
+    if (isIos()) {
+      return [
+        { n: "1", text: "Tap the Share button ⎙ at the bottom of Safari" },
+        { n: "2", text: 'Scroll down and tap "Add to Home Screen"' },
+        { n: "3", text: 'Tap "Add" — done! 🎉' },
+      ];
+    }
+
+    if (/android/i.test(navigator.userAgent)) {
+      // Android-specific instructions
+      if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
+        // Chrome/Edge on Android - should have prompt, but if not, show fallback
+        if (!prompt) {
+          return [
+            { n: "1", text: 'Tap the menu icon (⋮) in the top right' },
+            { n: "2", text: 'Tap "Install app" or "Add to Home screen"' },
+            { n: "3", text: 'Follow the prompts to install 🎉' },
+          ];
+        }
+        return [
+          { n: "1", text: 'Wait for the install prompt to appear' },
+          { n: "2", text: 'Or tap the "Install" button below' },
+          { n: "3", text: 'Follow the on-screen instructions 🎉' },
+        ];
+      }
+      // Other Android browsers
+      return [
+        { n: "1", text: "Open this page in Chrome or Edge browser" },
+        { n: "2", text: 'Look for the install icon (⊞) in the address bar or menu' },
+        { n: "3", text: 'Tap "Install" to add to home screen 🎉' },
+      ];
+    }
+
+    // Desktop Chrome/Edge fallback
+    if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
+      return [
+        { n: "1", text: 'Look for the install icon (⊞) in the address bar' },
+        { n: "2", text: 'Click the icon to install the app' },
+        { n: "3", text: 'Or click the "Install" button below 🎉' },
+      ];
+    }
+
+    // Default instructions for other desktop browsers
+    return [
+      { n: "1", text: "Open this page in Chrome or Edge browser" },
+      { n: "2", text: 'Look for the install icon in the address bar' },
+      { n: "3", text: 'Click the icon and follow the prompts 🎉' },
+    ];
+  };
+
+  // Determine button text
+  const getButtonText = () => {
+    if (installing) return "Installing…";
+    if (isIos()) return "📱 iOS Guide";
+    if (prompt) return "📲 Install";
+    if (/android/i.test(navigator.userAgent)) return "📱 Install";
+    return "📲 Install";
+  };
+
+  // Determine if we should show the pulse animation
+  const shouldPulse = !installing && !isIos();
 
   return (
     <>
@@ -177,7 +276,6 @@ export function PwaInstallBanner() {
         animation: "pwaSlideUp 0.35s cubic-bezier(0.16,1,0.3,1) both",
         maxWidth: 480, marginLeft: "auto", marginRight: "auto",
       }}>
-
         {/* Main row */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <img
@@ -190,7 +288,11 @@ export function PwaInstallBanner() {
               Add Q-SHOP to Home Screen
             </div>
             <div style={{ fontSize: 11, color: "rgba(255,255,255,0.4)", fontFamily: "monospace", marginTop: 2, lineHeight: 1.4 }}>
-              Install for faster access and offline use
+              {isIos() 
+                ? "Available via Safari's share menu" 
+                : prompt 
+                ? "One-tap install available" 
+                : "Install for faster access and offline use"}
             </div>
           </div>
           <div style={{ display: "flex", gap: 7, flexShrink: 0 }}>
@@ -202,11 +304,11 @@ export function PwaInstallBanner() {
                 border: "none", borderRadius: 9, padding: "9px 15px",
                 color: "#fff", fontFamily: "monospace", fontSize: 12, fontWeight: 700,
                 cursor: installing ? "not-allowed" : "pointer",
-                animation: installing ? "none" : "pwaPulse 2.5s ease infinite",
+                animation: shouldPulse ? "pwaPulse 2.5s ease infinite" : "none",
                 whiteSpace: "nowrap",
               }}
             >
-              {installing ? "Installing…" : "📲 Install"}
+              {getButtonText()}
             </button>
             <button
               onClick={dismiss}
@@ -221,7 +323,7 @@ export function PwaInstallBanner() {
           </div>
         </div>
 
-        {/* Install steps (iOS or browser without native prompt) */}
+        {/* Install steps */}
         {showIosSteps && (
           <div style={{
             marginTop: 12,
@@ -230,15 +332,7 @@ export function PwaInstallBanner() {
             borderRadius: 10, padding: "12px 14px",
             display: "flex", flexDirection: "column", gap: 8,
           }}>
-            {(isIos() ? [
-              { n: "1", text: "Tap the Share button ⎙ at the bottom of Safari" },
-              { n: "2", text: 'Scroll down and tap "Add to Home Screen"' },
-              { n: "3", text: 'Tap "Add" — done! 🎉' },
-            ] : [
-              { n: "1", text: "Open this page in Chrome or Edge browser" },
-              { n: "2", text: 'Look for the install icon (⊞) in the address bar and click it' },
-              { n: "3", text: 'Click "Install" in the dialog — the app installs instantly 🎉' },
-            ]).map(s => (
+            {getInstructions().map(s => (
               <div key={s.n} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <span style={{
                   width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
