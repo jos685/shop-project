@@ -109,6 +109,18 @@ interface CustomerCreditGroup {
   hasOpen: boolean;
 }
 
+interface TransactionReturn {
+  id: string;
+  original_transaction_id: string;
+  product_id: string | null;
+  product_name: string;
+  quantity_returned: number;
+  unit_price: number;
+  amount_refunded: number;
+  reason: string;
+  created_at: string;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const REQUEST_TYPES: { value: RequestType; label: string; icon: string; desc: string; color: string }[] = [
@@ -242,6 +254,7 @@ export default function PosRequests() {
   const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
   const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
   const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
+  const [creditReturns, setCreditReturns] = useState<Record<string, TransactionReturn[]>>({});
 
   const [businessName,    setBusinessName]    = useState("");
   const [sendStmtGroup,   setSendStmtGroup]   = useState<CustomerCreditGroup | null>(null);
@@ -256,6 +269,50 @@ export default function PosRequests() {
   const [pinModalFails,       setPinModalFails]       = useState(0);
   const [pinModalCountdown,   setPinModalCountdown]   = useState(0);
   const pinLockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const [returnItems, setReturnItems] = useState<{ product_id: string; product_name: string; original_qty: number; remaining_qty: number; unit_price: number; return_qty: number }[]>([]);
+  const openReturnModal = async (cs: CreditSale) => {
+    // Fetch existing returns for this credit sale
+    const { data: returnsData } = await supabase.rpc("get_transaction_returns", {
+      p_transaction_ids: [cs.id]
+    });
+  
+    // Build map: product_id -> total returned quantity
+    const returnedMap: Record<string, number> = {};
+    for (const ret of (returnsData || [])) {
+      const pid = ret.product_id;
+      if (pid) {
+        returnedMap[pid] = (returnedMap[pid] || 0) + ret.quantity_returned;
+      }
+    }
+  
+    // Build item list with remaining quantities
+    const items = cs.items
+      .map(item => {
+        const alreadyReturned = returnedMap[item.product_id] || 0;
+        const remaining = item.quantity - alreadyReturned;
+        if (remaining <= 0) return null; // skip fully returned items
+        return {
+          product_id: item.product_id,
+          product_name: item.product_name,
+          original_qty: item.quantity,      // keep for reference
+          remaining_qty: remaining,          // what's left
+          unit_price: item.unit_price,
+          return_qty: remaining,             // default: return all remaining
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  
+    setReturnTarget(cs);
+    setReturnItems(items);
+    setReturnRefundMethod("cash");
+    setReturnCashRefund("");
+    setReturnMpesaRefund("");
+    setReturnAgent(null);
+    setReturnPin("");
+    setReturnPinError("");
+    setReturnError("");
+  };
 
   const startPinCountdown = useCallback((until: number) => {
     if (pinLockTimerRef.current) clearInterval(pinLockTimerRef.current);
@@ -351,9 +408,26 @@ export default function PosRequests() {
     if (!shop) return;
     setCreditLoading(true);
     const { data } = await supabase.rpc("get_shop_credit_sales", { p_shop_id: shop.id });
-    setCreditSales((data || []) as CreditSale[]);
+    const salesData = (data || []) as CreditSale[];
+    setCreditSales(salesData);
     setCreditLoading(false);
+  
+    // Fetch returns for all sales
+    const saleIds = salesData.map((s: CreditSale) => s.id);
+    if (saleIds.length > 0) {
+      const { data: returnsData } = await supabase.rpc("get_transaction_returns", { p_transaction_ids: saleIds });
+      const returnsMap: Record<string, TransactionReturn[]> = {};
+      for (const ret of (returnsData || [])) {
+        const tid = (ret as TransactionReturn).original_transaction_id;
+        if (!returnsMap[tid]) returnsMap[tid] = [];
+        returnsMap[tid].push(ret as TransactionReturn);
+      }
+      setCreditReturns(returnsMap);
+    } else {
+      setCreditReturns({});
+    }
   }, [shop]);
+
 
   useEffect(() => { fetchCreditSales(); }, [fetchCreditSales]);
 
@@ -711,38 +785,89 @@ export default function PosRequests() {
 
   const handleMarkReturned = async (_agent: ShopAgent) => {
     if (!returnTarget || !shop) return;
-    if (!isOnline) { setReturnError("Marking a return requires an internet connection. This restores stock on the server and cannot be done offline."); return; }
-    const totalRefund = returnTarget.items.reduce((s, i) => s + i.subtotal, 0);
-    if (returnRefundMethod === "split") {
-      const c = Number(returnCashRefund) || 0, m = Number(returnMpesaRefund) || 0;
-      if (!returnCashRefund || !returnMpesaRefund) { setReturnError("Enter both Cash and M-Pesa amounts for split refund."); return; }
-      if (Math.abs(c + m - totalRefund) > 0.5) { setReturnError(`Cash + M-Pesa must equal ${fmt(totalRefund)}.`); return; }
-    }
-    setReturnProcessing(true);
-
-    // Single RPC: restores stock + marks returned + inserts transaction_returns atomically
-    const { error: returnErr } = await supabase.rpc("mark_credit_returned", {
-      p_credit_sale_id:  returnTarget.id,
-      p_shop_id:         shop.id,
-      p_owner_id:        shop.owner_id,
-      p_seller_agent_id: returnTarget.seller_agent_id ?? null,
-      p_seller_name:     returnTarget.seller_name ?? null,
-      p_items:           returnTarget.items,
-    });
-    if (returnErr) {
-      setReturnProcessing(false);
-      setReturnError(`Failed to process return: ${returnErr.message}`);
+    if (!isOnline) {
+      setReturnError("Return requires an internet connection (restores stock on server).");
       return;
     }
-
-    resetReturnModal();
-    fetchCreditSales();
+  
+    // Validate at least one item returned
+    const selectedItems = returnItems.filter(it => it.return_qty > 0);
+    // Ensure no item exceeds its remaining quantity
+    for (const item of selectedItems) {
+      if (item.return_qty > item.remaining_qty) {
+        setReturnError(`Cannot return more than remaining for ${item.product_name}.`);
+        return;
+      }
+    }
+    if (selectedItems.length === 0) {
+      setReturnError("Select at least one item to return.");
+      return;
+    }
+  
+    const totalRefund = selectedItems.reduce((s, it) => s + it.return_qty * it.unit_price, 0);
+    const cash = Math.round(Number(returnCashRefund) || 0);
+    const mpesa = Math.round(Number(returnMpesaRefund) || 0);
+    const tot = cash + mpesa;
+  
+    if (tot > 0 && Math.abs(tot - totalRefund) > 0.5) {
+      setReturnError(`Refund total (${fmt(tot)}) must equal ${fmt(totalRefund)}.`);
+      return;
+    }
+    
+    const method = tot > 0
+      ? (cash > 0 && mpesa > 0 ? "split" : mpesa > 0 ? "mpesa" : "cash")
+      : "cash"; // no refund given – use cash with 0 amounts
+  
+  
+    // Build items array for RPC
+    const itemsForRpc = selectedItems.map(it => ({
+      product_id: it.product_id,
+      quantity_returned: it.return_qty,
+      unit_price: it.unit_price,
+    }));
+  
+    setReturnProcessing(true);
+    try {
+      const { error } = await supabase.rpc("process_credit_return", {
+        p_credit_sale_id: returnTarget.id,
+        p_shop_id: shop.id,
+        p_owner_id: shop.owner_id,
+        p_items: itemsForRpc,
+        p_actor_name: _agent.agent.name,
+        p_actor_code: _agent.agent.agent_id,
+        p_refund_method: method,
+        p_cash_amount: cash,
+        p_mpesa_amount: mpesa,
+        p_reason: "Customer return",
+      });
+      if (error) {
+        console.error("Return error:", error);
+        setReturnError(error.message || "Failed to process return.");
+        setReturnProcessing(false);
+        return;
+      }
+      // Success: reset and refresh
+      resetReturnModal();
+      fetchCreditSales();
+      // Also refresh payments for this sale if needed
+      if (returnTarget.id) fetchPaymentsFor(returnTarget.id);
+    } catch (e: any) {
+      setReturnError(e.message || "Unknown error");
+      setReturnProcessing(false);
+    }
   };
 
   const resetReturnModal = () => {
     setReturnTarget(null);
-    setReturnRefundMethod("cash"); setReturnCashRefund(""); setReturnMpesaRefund("");
-    setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); setReturnProcessing(false);
+    setReturnItems([]);
+    setReturnRefundMethod("cash"); 
+    setReturnCashRefund("");
+     setReturnMpesaRefund("");
+    setReturnAgent(null);
+     setReturnPin(""); 
+     setReturnPinError(""); 
+     setReturnError(""); 
+     setReturnProcessing(false);
     resetPinLockout();
   };
 
@@ -1454,8 +1579,23 @@ export default function PosRequests() {
                                     </div>
                                   </div>
                                   <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
-                                    {cs.items.map(i => `${i.product_name} ×${i.quantity}`).join(", ")}
-                                  </div>
+                                      {(() => {
+                                        const returnsForSale = creditReturns[cs.id] || [];
+                                        const returnedMap: Record<string, number> = {};
+                                        for (const ret of returnsForSale) {
+                                          if (ret.product_id) {
+                                            returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+                                          }
+                                        }
+                                        return cs.items
+                                          .map(item => {
+                                            const returned = returnedMap[item.product_id] || 0;
+                                            const remaining = item.quantity - returned;
+                                            return `${item.product_name} ×${remaining}`;
+                                          })
+                                          .join(", ");
+                                      })()}
+                                    </div>
                                   <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>CR-{cs.id.slice(0, 8).toUpperCase()}</div>
                                 </div>
                                 <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
@@ -1472,19 +1612,32 @@ export default function PosRequests() {
 
                               {isExpanded && (
                                 <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
-                                  <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, background: "rgba(255,255,255,0.01)" }}>
-                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Items</div>
-                                    {cs.items.map((item, idx) => (
-                                      <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
-                                        <span>{item.quantity}× {item.product_name}</span>
-                                        <span>{fmt(item.subtotal)}</span>
+                                <div style={{ padding: "10px 16px", display: "flex", flexDirection: "column", gap: 4, background: "rgba(255,255,255,0.01)" }}>
+                                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Items</div>
+                                      {(() => {
+                                        const returnsForSale = creditReturns[cs.id] || [];
+                                        const returnedMap: Record<string, number> = {};
+                                        for (const ret of returnsForSale) {
+                                          if (ret.product_id) {
+                                            returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+                                          }
+                                        }
+                                        return cs.items.map((item, idx) => {
+                                          const returned = returnedMap[item.product_id] || 0;
+                                          const remaining = item.quantity - returned;
+                                          return (
+                                            <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
+                                              <span>{remaining}× {item.product_name}</span>
+                                              <span>{fmt(item.subtotal)}</span>
+                                            </div>
+                                          );
+                                        });
+                                      })()}
+                                      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 4 }}>
+                                        <span style={{ color: theme.text.muted }}>Total</span>
+                                        <span style={{ color: theme.accent.gold, fontWeight: 700 }}>{fmt(cs.amount)}</span>
                                       </div>
-                                    ))}
-                                    <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 4 }}>
-                                      <span style={{ color: theme.text.muted }}>Total</span>
-                                      <span style={{ color: theme.accent.gold, fontWeight: 700 }}>{fmt(cs.amount)}</span>
                                     </div>
-                                  </div>
 
                                   <div style={{ padding: "10px 16px 12px", borderTop: `1px solid ${theme.border.default}` }}>
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
@@ -1533,10 +1686,36 @@ export default function PosRequests() {
 
                                   {isOpen && (
                                     <div style={{ padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
-                                      <button onClick={() => { setReturnTarget(cs); setReturnRefundMethod("cash"); setReturnCashRefund(""); setReturnMpesaRefund(""); setReturnAgent(null); setReturnPin(""); setReturnPinError(""); setReturnError(""); }}
-                                        style={{ width: "100%", padding: "10px", background: "rgba(107,114,128,0.1)", border: "1px solid rgba(107,114,128,0.25)", borderRadius: 10, color: "#9ca3af", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-                                        ↩ Mark Returned
-                                      </button>
+                           <button
+                                  onClick={() => openReturnModal(cs)}
+                                  style={{
+                                    width: "100%",
+                                    padding: "10px 14px",
+                                    background: "rgba(248,113,113,0.08)",
+                                    border: "1px solid rgba(248,113,113,0.3)",
+                                    borderRadius: 10,
+                                    color: "#f87171",
+                                    fontFamily: theme.font.mono,
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                    cursor: "pointer",
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    gap: 8,
+                                    transition: "all 0.15s",
+                                  }}
+                                  onMouseEnter={(e) => {
+                                    e.currentTarget.style.background = "rgba(248,113,113,0.15)";
+                                    e.currentTarget.style.borderColor = "rgba(248,113,113,0.5)";
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    e.currentTarget.style.background = "rgba(248,113,113,0.08)";
+                                    e.currentTarget.style.borderColor = "rgba(248,113,113,0.3)";
+                                  }}
+                                >
+                                  ↩ Return Items
+                                </button>
                                     </div>
                                   )}
                                 </div>
@@ -1893,94 +2072,168 @@ export default function PosRequests() {
         </div>
         );
       })()}
-
-      {/* ══ MARK RETURNED MODAL ══ */}
-      {returnTarget && (
-        <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
-          onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}>
-          <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <div>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>Mark as Returned</div>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                  {returnTarget.customer_name} · Stock will be restored
-                </div>
-              </div>
-              <button onClick={resetReturnModal} style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px" }}>✕</button>
+     {/* ══ MARK RETURNED MODAL ══ */}
+{returnTarget && (() => {
+  const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
+  return (
+    <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
+      onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}>
+      <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>Partial Return</div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+              {returnTarget.customer_name} · Select items to return
             </div>
+          </div>
+          <button onClick={resetReturnModal} style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px" }}>✕</button>
+        </div>
 
-            <div style={{ background: "rgba(107,114,128,0.06)", border: "1px solid rgba(107,114,128,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 6 }}>
-              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items to restore</div>
-              {returnTarget.items.map((item, idx) => (
-                <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontFamily: theme.font.mono }}>
-                  <span style={{ color: theme.text.secondary }}>{item.quantity}× {item.product_name}</span>
-                  <span style={{ color: theme.text.muted }}>{fmt(item.subtotal)}</span>
-                </div>
-              ))}
-            </div>
-
-            {/* Refund method */}
-            {(() => {
-              const totalRefund = returnTarget.items.reduce((s, i) => s + i.subtotal, 0);
-              return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div>
-                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                      Refund Method · Total: {fmt(totalRefund)}
-                    </label>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                      {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
-                        <button key={key} type="button" onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
-                          style={{ padding: "10px 8px", border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: returnRefundMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                          <span style={{ fontSize: 18 }}>{icon}</span>
-                          <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
-                        </button>
-                      ))}
+        {/* Item list with quantity controls */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {returnItems.map((item, idx) => {
+            const maxQ = item.remaining_qty;
+            const refund = item.return_qty * item.unit_price;
+            return (
+              <div key={idx} style={{ background: theme.bg.input, borderRadius: 12, padding: "12px 14px", border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}` }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13 }}>{item.product_name}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                       {fmt(item.unit_price)}/unit · Remaining: {item.remaining_qty}
                     </div>
                   </div>
-                  {returnRefundMethod === "split" && (
-                    <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24" }}>⚡ Split refund — Total: {fmt(totalRefund)}</div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                        <div>
-                          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
-                          <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                            onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                            placeholder="0" />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                          <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                            onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                            placeholder="0" />
-                        </div>
-                      </div>
+                  {item.return_qty > 0 && (
+                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", flexShrink: 0 }}>
+                      -{fmt(refund)}
                     </div>
                   )}
                 </div>
-              );
-            })()}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
+                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Return:</span>
+                  <button onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.max(0, it.return_qty - 1) } : it))}
+                    style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer" }}>
+                    −
+                  </button>
+                  <input
+                    type="text" inputMode="numeric" value={item.return_qty}
+                    onChange={e => {
+                      const val = parseInt(e.target.value) || 0;
+                      setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, Math.max(0, val)) } : it));
+                    }}
+                    style={{ width: 54, textAlign: "center", padding: "6px 8px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, outline: "none" }}
+                  />
+                  <button onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, it.return_qty + 1) } : it))}
+                    style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer" }}>
+                    +
+                  </button>
+                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>of {maxQ}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
 
-            <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
-              ⚠ This will restore stock and mark the sale as returned. This cannot be undone.
+        {/* Refund summary */}
+        {totalRefund > 0 && (
+          <div style={{ padding: "12px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, display: "flex", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Total Refund</span>
+            <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
+          </div>
+        )}
+
+        {/* Refund method and amounts */}
+        {totalRefund > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div>
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                Refund Method
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
+                  <button key={key} type="button" onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
+                    style={{ padding: "10px 8px", border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: returnRefundMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 18 }}>{icon}</span>
+                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
+                  </button>
+                ))}
+              </div>
             </div>
-
-            {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
-
-            {!returnAgent ? (
+            {returnRefundMethod === "split" ? (
+              <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24" }}>⚡ Split refund — Total: {fmt(totalRefund)}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
+                    <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      placeholder="0" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                    <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      placeholder="0" />
+                  </div>
+                </div>
+              </div>
+            ) : returnRefundMethod === "cash" ? (
               <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Confirm your identity</label>
-                <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
+                <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash Amount</label>
+                <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                  onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
+                  placeholder={String(totalRefund)} />
               </div>
             ) : (
               <div>
-                <SelectedAgentRow agent={returnAgent} onClear={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }} />
-                <PinKeypad selectedAgent={returnAgent} pin={returnPin} setPin={setReturnPin} pinError={returnPinError} setPinError={setReturnPinError} pinShake={returnPinShake} setPinShake={setReturnPinShake} processing={returnProcessing} onVerify={handleMarkReturned} />
+                <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa Amount</label>
+                <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                  onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
+                  placeholder={String(totalRefund)} />
+              </div>
+            )}
+            {totalRefund > 0 && (
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 9 }}>
+                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  {(() => {
+                    const c = Math.round(Number(returnCashRefund) || 0);
+                    const m = Math.round(Number(returnMpesaRefund) || 0);
+                    const tot = c + m;
+                    if (tot === 0) return "Enter amounts";
+                    if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
+                    if (tot > totalRefund) return "⚠ Over";
+                    return `⚠ Under by ${fmt(totalRefund - tot)}`;
+                  })()}
+                </span>
+                <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
+                  {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
+                </span>
               </div>
             )}
           </div>
+        )}
+
+        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
+          ⚠ This will restore stock for the returned items and reduce the customer’s balance. This cannot be undone.
         </div>
-      )}
+
+        {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
+
+        {!returnAgent ? (
+          <div>
+            <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Confirm your identity</label>
+            <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
+          </div>
+        ) : (
+          <div>
+            <SelectedAgentRow agent={returnAgent} onClear={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }} />
+            <PinKeypad selectedAgent={returnAgent} pin={returnPin} setPin={setReturnPin} pinError={returnPinError} setPinError={setReturnPinError} pinShake={returnPinShake} setPinShake={setReturnPinShake} processing={returnProcessing} onVerify={handleMarkReturned} />
+          </div>
+        )}
+      </div>
+    </div>
+  );
+  })()}
     </div>
   );
 }

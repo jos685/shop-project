@@ -194,6 +194,36 @@ export default function PosShopInfo() {
         }));
 
       setStock(freshStock);
+
+       // Update the PosScan cache as well so both pages stay in sync
+    try {
+      // Update the product cache used by PosScan
+      const productData = freshStock.map(item => ({
+        id: item.id,
+        allocated: item.allocated,
+        remaining: item.remaining,
+        product: {
+          id: item.product.id,
+          name: item.product.name,
+          sku: item.product.sku,
+          price: item.product.price,
+          unit: item.product.unit,
+          image_url: item.product.image_url,
+        }
+      }));
+      
+      // Also update the main cache used by PosScan
+      const cacheKey = `pos_cache_${shop.id}`;
+      const existingCache = localStorage.getItem(cacheKey);
+      if (existingCache) {
+        const parsed = JSON.parse(existingCache);
+        parsed.products = productData;
+        localStorage.setItem(cacheKey, JSON.stringify(parsed));
+      }
+    } catch (cacheError) {
+      console.error("Failed to update cache:", cacheError);
+    }
+    
       setAgents(hydratedAgents);
       setIsOfflineData(false);
 
@@ -209,6 +239,63 @@ export default function PosShopInfo() {
   }, [shop]);
 
   useEffect(() => { fetchInfo(); }, [fetchInfo]);
+
+  // ── Listen for stock changes from other pages (returns, adjustments) ──
+useEffect(() => {
+  if (!shop) return;
+  
+  const handleStockChange = (e: Event) => {
+    const detail = (e as CustomEvent).detail;
+    if (detail?.shopId === shop.id) {
+      // Refetch stock data
+      fetchInfo();
+    }
+  };
+  
+  window.addEventListener('shop:stock_changed', handleStockChange);
+  
+  // Also listen for visibility changes (user coming back to this tab)
+  const onVisibilityChange = () => {
+    if (document.visibilityState === 'visible') {
+      fetchInfo();
+    }
+  };
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  
+  return () => {
+    window.removeEventListener('shop:stock_changed', handleStockChange);
+    document.removeEventListener('visibilitychange', onVisibilityChange);
+  };
+}, [shop, fetchInfo]);
+
+// ── Realtime stock updates from database ──
+useEffect(() => {
+  if (!shop) return;
+  
+  // Get all product IDs that this shop has stock for
+  const productIds = stock.map(item => item.product.id);
+  if (productIds.length === 0) return;
+  
+  const channel = supabase.channel(`shop-stock-${shop.id}`)
+    .on(
+      'postgres_changes',
+      {
+        event: 'UPDATE',
+        schema: 'public',
+        table: 'products',
+        filter: `id=in.(${productIds.join(',')})`,
+      },
+      () => {
+        // Product stock updated - refresh stock data
+        fetchInfo();
+      }
+    )
+    .subscribe();
+  
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}, [shop, stock.map(item => item.product.id).join(','), fetchInfo]);
 
   // ── fetch today's stats ───────────────────────────────────────────────
   const fetchStats = useCallback(async () => {

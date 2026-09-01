@@ -307,6 +307,7 @@ export default function PosTransactionsPage() {
   }
 
   async function handleReturn() {
+    //console.log("🔁 handleReturn called");
     if (!returnModal || !shop) return;
     if (!returnReason.trim()) { setReturnError("Please provide a reason for the return."); return; }
     const toReturn = returnModal.items.filter(i => i.return_qty > 0);
@@ -318,13 +319,12 @@ export default function PosTransactionsPage() {
       setReturnError("Enter a Cash or M-Pesa refund amount.");
       return;
     }
-
+  
     setReturnProcessing(true);
     setReturnError("");
     try {
       const firstItem  = returnModal.group.items[0];
       const totalRefundAmt = totalRefund;
-      // Auto-detect method from what was actually entered
       const autoMethod = refundCashTotal > 0 && refundMpesaTotal > 0 ? "split"
                        : refundMpesaTotal > 0 ? "mpesa" : "cash";
       let allocCash = 0, allocMpesa = 0;
@@ -366,8 +366,48 @@ export default function PosTransactionsPage() {
       });
       const { error } = await supabase.rpc("insert_transaction_returns", { p_rows: rows });
       if (error) { setReturnError(error.message); setReturnProcessing(false); return; }
+  
+      // ─── UPDATE SHOP ALLOCATION STOCK USING RPC (bypasses RLS) ────
+            for (const item of toReturn) {
+              if (!item.product_id) {
+                console.warn("Return item missing product_id, skipping stock update");
+                continue;
+              }
 
-      // Update shop_credit_sales balance for credit items so customer no longer owes for returned goods
+              const { error: rpcError } = await supabase.rpc('update_shop_allocation', {
+                p_shop_id: shop.id,
+                p_product_id: item.product_id,
+                p_quantity: item.return_qty
+              });
+
+              if (rpcError) {
+                console.error("RPC update error for", item.product_id, ":", rpcError);
+              } else {
+               // console.log(`✅ RPC stock update success for ${item.product_id} (+${item.return_qty})`);
+              }
+            }
+      // After the loop, verify the first product's remaining from DB
+              // After the loop, verify the first product's remaining from DB
+          // if (toReturn.length > 0 && toReturn[0].product_id) {
+          //   const { data: verifyData, error: verifyError } = await supabase
+          //     .from("shop_allocations")
+          //     .select("remaining")
+          //     .eq("shop_id", shop.id)
+          //     .eq("product_id", toReturn[0].product_id)
+          //     .maybeSingle();
+          //   if (verifyError) {
+          //     console.error("Verification error:", verifyError);
+          //   } else {
+          //     //console.log("🔍 Verification after update:", verifyData?.remaining);
+          //   }
+          // }
+
+          // Broadcast stock change
+          window.dispatchEvent(new CustomEvent('shop:stock_changed', {
+            detail: { shopId: shop.id, timestamp: Date.now() }
+          }));
+ 
+      // Update shop_credit_sales balance for credit items
       const creditItems = toReturn.filter(i => (i.status === "credit" || i.status === "credit_partial") && i.credit_sale_id);
       for (const item of creditItems) {
         const { data: cs } = await supabase
@@ -388,8 +428,8 @@ export default function PosTransactionsPage() {
             .eq("id", cs.id);
         }
       }
-
-      // Update local returnsMap — reuse rows so cash/mpesa amounts match what was sent to DB
+  
+      // Update local returnsMap
       setReturnsMap(prev => {
         const next = { ...prev };
         for (const row of rows) {
