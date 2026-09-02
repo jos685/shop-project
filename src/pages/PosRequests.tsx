@@ -263,6 +263,32 @@ export default function PosRequests() {
   const [sendStmtError,   setSendStmtError]   = useState("");
   const [sendStmtSent,    setSendStmtSent]    = useState(false);
 
+
+  // receipts for credit sales helper function
+  const getOutstandingItems = (cs: CreditSale): { name: string; quantity: number; unit_price: number; total: number }[] => {
+    const returnsForSale = creditReturns[cs.id] || [];
+    const returnedMap: Record<string, number> = {};
+    for (const ret of returnsForSale) {
+      if (ret.product_id) {
+        returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+      }
+    }
+    return cs.items
+      .map(item => {
+        const returned = returnedMap[item.product_id] || 0;
+        const remaining = item.quantity - returned;
+        if (remaining <= 0) return null;
+        return {
+          name: item.product_name,
+          quantity: remaining,
+          unit_price: item.unit_price,
+          total: remaining * item.unit_price,
+        };
+      })
+      .filter((item): item is NonNullable<typeof item> => item !== null);
+  };
+
+
   // ── Shared PIN lockout ────────────────────────────────────────────────
   const PIN_MAX_FAILS   = 5;
   const PIN_LOCKOUT_MS  = 30_000;
@@ -903,18 +929,18 @@ export default function PosRequests() {
     if (!sendStmtGroup || !shop) return;
     const phone = sendStmtPhone.trim();
     if (!phone) { setSendStmtError("Please enter a phone number."); return; }
-
+  
     setSendStmtSending(true);
     setSendStmtError("");
-
+  
     const openSales = sendStmtGroup.sales.filter(cs => cs.status === "pending" || cs.status === "partial");
-    const allItems  = openSales.flatMap(cs =>
-      cs.items.map(item => ({ name: item.product_name, quantity: item.quantity, unit_price: item.unit_price, total: item.subtotal }))
-    );
-    const totalAmount = openSales.reduce((s, cs) => s + cs.amount, 0);
-    const totalPaid   = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
-    const balanceDue  = totalAmount - totalPaid;
-
+    
+    // ── Compute outstanding items for each sale ──
+    const allItems = openSales.flatMap(cs => getOutstandingItems(cs));
+    const totalAmount = allItems.reduce((s, item) => s + item.total, 0);
+    const totalPaid = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
+    const balanceDue = totalAmount - totalPaid;
+  
     try {
       const { data } = await supabase.functions.invoke("send-receipt", {
         body: {
@@ -922,7 +948,7 @@ export default function PosRequests() {
           business_name: businessName || shop.name || "Business",
           agent_name:    openSales[0]?.seller_name ?? "",
           customer_name: sendStmtGroup.customer_name,
-          items:         allItems,
+          items:         allItems,  // now only outstanding items
           total_amount:  totalAmount,
           payment_method: "credit",
           initial_payment: totalPaid,
@@ -1757,16 +1783,17 @@ export default function PosRequests() {
               <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, lineHeight: 1.6, whiteSpace: "pre-line" }}>
                 {(() => {
                   const openSales = sendStmtGroup.sales.filter(cs => cs.status === "pending" || cs.status === "partial");
-                  const itemLines = openSales.flatMap(cs => cs.items).map(i => `${i.product_name} x${i.quantity} - ${fmt(i.subtotal)}`).join("\n");
-                  const total     = openSales.reduce((s, cs) => s + cs.amount, 0);
-                  const paid      = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
-                  const balance   = total - paid;
-                  const label     = openSales.length > 1 ? "[ CREDIT STATEMENT ]" : "[ CREDIT SALE ]";
+                  const allItems = openSales.flatMap(cs => getOutstandingItems(cs));
+                  const total = allItems.reduce((s, item) => s + item.total, 0);
+                  const paid = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
+                  const balance = total - paid;
+                  const label = openSales.length > 1 ? "[ CREDIT STATEMENT ]" : "[ CREDIT SALE ]";
+                  const itemLines = allItems.map(i => `${i.name} x${i.quantity} - ${fmt(i.total)}`).join("\n");
                   return [
                     `Thank you for choosing ${businessName || shop?.name || "Business"}!`,
                     label,
                     "────────────",
-                    itemLines,
+                    itemLines || "(No outstanding items)",
                     "────────────",
                     `Total: ${fmt(total)}`,
                     ...(paid > 0 ? [`${openSales.length > 1 ? "Paid So Far" : "Paid Now"}: ${fmt(paid)}`] : []),
