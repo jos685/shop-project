@@ -44,7 +44,28 @@ export default function PosShopInfo() {
   const location = useLocation();
   const width = useWindowWidth();
   const isMobile = width < 640;
+  const isWide   = width >= 1024; 
 
+  // ── Expanded product card (shows recent tx + allocation) ──
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [txHistory,  setTxHistory]  = useState<Record<string, any[]>>({});
+  const [txLoading,  setTxLoading]  = useState<Set<string>>(new Set());
+
+  // ── Image lightbox ──
+ const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
+ 
+ // ── Lightbox: Esc to close + lock body scroll ──
+useEffect(() => {
+  if (!lightbox) return;
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setLightbox(null); };
+  window.addEventListener("keydown", onKey);
+  const prevOverflow = document.body.style.overflow;
+  document.body.style.overflow = "hidden";
+  return () => {
+    window.removeEventListener("keydown", onKey);
+    document.body.style.overflow = prevOverflow;
+  };
+}, [lightbox]);
   const [stock,           setStock]           = useState<StockItem[]>([]);
   const [agents,          setAgents]          = useState<ShopAgent[]>([]);
   const [loading,         setLoading]         = useState(true);
@@ -73,7 +94,6 @@ export default function PosShopInfo() {
 
   // Today's stats
   const [todaySales,   setTodaySales]   = useState(0);
-  const [todayRevenue, setTodayRevenue] = useState(0);
   const [todayCash,    setTodayCash]    = useState(0);
   const [todayMpesa,   setTodayMpesa]   = useState(0);
   const [statsLoading, setStatsLoading] = useState(true);
@@ -313,7 +333,6 @@ useEffect(() => {
     if (error) console.error("fetchStats error:", error.message, error.code);
     if (data) {
       setTodaySales(data.length);
-      setTodayRevenue(data.reduce((s: number, t: any) => s + t.amount, 0));
       setTodayCash(data.reduce((s: number, t: any) => s + (t.cash_amount  ?? 0), 0));
       setTodayMpesa(data.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
     }
@@ -330,8 +349,59 @@ useEffect(() => {
     return () => { supabase.removeChannel(ch); };
   }, [shop, fetchStats]);
 
-  const totalStockValue     = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.remaining,  0);
-  const totalAllocatedValue = stock.reduce((s, i) => s + (i.product?.price ?? 0) * i.allocated, 0);
+  const loadProductTx = useCallback(async (productId: string) => {
+    if (!shop || txHistory[productId]) return;
+    setTxLoading(prev => new Set(prev).add(productId));
+    try {
+      // shop_transactions is flat — one row per product line.
+      // No join table needed; every field we want is right here.
+      const { data: rows, error } = await supabase
+        .from("shop_transactions")
+        .select("id, quantity, unit_price, amount, payment_method, cash_amount, mpesa_amount, seller_agent_id, created_at, status")
+        .eq("shop_id", shop.id)
+        .eq("product_id", productId)
+        .order("created_at", { ascending: false })
+        .limit(20);
+  
+      if (error) throw error;
+  
+      // Resolve seller name locally from the already-loaded shopAgents list.
+      // shopAgents[].agent.id === shop_transactions.seller_agent_id
+      const agentNameById = new Map<string, string>();
+      for (const sa of agents) {
+        if (sa.agent?.id) agentNameById.set(sa.agent.id, sa.agent.name || "Agent");
+      }
+  
+      const merged = (rows || []).map((r: any) => ({
+        id:             r.id,
+        quantity:       r.quantity,
+        unit_price:     r.unit_price,
+        amount:         r.amount,
+        payment_method: r.payment_method,
+        cash_amount:    r.cash_amount,
+        mpesa_amount:   r.mpesa_amount,
+        created_at:     r.created_at,
+        status:         r.status,
+        agent_name:     r.seller_agent_id ? (agentNameById.get(r.seller_agent_id) ?? "—") : "—",
+      }));
+  
+      setTxHistory(prev => ({ ...prev, [productId]: merged }));
+    } catch (err) {
+      console.error("loadProductTx error:", err);
+      setTxHistory(prev => ({ ...prev, [productId]: [] }));
+    } finally {
+      setTxLoading(prev => { const n = new Set(prev); n.delete(productId); return n; });
+    }
+  }, [shop, txHistory, agents]);   // ← agents in deps so name lookup stays fresh
+  
+  const toggleExpand = (productId: string) => {
+    setExpandedId(prev => {
+      const next = prev === productId ? null : productId;
+      if (next) loadProductTx(next);
+      return next;
+    });
+  };
+
   const filteredStock = stock
   .filter(item => {
     const q = stockSearch.trim().toLowerCase();
@@ -341,10 +411,15 @@ useEffect(() => {
     .sort((a, b) => a.product.name.localeCompare(b.product.name));
 
   return (
-    <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
+   <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
         @keyframes fadeUp { from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)} }
+        @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes zoomIn { from{opacity:0;transform:scale(0.92)} to{opacity:1;transform:scale(1)} }
+        .thumb { transition: transform 0.15s ease, border-color 0.15s ease; }
+        .thumb-clickable:hover { transform: scale(1.08); border-color: rgba(6,182,212,0.55) !important; }
         @keyframes spin   { to{transform:rotate(360deg)} }
         .section    { animation: fadeUp 0.3s ease both; }
         .stock-row  { transition: background 0.1s; }
@@ -353,16 +428,52 @@ useEffect(() => {
       `}</style>
 
       {/* ── Header ── */}
-      <div style={{ borderBottom: `1px solid ${theme.border.default}`, padding: isMobile ? "14px 16px" : "20px 40px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div>
-          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 18 : 22 }}>Shop Info</div>
-          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{shop?.name} · {shop?.shop_code}</div>
-        </div>
-        <button onClick={() => { fetchInfo(); fetchStats(); }}
-          style={{ background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 9, padding: "8px 14px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer" }}>
-          ↺ Refresh
-        </button>
+      {!isMobile && (
+      <div style={{ 
+        borderBottom: `1px solid ${theme.border.default}`, 
+        padding: "20px 40px", 
+        display: "flex", 
+        alignItems: "center", 
+        justifyContent: "space-between" 
+      }}>
+    
+     <div>
+      <div style={{ 
+        fontFamily: theme.font.display, 
+        fontWeight: 800, 
+        fontSize: 22 
+      }}>
+        Shop Info
       </div>
+
+      <div style={{ 
+        fontSize: 11, 
+        fontFamily: theme.font.mono, 
+        color: theme.text.muted, 
+        marginTop: 2 
+      }}>
+        {shop?.name} · {shop?.shop_code}
+      </div>
+     </div>
+
+     <button
+      onClick={() => { fetchInfo(); fetchStats(); }}
+      style={{
+        background: "rgba(6,182,212,0.08)",
+        border: "1px solid rgba(6,182,212,0.2)",
+        borderRadius: 9,
+        padding: "8px 14px",
+        color: theme.accent.cyan,
+        fontFamily: theme.font.mono,
+        fontSize: 12,
+        cursor: "pointer"
+      }}
+     >
+      ↺ Refresh
+    </button>
+
+  </div>
+)}
 
       {/* ── Today's Summary ── */}
       <div style={{ padding: isMobile ? "14px 16px" : "16px 40px", borderBottom: `1px solid ${theme.border.default}` }}>
@@ -375,7 +486,6 @@ useEffect(() => {
           <div style={{ display: "grid", gridTemplateColumns: queuedCount > 0 ? `repeat(${isMobile ? 2 : 5},1fr)` : "repeat(4,1fr)", gap: 8 }}>
             {[
               { label: "Sales",   value: String(todaySales), color: theme.text.primary, icon: "🧾", sub: "transactions", queued: false },
-              { label: "Revenue", value: fmt(todayRevenue),  color: theme.accent.gold,  icon: "💰", sub: "total earned",  queued: false },
               { label: "Cash",    value: fmt(todayCash),     color: "#34d399",           icon: "💵", sub: "cash",          queued: false },
               { label: "M-Pesa",  value: fmt(todayMpesa),    color: "#60a5fa",           icon: "📱", sub: "mobile",        queued: false },
               ...(queuedCount > 0
@@ -467,19 +577,7 @@ useEffect(() => {
                       )}
                     </div>
                   )}
-                <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 12, marginBottom: 24 }}>
-                  {[
-                    { label: "Products",       value: String(stock.length),     color: theme.accent.cyan  },
-                    { label: "Stock Value",     value: fmt(totalStockValue),     color: theme.accent.gold  },
-                    { label: "Total Allocated", value: fmt(totalAllocatedValue), color: theme.accent.green },
-                  ].map(({ label, value, color }) => (
-                    <div key={label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "16px 18px" }}>
-                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>{label}</div>
-                      <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: isMobile ? 18 : 20, color }}>{value}</div>
-                    </div>
-                  ))}
-                </div>
-
+              
                 {filteredStock.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
                     {stockSearch ? (
@@ -498,7 +596,7 @@ useEffect(() => {
                     <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
                     <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
                   </div>
-                ) 
+                  ) 
                 : (
                   <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
                     {!isMobile && (
@@ -508,87 +606,187 @@ useEffect(() => {
                         ))}
                       </div>
                     )}
-                    {filteredStock.map((item, i) => {
-                      const sold = item.allocated - item.remaining;
-                      const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
-                      const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
-                      return (
-                        <div key={item.id} className="stock-row"
-                          style={{ borderBottom: i < filteredStock.length - 1 ? `1px solid ${theme.border.default}` : "none", padding: isMobile ? "16px" : "16px 20px" }}>
-                          {isMobile ? (
-                            <div>
-                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-                                  <div style={{ width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, position: "relative" }}>
-                                    <span style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
-                                    {item.product.image_url && (
-                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
-                                    )}
-                                  </div>
-                                  <div style={{ minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{item.product.name}</div>
-                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku}</div>
-                                  </div>
-                                </div>
-                                <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{item.product.unit} left</div>
-                                </div>
-                              </div>
-                              <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 12 }}>
-                                <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
-                              </div>
-                              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                                {[
-                                  { label: "Price",     value: fmt(item.product.price), color: theme.accent.gold  },
-                                  { label: "Allocated", value: String(item.allocated),  color: theme.text.primary },
-                                  { label: "Sold",      value: String(sold),            color: theme.accent.green },
-                                ].map(({ label, value, color }) => (
-                                  <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                                    <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
-                                  </div>
-                                ))}
-                              </div>
-                              {item.remaining === 0 && (
-                                <div style={{ marginTop: 10, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, textAlign: "center" }}>
-                                  ⚠ Out of stock — contact supervisor to restock
-                                </div>
-                              )}
-                            </div>
-                          ) : (
-                            <div>
-                              <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 90px 90px", gap: 12, alignItems: "center", marginBottom: 8 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                  <div style={{ width: 36, height: 36, borderRadius: 9, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, position: "relative" }}>
-                                    <span style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
-                                    {item.product.image_url && (
-                                      <img src={item.product.image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
-                                    )}
-                                  </div>
-                                  <div>
-                                    <div style={{ fontWeight: 600, fontSize: 14, marginBottom: 2 }}>{item.product.name}</div>
-                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{item.product.sku} · {item.product.unit}</div>
-                                  </div>
-                                </div>
-                                <div style={{ fontFamily: theme.font.mono, fontWeight: 600, color: theme.accent.gold }}>{fmt(item.product.price)}</div>
-                                <div style={{ fontFamily: theme.font.mono, color: theme.text.secondary }}>{item.allocated}</div>
-                                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 16, color: sc }}>{item.remaining}</div>
-                                <div style={{ fontFamily: theme.font.mono, color: theme.accent.green }}>{sold}</div>
-                              </div>
-                              <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 4, height: 4, overflow: "hidden" }}>
-                                <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
-                              </div>
-                              {item.remaining === 0 && (
-                                <div style={{ marginTop: 6, fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red }}>⚠ Out of stock</div>
-                              )}
-                            </div>
-                          )}
+                           {filteredStock.length === 0 ? (
+  <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+    {stockSearch ? (
+      <>
+        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
+        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
+      </>
+    ) : (
+      <>
+        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
+        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
+        <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
+      </>
+    )}
+  </div>
+) : (
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
+    gap: 12,
+  }}>
+    {filteredStock.map(item => {
+      const sold = item.allocated - item.remaining;
+      const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
+      const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
+      const isExpanded = expandedId === item.product.id;
+      const history    = txHistory[item.product.id];
+      const isLoading  = txLoading.has(item.product.id);
+
+      return (
+        <div
+          key={item.id}
+          onClick={() => toggleExpand(item.product.id)}
+          style={{
+            background: theme.bg.card,
+            border: `1px solid ${isExpanded ? theme.accent.cyan : theme.border.default}`,
+            borderRadius: 16,
+            padding: 16,
+            cursor: "pointer",
+            transition: "border-color 0.15s ease",
+          }}
+        >
+          {/* ── header row ── */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+              <div
+                className={item.product.image_url ? "thumb thumb-clickable" : "thumb"}
+                onClick={e => {
+                  e.stopPropagation();          // don't trigger the expand toggle
+                  if (item.product.image_url) setLightbox({ url: item.product.image_url, name: item.product.name });
+                }}
+                style={{
+                  width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0,
+                  background: "rgba(255,255,255,0.05)",
+                  border: `1px solid ${theme.border.default}`,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 18, position: "relative",
+                  cursor: item.product.image_url ? "zoom-in" : "default",
+                }}
+              >
+                <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                {item.product.image_url && (
+                  <img
+                    src={item.product.image_url} alt=""
+                    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                    onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
+                  />
+                )}
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{item.product.name}</div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  {item.product.sku} · {item.product.unit}
+                </div>
+              </div>
+            </div>
+            <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{item.product.unit} left</div>
+            </div>
+          </div>
+
+          {/* ── progress ── */}
+          <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 12 }}>
+            <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
+          </div>
+
+          {/* ── mini stats ── */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+            {[
+              { label: "Price",     value: fmt(item.product.price), color: theme.accent.gold  },
+              { label: "Allocated", value: String(item.allocated),  color: theme.text.primary },
+              { label: "Sold",      value: String(sold),            color: theme.accent.green },
+            ].map(({ label, value, color }) => (
+              <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
+              </div>
+            ))}
+          </div>
+
+          {item.remaining === 0 && (
+            <div style={{ marginTop: 10, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, textAlign: "center" }}>
+              ⚠ Out of stock — contact supervisor to restock
+            </div>
+          )}
+
+          {/* ── expanded: allocation + recent transactions ── */}
+          {isExpanded && (
+            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.border.default}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                  Recent Transactions
+                </div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  {isLoading ? "loading…" : history ? `${history.length} found` : ""}
+                </div>
+              </div>
+
+              {isLoading ? (
+                <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+                  <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                </div>
+              ) : history && history.length > 0 ? (
+                <div>
+                  {history.map((t, idx) => (
+                    <div
+                    key={t.id ?? idx}
+                      style={{
+                        display: "flex", justifyContent: "space-between", alignItems: "center",
+                        padding: "8px 0",
+                        borderBottom: idx < history.length - 1 ? `1px solid ${theme.border.default}` : "none",
+                      }}
+                    >
+                      <div style={{ minWidth: 0 }}>
+                        <div style={{ fontSize: 12, fontFamily: theme.font.mono }}>
+                          {t.quantity} × {fmt(Number(t.unit_price ?? 0))}
                         </div>
-                      );
-                    })}
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                          {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
+                          {t.agent_name ? ` · ${t.agent_name}` : ""}
+                        </div>
+                      </div>
+                      <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                        <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.green }}>
+                        {fmt(Number(t.amount ?? 0))}
+                        </div>
+                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                          {t.payment_method
+                            || (Number(t.mpesa_amount) > 0 ? "M-Pesa" : Number(t.cash_amount) > 0 ? "Cash" : "—")}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ textAlign: "center", padding: "14px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  No recent transactions for this product
+                </div>
+              )}
+
+              {/* Allocation summary */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
+                {[
+                  { label: "Allocated", value: String(item.allocated), color: theme.text.primary },
+                  { label: "Sold",      value: String(sold),           color: theme.accent.green },
+                  { label: "Remaining", value: String(item.remaining), color: sc },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                    <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    })}
+  </div>
+)}
                   </div>
                 )}
               </div>
@@ -631,6 +829,75 @@ useEffect(() => {
           </>
         )}
       </div>
+
+    {/* ══ IMAGE LIGHTBOX ══ */}
+{lightbox && (
+  <div
+    onClick={() => setLightbox(null)}
+    style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,0.85)",
+      backdropFilter: "blur(6px)",
+      WebkitBackdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: isMobile ? 16 : 40,
+      animation: "fadeIn 0.18s ease both",
+    }}
+  >
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: "relative",
+        display: "flex", flexDirection: "column", alignItems: "center",
+        maxWidth: "100%",
+        animation: "zoomIn 0.2s ease both",
+      }}
+    >
+      {/* ✕ anchored to the image, not the screen */}
+      <button
+        onClick={e => { e.stopPropagation(); setLightbox(null); }}
+        aria-label="Close image"
+        style={{
+          position: "absolute",
+          top: -12, right: -12,
+          width: 32, height: 32, borderRadius: "50%",
+          background: "rgba(20,20,20,0.9)",
+          border: "1px solid rgba(255,255,255,0.28)",
+          color: "#fff", fontSize: 14, lineHeight: 1,
+          cursor: "pointer", zIndex: 2,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 4px 14px rgba(0,0,0,0.5)",
+        }}
+      >✕</button>
+
+      <img
+        src={lightbox.url}
+        alt={lightbox.name}
+        style={{
+          maxWidth: isMobile ? "100%" : "min(560px, 55vw)",
+          maxHeight: isMobile ? "48vh" : "56vh",
+          width: "auto", height: "auto",
+          objectFit: "contain",
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.14)",
+          background: theme.bg.card,
+          display: "block",
+          boxShadow: "0 24px 70px rgba(0,0,0,0.65)",
+        }}
+      />
+
+      {/* Product name only — no helper text */}
+      <div style={{
+        marginTop: 12,
+        fontFamily: theme.font.display, fontWeight: 700,
+        fontSize: isMobile ? 14 : 16, color: "#fff",
+        textAlign: "center",
+      }}>
+        {lightbox.name}
+      </div>
+    </div>
+  </div>
+)}
     </div>
   );
 }

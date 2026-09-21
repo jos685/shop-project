@@ -103,7 +103,12 @@ const STORAGE_KEY = "pos_theme_mode";
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
   const [isDark, setIsDark] = useState<boolean>(() => {
-    try { return localStorage.getItem(STORAGE_KEY) !== "light"; } catch { return true; }
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved === "dark") return true;
+      if (saved === "light") return false;
+      return false; // default to light
+    } catch { return false; }
   });
 
   const theme = isDark ? darkTheme : lightTheme;

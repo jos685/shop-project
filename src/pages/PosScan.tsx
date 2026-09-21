@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -7,15 +7,58 @@ import QrScanner from "../components/QrScanner";
 import { supabase, productImageUrl } from "../lib/supabase";
 import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
-import { sanitizeSku, sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
-
-
+import { sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
+import { createPortal } from "react-dom";
+import FloatingCart from "../components/FloatingCart";
 
 type Step         = "scan" | "checkout" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
 type VerifyMethod = "pin" | "badge";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
+
+function isSubsequence(q: string, t: string): boolean {
+  let i = 0;
+  for (let j = 0; j < t.length && i < q.length; j++) if (t[j] === q[i]) i++;
+  return i === q.length;
+}
+
+function levenshtein(a: string, b: string): number {
+  if (a === b) return 0;
+  if (!a.length) return b.length;
+  if (!b.length) return a.length;
+  const prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]; prev[0] = i;
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j];
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1));
+      diag = tmp;
+    }
+  }
+  return prev[b.length];
+}
+
+function fuzzyMatch(query: string, text: string | null | undefined): boolean {
+  if (!query) return true;
+  if (!text) return false;
+  const q = query.toLowerCase().trim();
+  if (!q) return true;
+  const t = text.toLowerCase();
+  if (t.includes(q)) return true;
+  const queryWords = q.split(/\s+/).filter(Boolean);
+  if (queryWords.length > 1 && queryWords.every(w => fuzzyMatch(w, text))) return true;
+  if (q.length < 3) return false;
+  const qs = q.replace(/\s+/g, ""), ts = t.replace(/\s+/g, "");
+  if (qs.length >= 4 && isSubsequence(qs, ts)) return true;
+  const words = t.split(/[\s\-_.,;:()[\]/]+/).filter(Boolean);
+  const maxDist = q.length <= 4 ? 1 : q.length <= 8 ? 2 : Math.floor(q.length / 3);
+  for (const w of words) {
+    if (q.length / w.length >= 0.5 && isSubsequence(q, w)) return true;
+    if (Math.abs(w.length - q.length) <= maxDist && levenshtein(q, w) <= maxDist) return true;
+  }
+  return false;
+}
 
 function useWindowWidth() {
   const [w, setW] = useState(window.innerWidth);
@@ -47,13 +90,13 @@ interface CartItem {
 const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
 const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise", success: "Done" };
 
-// Reusable product image component with click-to-preview
+// Reusable product image with click-to-zoom lightbox
 function ProductImage({ 
   imageUrl, 
   productName, 
   size = 40, 
   onClick 
-}: { 
+} : { 
   imageUrl: string | null; 
   productName: string; 
   size?: number;
@@ -62,183 +105,116 @@ function ProductImage({
   const [showPreview, setShowPreview] = useState(false);
   const [imgError, setImgError] = useState(false);
   
+  useEffect(() => {
+    if (!showPreview) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setShowPreview(false); };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [showPreview]);
+  
   const handleClick = (e: React.MouseEvent) => {
-    if (onClick) {
-      e.stopPropagation(); // Prevent parent onClick
-      onClick();
-    } else if (imageUrl && !imgError) {
-      e.stopPropagation();
-      setShowPreview(true);
-    }
+    if (onClick) { e.stopPropagation(); onClick(); }
+    else if (imageUrl && !imgError) { e.stopPropagation(); setShowPreview(true); }
   };
   
   return (
     <>
       <div 
+        className={imageUrl && !imgError ? "thumb thumb-clickable" : "thumb"}
         onClick={handleClick}
         style={{ 
-          width: size, 
-          height: size, 
-          borderRadius: Math.max(9, size * 0.225), 
+          width: size, height: size, 
+          borderRadius: Math.max(8, size * 0.22), 
           background: "rgba(255,255,255,0.05)", 
-          display: "flex", 
-          alignItems: "center", 
-          justifyContent: "center", 
-          fontSize: size * 0.45, 
-          flexShrink: 0, 
-          overflow: "hidden", 
-          position: "relative",
+          display: "flex", alignItems: "center", justifyContent: "center", 
+          fontSize: size * 0.45, flexShrink: 0, overflow: "hidden", position: "relative",
           cursor: (imageUrl && !imgError) ? "zoom-in" : "default",
           border: "1px solid rgba(255,255,255,0.08)",
         }}
       >
         {imageUrl && !imgError ? (
-          <>
-            <img 
-              src={imageUrl} 
-              alt={productName}
-              style={{ 
-                width: "100%", 
-                height: "100%", 
-                objectFit: "cover",
-                position: "absolute",
-                top: 0,
-                left: 0,
-              }}
-              onError={() => setImgError(true)}
-            />
-            {/* Zoom indicator */}
-            <div style={{
-              position: "absolute",
-              bottom: 2,
-              right: 2,
-              background: "rgba(0,0,0,0.6)",
-              borderRadius: "50%",
-              width: size * 0.35,
-              height: size * 0.35,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              fontSize: size * 0.2,
-              opacity: 0.7,
-            }}>
-              🔍
-            </div>
-          </>
+          <img 
+            src={imageUrl} alt={productName}
+            style={{ width: "100%", height: "100%", objectFit: "cover", position: "absolute", top: 0, left: 0 }}
+            onError={() => setImgError(true)}
+          />
         ) : (
           <span>📦</span>
         )}
       </div>
       
-      {/* Preview Modal - Updated to close on outside click */}
-      {showPreview && (
-        <div
-          onClick={() => setShowPreview(false)}  // This closes when clicking the backdrop
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(0,0,0,0.85)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 1000,
-            padding: 20,
-            backdropFilter: "blur(4px)",
-            cursor: "zoom-out", // Add this to show zoom-out cursor on backdrop
-          }}
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}  // This prevents closing when clicking inside the modal
-            style={{
-              maxWidth: 500,
-              width: "100%",
-              background: "#1a1a1a",
-              borderRadius: 16,
-              overflow: "hidden",
-              border: "1px solid rgba(255,255,255,0.1)",
-              cursor: "default", // Reset cursor for modal content
-            }}
-          >
-            {/* Large Image */}
-            <div style={{ position: "relative", background: "rgba(255,255,255,0.02)" }}>
-              {imageUrl && !imgError ? (
-                <img
-                  src={imageUrl}
-                  alt={productName}
-                  style={{
-                    width: "100%",
-                    height: 400,
-                    objectFit: "contain",
-                  }}
-                />
-              ) : (
-                <div
-                  style={{
-                    width: "100%",
-                    height: 400,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    fontSize: 80,
-                  }}
-                >
-                  📦
-                </div>
-              )}
-              
-              {/* Close button */}
-              <button
-                onClick={() => setShowPreview(false)}
-                style={{
-                  position: "absolute",
-                  top: 12,
-                  right: 12,
-                  width: 36,
-                  height: 36,
-                  borderRadius: "50%",
-                  background: "rgba(0,0,0,0.7)",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  color: "white",
-                  fontSize: 20,
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                }}
-              >
-                ×
-              </button>
-            </div>
+      {showPreview && createPortal(
+  <div
+    // Stop the click from bubbling up through React's tree to the parent
+    // product <button>, which would otherwise trigger add-to-cart.
+    onClick={e => { e.stopPropagation(); setShowPreview(false); }}
+    style={{
+      position: "fixed", inset: 0, zIndex: 9999,
+      background: "rgba(0,0,0,0.85)",
+      backdropFilter: "blur(6px)", WebkitBackdropFilter: "blur(6px)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 20, animation: "fadeIn 0.18s ease both",
+    }}
+  >
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: "relative",
+        display: "flex", flexDirection: "column", alignItems: "center",
+        maxWidth: "100%", animation: "zoomIn 0.2s ease both",
+      }}
+    >
+      <button
+        onClick={e => { e.stopPropagation(); setShowPreview(false); }}
+        aria-label="Close"
+        style={{
+          position: "absolute", top: -12, right: -12,
+          width: 32, height: 32, borderRadius: "50%",
+          background: "rgba(20,20,20,0.9)",
+          border: "1px solid rgba(255,255,255,0.28)",
+          color: "#fff", fontSize: 14, lineHeight: 1,
+          cursor: "pointer", zIndex: 2,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          boxShadow: "0 4px 14px rgba(0,0,0,0.5)",
+        }}
+      >✕</button>
 
-            {/* Product Details */}
-            <div style={{ padding: 20 }}>
-              <h3 style={{ margin: "0 0 8px 0", fontSize: 18, color: "#fff" }}>
-                {productName}
-              </h3>
-              <button
-                onClick={() => setShowPreview(false)}
-                style={{
-                  width: "100%",
-                  padding: 12,
-                  background: "rgba(255,255,255,0.1)",
-                  border: "1px solid rgba(255,255,255,0.2)",
-                  borderRadius: 8,
-                  color: "white",
-                  fontSize: 14,
-                  fontWeight: 600,
-                  cursor: "pointer",
-                }}
-              >
-                Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <img
+        src={imageUrl!} alt={productName}
+        style={{
+          maxWidth: "min(480px, 78vw)",
+          maxHeight: "56vh",
+          width: "auto", height: "auto",
+          objectFit: "contain",
+          borderRadius: 14,
+          border: "1px solid rgba(255,255,255,0.14)",
+          background: "#1a1a1a",
+          display: "block",
+          boxShadow: "0 24px 70px rgba(0,0,0,0.65)",
+        }}
+      />
+
+      <div style={{
+        marginTop: 12,
+        fontFamily: "'Syne',sans-serif", fontWeight: 700,
+        fontSize: 15, color: "#fff", textAlign: "center",
+        maxWidth: 420, padding: "0 8px",
+      }}>
+        {productName}
+      </div>
+    </div>
+  </div>,
+  document.body
+)}
     </>
   );
 }
-
+  
 export default function PosScan() {
   const { shop }  = useShopAuth();
   const { theme } = useTheme();
@@ -259,9 +235,8 @@ export default function PosScan() {
   const [mode,           setMode]           = useState<"camera" | "manual">("manual");
   const [cameraActive,   setCameraActive]   = useState(true);
   const [badgeActive,    setBadgeActive]    = useState(false);
-  const [manualSku,      setManualSku]      = useState("");
+  const [searchQuery,    setSearchQuery]    = useState("");
   const [myProducts,     setMyProducts]     = useState<LocalAlloc[]>([]);
-  const [productSearch,  setProductSearch]  = useState("");
 
   // cart
   const [cart,           setCart]           = useState<CartItem[]>([]);
@@ -599,6 +574,74 @@ export default function PosScan() {
     }
   }, [shop, savedCustomers, customersKey]);
 
+  // Re-fetch the shop's allocation list from the DB and sync both the UI
+// state and the localStorage cache. Called after failures and on focus.
+const refreshProducts = useCallback(async () => {
+  if (!shop || !isOnline) return;
+  try {
+    const { data: allocsData, error } = await supabase
+      .from("shop_allocations")
+      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+      .eq("shop_id", shop.id);
+
+    if (error) {
+      console.warn("refreshProducts fetch failed:", error.message);
+      return;
+    }
+
+    const productIds = (allocsData || []).map((a: any) => a.product_id).filter(Boolean);
+    let productsMap: Record<string, any> = {};
+    if (productIds.length > 0) {
+      const { data: prodsData } = await supabase
+        .from("products")
+        .select("id, name, sku, price, unit, image_url")
+        .in("id", productIds);
+      for (const p of prodsData || []) productsMap[p.id] = p;
+    }
+
+    const allProducts = (allocsData || [])
+      .filter((a: any) => !!a.product_id)
+      .map((a: any) => {
+        const p = productsMap[a.product_id] || {};
+        return {
+          id: a.id,
+          allocated: a.allocated,
+          remaining: Math.max(0, a.remaining ?? 0),
+          product_id: a.product_id,
+          product: {
+            id:    a.product_id,
+            name:  p.name  || a.product_name  || "—",
+            sku:   p.sku   || a.product_sku   || "",
+            price: Number(p.price ?? a.product_price ?? 0),
+            unit:  p.unit  || a.product_unit  || "",
+            image_url: p.image_url ? productImageUrl(p.image_url) : null,
+          },
+        };
+      });
+
+    const products = allProducts.filter(p => p.remaining > 0);
+    setMyProducts(products);
+
+    if (cacheKey) {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        const existing = raw ? JSON.parse(raw) : {};
+        localStorage.setItem(cacheKey, JSON.stringify({ ...existing, products }));
+      } catch {}
+    }
+    if (shop?.id) {
+      try {
+        localStorage.setItem(
+          `pos_stock_full_${shop.id}`,
+          JSON.stringify({ items: allProducts, cachedAt: Date.now() })
+        );
+      } catch {}
+    }
+  } catch (err) {
+    console.warn("refreshProducts error:", err);
+  }
+}, [shop, isOnline, cacheKey]);
+
   const filteredCustomers = (customerQuery.trim()
     ? savedCustomers.filter(c =>
         c.name.toLowerCase().includes(customerQuery.toLowerCase()) ||
@@ -661,13 +704,21 @@ export default function PosScan() {
     }
     handleProductFound(alloc);
   };
+   
+  // Live-filtered products. Matches name OR sku with fuzzy tolerance.
+const filteredProducts = useMemo(() => {
+  const base = [...myProducts].sort((a, b) => a.product.name.localeCompare(b.product.name));
+  const q = searchQuery.trim();
+  if (!q) return base;
+  return base.filter(a => fuzzyMatch(q, a.product.name) || fuzzyMatch(q, a.product.sku));
+}, [myProducts, searchQuery]);
 
-  const handleManualLookup = async () => {
-    if (!manualSku.trim()) { setError("Enter a SKU."); return; }
-    const alloc = await fetchAllocationBySku(manualSku.trim());
-    if (!alloc) { setError(`"${manualSku}" not found in this shop's stock.`); return; }
-    handleProductFound(alloc);
-  };
+// If the user typed a value that exactly matches a SKU, pin it as a quick-add.
+const exactSkuMatch = useMemo(() => {
+  const q = searchQuery.trim().toUpperCase();
+  if (!q) return null;
+  return myProducts.find(a => a.product.sku.toUpperCase() === q) ?? null;
+}, [myProducts, searchQuery]);
 
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
@@ -848,14 +899,22 @@ export default function PosScan() {
         p_shop_allocation_id: item.allocation.id,
         p_quantity: item.quantity,
       });
+      
       if (stockErr) {
         // Best-effort rollback in parallel
         Promise.all(deducted.map(d =>
           supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
         )).catch(() => {});
-        setError(stockErr.message.includes("Insufficient")
-          ? `Not enough stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`
-          : `Failed to deduct stock for ${item.allocation.product.name}. Sale cancelled — all stock has been restored.`);
+      
+        // Pull the fresh numbers so the card shows the correct remaining.
+        // Without this, the user keeps seeing stale stock and re-hits the same error.
+        await refreshProducts();
+      
+        setError(
+          stockErr.message.includes("Insufficient") || stockErr.message.toLowerCase().includes("stock")
+            ? `${item.allocation.product.name} is out of stock (or has less than ${item.quantity} left). The list has been refreshed — please pick a different item.`
+            : `Failed to deduct stock for ${item.allocation.product.name}. ${stockErr.message}`
+        );
         return;
       }
       deducted.push({ id: item.allocation.id, quantity: item.quantity, name: item.allocation.product.name });
@@ -1078,7 +1137,7 @@ export default function PosScan() {
   };
 
   const handleReset = () => {
-    setStep("scan"); setMode("camera"); setManualSku(""); setProductSearch("");
+    setStep("scan"); setMode("manual"); setSearchQuery("");
     setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
     setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
     setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
@@ -1128,13 +1187,17 @@ export default function PosScan() {
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
         @keyframes fadeUp     { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
         @keyframes spin       { to{transform:rotate(360deg)} }
+        @keyframes fadeIn { from{opacity:0} to{opacity:1} }
+        @keyframes zoomIn { from{opacity:0;transform:scale(0.92)} to{opacity:1;transform:scale(1)} }
+        .thumb { transition: transform 0.15s ease, border-color 0.15s ease; }
+        .thumb-clickable:hover { transform: scale(1.08); border-color: rgba(6,182,212,0.55) !important; }
         @keyframes successPop { 0%{transform:scale(0.5);opacity:0}70%{transform:scale(1.1)}100%{transform:scale(1);opacity:1} }
         @keyframes shake      { 0%,100%{transform:translateX(0)} 20%,60%{transform:translateX(-8px)} 40%,80%{transform:translateX(8px)} }
         @keyframes slideUp    { from{opacity:0;transform:scale(0.96)}to{opacity:1;transform:scale(1)} }
-        .section       { animation: fadeUp 0.3s ease both; }
-        .success-icon  { animation: successPop 0.5s ease forwards; }
+        .section       { animation: fadeUp 0.3s ease; }
+        .success-icon  { animation: successPop 0.5s ease; }
         .shake         { animation: shake 0.35s ease; }
-        .overlay-sheet { animation: slideUp 0.25s ease both; }
+         .overlay-sheet { animation: slideUp 0.25s ease; }
         ${theme.kiCss.replace(/border-radius:10px/g, "border-radius:12px").replace(/font-size:14px/g, "font-size:15px").replace(/padding:11px 13px/g, "padding:13px 14px")}
         .abtn { border:none;cursor:pointer;font-family:'Syne',sans-serif;font-weight:800;font-size:16px;border-radius:14px;padding:16px;width:100%;transition:opacity 0.15s,transform 0.1s; }
         .abtn:active { transform:scale(0.98); }
@@ -1168,12 +1231,14 @@ export default function PosScan() {
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 16 : 19 }}>
                 {STEP_LABELS[step]}
               </div>
+              {!isMobile && (
               <div style={{ color: theme.text.muted, fontSize: 10, fontFamily: theme.font.mono, marginTop: 1 }}>
                 {step === "scan"     ? "Scan or pick products to add to cart"                                         : ""}
                 {step === "checkout" ? `${cart.length} item${cart.length !== 1 ? "s" : ""} · ${fmt(grandTotal)}`     : ""}
                 {step === "verify"   ? "Verify identity to complete the sale"                                         : ""}
                 {step === "success"  ? (wasQueued ? "Queued — will sync when online" : "Transaction saved successfully") : ""}
               </div>
+            )}
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1192,35 +1257,66 @@ export default function PosScan() {
 
         {/* Step progress */}
         {step !== "success" && (
-          <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-            {(["scan", "checkout", "verify"] as Step[]).map((s, i) => {
-              const done    = STEPS.indexOf(step) > i;
-              const current = step === s;
-              return (
-                <div key={s} style={{ display: "flex", alignItems: "center", flex: i < 2 ? 1 : "none" }}>
-                  <div style={{
-                    width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
-                    display: "flex", alignItems: "center", justifyContent: "center",
-                    fontSize: done ? 13 : 11,
-                    background: done ? theme.accent.cyan : current ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.05)",
-                    border: `1.5px solid ${done || current ? theme.accent.cyan : "rgba(255,255,255,0.1)"}`,
-                    color: done ? "#000" : current ? theme.accent.cyan : theme.text.muted,
-                    fontFamily: theme.font.mono, fontWeight: 700,
-                  }}>
-                    {done ? "✓" : i + 1}
-                  </div>
-                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: current ? theme.accent.cyan : theme.text.muted, marginLeft: 5, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
-                    {STEP_LABELS[s]}
-                  </div>
-                  {i < 2 && <div style={{ flex: 1, height: 1, background: done ? theme.accent.cyan : "rgba(255,255,255,0.08)", margin: "0 8px" }} />}
-                </div>
-              );
-            })}
-          </div>
-        )}
+              <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+                {(["scan", "checkout", "verify"] as Step[]).map((s, i) => {
+                  const done    = STEPS.indexOf(step) > i;
+                  const current = step === s;
+                  // scan = always reachable; checkout/verify only when cart has items
+                  const canJump = s === "scan" ? true : cart.length > 0;
+                  const clickable = canJump && !current;
+                  return (
+                    <div key={s} style={{ display: "flex", alignItems: "center", flex: i < 2 ? 1 : "none" }}>
+                      <button
+                        onClick={() => {
+                          if (!clickable) return;
+                          setStep(s);
+                          setError("");
+                          if (s !== "verify") setBadgeActive(false);
+                        }}
+                        disabled={!clickable}
+                        style={{
+                          background: "none", border: "none", padding: 0, gap: 5,
+                          display: "flex", alignItems: "center",
+                          cursor: clickable ? "pointer" : "default",
+                          opacity: canJump ? 1 : 0.5,
+                          transition: "opacity 0.15s",
+                        }}
+                        title={clickable ? `Go to ${STEP_LABELS[s]}` : s === "scan" ? "" : "Add items to cart first"}
+                      >
+                        <div style={{
+                          width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          fontSize: done ? 13 : 11,
+                          background: done ? theme.accent.cyan : current ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.05)",
+                          border: `1.5px solid ${done || current ? theme.accent.cyan : "rgba(255,255,255,0.1)"}`,
+                          color: done ? "#000" : current ? theme.accent.cyan : theme.text.muted,
+                          fontFamily: theme.font.mono, fontWeight: 700,
+                        }}>
+                          {done ? "✓" : i + 1}
+                        </div>
+                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: current ? theme.accent.cyan : theme.text.muted, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                          {STEP_LABELS[s]}
+                        </div>
+                      </button>
+                      {i < 2 && <div style={{ flex: 1, height: 1, background: done ? theme.accent.cyan : "rgba(255,255,255,0.08)", margin: "0 8px" }} />}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
       </div>
 
-      <div style={{ padding: isMobile ? "14px 14px 90px" : "20px 32px 90px", maxWidth: isDesktop ? 1100 : 720, margin: "0 auto" }}>
+      <div style={{
+          padding: isMobile
+            ? `14px 14px ${
+                step === "checkout"
+                  ? "calc(env(safe-area-inset-bottom, 0px) + 210px)"
+                  : "90px"
+              }`
+            : `24px 40px ${step === "checkout" ? "190px" : "90px"}`,
+          maxWidth: isDesktop ? 1400 : 720,
+          margin: "0 auto"
+        }}>
 
         {/* ══════════════════ STEP 1: SCAN ══════════════════ */}
         {step === "scan" && (
@@ -1279,107 +1375,111 @@ export default function PosScan() {
               </div>
             )}
 
-            {mode === "manual" && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Enter SKU manually</label>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    <input className="ki" value={manualSku}
-                      onChange={e => { setManualSku(sanitizeSku(e.target.value)); setError(""); }}
-                      placeholder="e.g. SAM-EAR-A10" style={{ flex: 1 }}
-                      maxLength={40} spellCheck={false}
-                      onKeyDown={e => e.key === "Enter" && handleManualLookup()} />
-                    <button onClick={handleManualLookup}
-                      style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, border: "none", borderRadius: 12, padding: "0 16px", color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer", whiteSpace: "nowrap" }}>
-                      Look Up
-                    </button>
-                  </div>
-                </div>
-                {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
+        
 
-                {/* Inventory search */}
-                {myProducts.length > 0 && (
-                  <div style={{ position: "relative" }}>
-                    <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
-                    <input className="ki" value={productSearch}
-                      onChange={e => setProductSearch(e.target.value)}
-                      placeholder="Filter by name or SKU…"
-                      style={{ paddingLeft: 36 }} />
-                  </div>
-                )}
+{mode === "manual" && (
+  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
-                {myProducts.length === 0 ? (
-                  <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
-                    <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
-                    <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
-                  </div>
-                ) : (() => {
-                  const q = productSearch.toLowerCase();
-                  const filtered = (q
-                    ? myProducts.filter(a => a.product.name.toLowerCase().includes(q) || a.product.sku.toLowerCase().includes(q))
-                    : myProducts
-                  ).sort((a, b) => a.product.name.localeCompare(b.product.name)); 
-                  return (
-                    <div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-                        {q ? `${filtered.length} of ${myProducts.length} products` : `Available (${myProducts.length})`}
-                      </div>
-                      {filtered.length === 0 && (
-                        <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>No products match "{productSearch}"</div>
-                      )}
-                      <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
-                        {filtered.map(alloc => {
-                          const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
-                          const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
-                          const inCart = cart.find(i => i.allocation.product_id === alloc.product_id);
-                          return (
-                            <button key={alloc.id} onClick={() => handleProductFound(alloc)}
-                              style={{ padding: "13px 14px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 13, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, textAlign: "left", transition: "border-color 0.15s" }}
-                              onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
-                              onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
-                                <ProductImage 
-                                  imageUrl={alloc.product.image_url} 
-                                  productName={alloc.product.name} 
-                                  size={36} 
-                                />
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 14, fontWeight: 600, color: theme.text.primary, marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
-                                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 5 }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
-                                <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 3, height: 3 }}>
-                                  <div style={{ width: `${pct}%`, height: "100%", borderRadius: 3, background: sc }} />
-                                </div>
-                              </div>
-                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4, flexShrink: 0 }}>
-                                <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 10, padding: "6px 10px", textAlign: "center", minWidth: 46 }}>
-                                  <div style={{ fontSize: 17, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 2 }}>{alloc.product.unit}</div>
-                                </div>
-                                {inCart && (
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 6, padding: "2px 7px" }}>
-                                    ×{inCart.quantity} in cart
-                                  </div>
-                                )}
-                              </div>
-                            </button>
-                          );
-                        })}
-                      </div>
+    {/* Unified search — name or SKU, fuzzy */}
+    <div style={{ position: "relative" }}>
+      <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45, pointerEvents: "none" }}>🔍</span>
+      <input
+        className="ki"
+        value={searchQuery}
+        onChange={e => { setSearchQuery(e.target.value); setError(""); }}
+        onKeyDown={async e => {
+          if (e.key !== "Enter") return;
+          e.preventDefault();
+          const q = searchQuery.trim();
+          if (!q) return;
+          if (exactSkuMatch) { handleProductFound(exactSkuMatch); setSearchQuery(""); return; }
+          // Try a network SKU lookup for a product not yet in the local list.
+          const alloc = await fetchAllocationBySku(q);
+          if (alloc) { handleProductFound(alloc); setSearchQuery(""); return; }
+          if (filteredProducts.length === 1) { handleProductFound(filteredProducts[0]); setSearchQuery(""); return; }
+          if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
+        }}
+        placeholder="Search by name or SKU…"
+        style={{ paddingLeft: 40, paddingRight: searchQuery ? 40 : 14 }}
+        spellCheck={false}
+        autoComplete="off"
+        maxLength={40}
+      />
+      {searchQuery && (
+        <button onClick={() => { setSearchQuery(""); setError(""); }}
+          style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.08)", color: theme.text.muted, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }}>×</button>
+      )}
+    </div>
+
+    {/* Exact SKU quick-add */}
+    {exactSkuMatch && (
+      <button onClick={() => { handleProductFound(exactSkuMatch); setSearchQuery(""); }}
+        style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 12, cursor: "pointer", textAlign: "left" }}>
+        <span style={{ fontSize: 16 }}>⚡</span>
+        <span style={{ flex: 1, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+          Exact SKU match — tap to add <strong>{exactSkuMatch.product.name}</strong>
+        </span>
+        <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Enter ↵</span>
+      </button>
+    )}
+
+    {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
+
+    {myProducts.length === 0 ? (
+      <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
+        <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
+        <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
+      </div>
+    ) : (
+      <div>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+          {searchQuery.trim()
+            ? `${filteredProducts.length} of ${myProducts.length} products`
+            : `Available (${myProducts.length})`}
+        </div>
+        {filteredProducts.length === 0 && (
+          <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>
+            No products match "{searchQuery}"
+          </div>
+        )}
+        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+          {filteredProducts.map(alloc => {
+            const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
+            const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
+            const inCart = cart.find(i => i.allocation.product_id === alloc.product_id);
+            return (
+              <button key={alloc.id} onClick={() => handleProductFound(alloc)}
+                  style={{ padding: "8px 10px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 11, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left", transition: "border-color 0.15s" }}
+                  onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
+                  onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
+                  <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+                    <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
+                      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
                     </div>
-                  );
-                })()}
-              </div>
-            )}
-
-            {/* Checkout bar */}
-            {cart.length > 0 && (
-              <div style={{ position: "sticky", bottom: isMobile ? 70 : 16, marginTop: 4 }}>
-                <button className="abtn" onClick={() => { setStep("checkout"); setError(""); }}
-                  style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 20px" }}>
-                  <span>🛒 Review Cart ({cart.length} item{cart.length !== 1 ? "s" : ""})</span>
-                  <span style={{ fontFamily: theme.font.mono, fontSize: 15 }}>{fmt(grandTotal)} →</span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+                    <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
+                      <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
+                      <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
+                    </div>
+                    {inCart && (
+                      <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 5, padding: "1px 6px" }}>
+                        ×{inCart.quantity}
+                      </div>
+                    )}
+                  </div>
                 </button>
-              </div>
-            )}
+            );
+          })}
+        </div>
+      </div>
+    )}
+  </div>
+)}
+
           </div>
         )}
 
@@ -1497,22 +1597,48 @@ export default function PosScan() {
             <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
               {/* Payment method */}
               <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                  {([
-                    { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
-                    { key: "mpesa",  icon: "📱", label: "M-Pesa",    col: theme.accent.cyan  },
-                    { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
-                    { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
-                  ] as const).map(({ key, icon, label, col }) => (
-                    <button key={key} onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
-                      style={{ padding: "12px 8px", border: `1px solid ${payMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: payMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}>
-                      <span style={{ fontSize: 20 }}>{icon}</span>
-                      <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: payMethod === key ? col : theme.text.muted }}>{label}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
+  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
+  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+    {([
+      { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
+      { key: "mpesa",  icon: null, label: "M-Pesa",    col: "#00a651"         },
+      { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
+      { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
+    ] as const).map(({ key, icon, label, col }) => {
+      const sel = payMethod === key;
+      return (
+        <button key={key}
+          onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
+          style={{
+            padding: "10px 4px",
+            border: `1px solid ${sel ? col + "80" : theme.border.default}`,
+            borderRadius: 11,
+            background: sel ? col + "18" : "transparent",
+            cursor: "pointer",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+            transition: "all 0.15s",
+          }}>
+          {key === "mpesa" ? (
+            <div style={{
+              width: 22, height: 22, borderRadius: 5,
+              background: "#00a651",
+              color: "#fff",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: theme.font.display, fontWeight: 800, fontSize: 13,
+              letterSpacing: "-0.03em",
+              boxShadow: sel ? "0 0 0 2px rgba(0,166,81,0.35)" : "none",
+            }}>M</div>
+          ) : (
+            <span style={{ fontSize: 20, lineHeight: "22px" }}>{icon}</span>
+          )}
+          <span style={{ fontSize: 10, fontFamily: theme.font.mono, fontWeight: 600, color: sel ? col : theme.text.muted }}>
+            {label}
+          </span>
+        </button>
+      );
+    })}
+  </div>
+</div>
 
               {/* Credit notice + initial payment with split fields */}
               {payMethod === "credit" && (
@@ -1693,11 +1819,11 @@ export default function PosScan() {
                 )}
 
                 {/* Customer Name */}
+                {/* Customer Name — credit sales only */}
+              {payMethod === "credit" && (
                 <div>
                   <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                    Customer Name {payMethod === "credit"
-                      ? <span style={{ color: theme.accent.red }}>*</span>
-                      : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                    Customer Name <span style={{ color: theme.accent.red }}>*</span>
                   </label>
                   <input className="ki" type="text" value={customerName}
                     onChange={e => {
@@ -1713,6 +1839,7 @@ export default function PosScan() {
                     <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.customerName}</div>
                   )}
                 </div>
+              )}
 
                 {/* Customer Phone — always visible */}
                 <div>
@@ -1739,10 +1866,6 @@ export default function PosScan() {
 
               {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
 
-              <button className="abtn" onClick={handleCheckoutNext}
-                style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff" }}>
-                Next — Authorise Sale →
-              </button>
             </div>
           </div>
         )}
@@ -2246,6 +2369,67 @@ export default function PosScan() {
           </div>
         </div>
       )}
+
+              {/* ══════════════════ FLOATING CART ══════════════════ */}
+        {shop?.id && (
+          <FloatingCart
+            count={cart.length}
+            visible={step === "scan"}
+            onTap={() => { setStep("checkout"); setError(""); }}
+            storageKey={`pos_cart_pos_${shop.id}`}
+            isMobile={isMobile}
+            accentColor={theme.accent.cyan}
+          />
+        )}
+
+
+       {/* ══════════════════ FIXED CHECKOUT CTA ══════════════════ */}
+{step === "checkout" && (
+  <div
+    style={{
+      position: "fixed",
+      left: 0, right: 0,
+      // Nav is always visible (all screen sizes), so always sit above it.
+      // env() handles iPhone home indicator.
+      bottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)",
+      zIndex: 55,                        // must be ABOVE the nav (z-index 50)
+      pointerEvents: "none",
+      background: `linear-gradient(to top, ${theme.bg.base} 70%, transparent 100%)`,
+      paddingTop: 24,
+      paddingBottom: isMobile ? 10 : 22,
+      paddingLeft: isMobile ? 14 : 40,
+      paddingRight: isMobile ? 14 : 40,
+    }}
+  >
+    <div style={{
+      maxWidth: isDesktop ? 1400 : 720,
+      margin: "0 auto",
+      display: "flex",
+      justifyContent: isMobile ? "stretch" : "flex-end",
+      pointerEvents: "auto",
+    }}>
+      <button
+        className="abtn"
+        onClick={handleCheckoutNext}
+        style={{
+          background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
+          color: "#fff",
+          boxShadow: "0 10px 28px rgba(6,182,212,0.4), 0 2px 8px rgba(0,0,0,0.3)",
+          padding: "17px 22px",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          width: isMobile ? "100%" : "calc(56% - 10px)",
+        }}
+      >
+        <span>Next — Authorise Sale</span>
+        <span style={{ fontFamily: theme.font.mono, fontSize: 15, marginLeft: 16 }}>
+          {fmt(grandTotal)} →
+        </span>
+      </button>
+    </div>
+  </div>
+)}
     </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -161,6 +161,17 @@ export default function PosTransactionsPage() {
   const [methodFilter, setMethodFilter] = useState<"all" | "cash" | "mpesa" | "split">("all");
   const [typeFilter,   setTypeFilter]   = useState<"all" | "sales" | "expenses" | "returns">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
+  const [sellerFilter, setSellerFilter] = useState<string>("all");
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [isMobile, setIsMobile]         = useState<boolean>(() =>
+    typeof window !== "undefined" ? window.innerWidth < 768 : false
+  );
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [resendModal,  setResendModal]  = useState<LocalTransaction | null>(null);
   const [resendPhone,  setResendPhone]  = useState("");
@@ -791,12 +802,46 @@ export default function PosTransactionsPage() {
 
   const flaggedCount = transactions.filter(t => t.status === "review").length;
 
+  // Unique sellers present in the loaded window — used by the seller filter
+  const sellerOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const tx of transactions) {
+      if (tx.seller_agent_id && tx.seller_name && !map.has(tx.seller_agent_id)) {
+        map.set(tx.seller_agent_id, tx.seller_name);
+      }
+    }
+    return [...map.entries()]
+      .map(([id, name]) => ({ id, name }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [transactions]);
+
+  const activeFilterCount = [
+    typeFilter   !== "all",
+    methodFilter !== "all",
+    sellerFilter !== "all",
+    filter       !== "today",
+  ].filter(Boolean).length;
+
+  const sellerLabel = sellerFilter === "all"
+    ? null
+    : sellerOptions.find(s => s.id === sellerFilter)?.name ?? "Seller";
+
+  const dateLabelForChip = () => {
+    if (filter === "custom" && customValue) {
+      if (customMode === "day")   return `📆 ${new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { day: "numeric", month: "short" })}`;
+      if (customMode === "month") return `📅 ${new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "short", year: "numeric" })}`;
+      return `🗓 ${customValue}`;
+    }
+    return FILTER_LABELS[filter];
+  };
+
   const displayed = transactions.filter(tx => {
     const isCredit = tx.status === "credit" || tx.status === "credit_partial";
     const isUnpaidCredit = tx.status === "credit";
     const matchesMethod = methodFilter === "all"
       ? !isUnpaidCredit
       : (tx.payment_method === methodFilter && !isCredit);
+    const matchesSeller = sellerFilter === "all" || tx.seller_agent_id === sellerFilter;
     const q = search.toLowerCase();
     const matchesSearch = !q
       || (tx.product_name   ?? "").toLowerCase().includes(q)
@@ -804,7 +849,7 @@ export default function PosTransactionsPage() {
       || (tx.product_sku    ?? "").toLowerCase().includes(q)
       || (tx.customer_phone ?? "").toLowerCase().includes(q)
       || (tx.mpesa_ref      ?? "").toLowerCase().includes(q);
-    return matchesMethod && matchesSearch;
+    return matchesMethod && matchesSearch && matchesSeller;
   });
 
   const expensesSum   = shopExpenses.reduce((s, e) => s + e.amount, 0);
@@ -945,6 +990,23 @@ export default function PosTransactionsPage() {
     return null;
   };
 
+   // ── Small style helpers for the mobile filter UI ──
+   const chipStyle = (t: typeof theme, color: string): React.CSSProperties => ({
+    display: "flex", alignItems: "center", gap: 6,
+    padding: "7px 12px", borderRadius: 50,
+    background: `${color}18`,
+    border: `1px solid ${color}55`,
+    color,
+    fontFamily: t.font.mono, fontSize: 11, fontWeight: 600,
+    cursor: "pointer",
+  });
+
+  const sheetSectionLabel = (t: typeof theme): React.CSSProperties => ({
+    fontSize: 10, fontFamily: t.font.mono, color: t.text.muted,
+    textTransform: "uppercase", letterSpacing: "0.07em",
+    marginBottom: 10,
+  });
+
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
       <style>{`
@@ -999,191 +1061,249 @@ export default function PosTransactionsPage() {
           </div>
         )}
 
-        {/* Type filter pills */}
-        <div style={{ display: "flex", gap: 7 }}>
-          {(["all", "sales", "expenses", "returns"] as const).map(t => {
-            const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
-            const active = typeFilter === t;
-            return (
-              <button key={t} className="filter-pill" onClick={() => setTypeFilter(t)}
-                style={{
-                  padding: "7px 14px", borderRadius: 50,
-                  border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
-                  background: active ? "rgba(251,191,36,0.12)" : "transparent",
-                  color: active ? theme.accent.gold : theme.text.muted,
-                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
-                  cursor: "pointer",
-                }}>
-                {labels[t]}
-              </button>
-            );
-          })}
-        </div>
+          {/* ── SEARCH (always visible) ── */}
+<div style={{ position: "relative" }}>
+  <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
+  <input
+    placeholder="Product, seller, phone, M-Pesa ref…"
+    value={search}
+    onChange={e => setSearch(e.target.value)}
+    style={{
+      width: "100%", boxSizing: "border-box",
+      padding: "10px 12px 10px 36px",
+      background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+      borderRadius: 12, color: theme.text.primary, fontSize: 13,
+      fontFamily: theme.font.mono, outline: "none",
+    }}
+  />
+</div>
 
-        {/* Date filter pills */}
-        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-          {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
-            <button key={f} className="filter-pill"
-              onClick={() => {
-                setFilter(f);
-                if (f === "custom") setShowCustomPicker(true);
-                else setShowCustomPicker(false);
-              }}
+{isMobile ? (
+  /* ══════════ MOBILE — single Filters button + active chips ══════════ */
+  <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+    <button
+      onClick={() => setFilterSheetOpen(true)}
+      style={{
+        display: "flex", alignItems: "center", gap: 8,
+        padding: "10px 16px", borderRadius: 50,
+        background: activeFilterCount > 0 ? "rgba(6,182,212,0.15)" : theme.bg.card,
+        border: `1px solid ${activeFilterCount > 0 ? theme.accent.cyan : theme.border.default}`,
+        color: activeFilterCount > 0 ? theme.accent.cyan : theme.text.primary,
+        fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600,
+        cursor: "pointer", flexShrink: 0,
+      }}>
+      <span style={{ fontSize: 14 }}>⚙</span>
+      Filters
+      {activeFilterCount > 0 && (
+        <span style={{
+          background: theme.accent.cyan, color: "#000",
+          borderRadius: 10, fontSize: 10, fontWeight: 800,
+          padding: "1px 6px", lineHeight: 1.4,
+        }}>{activeFilterCount}</span>
+      )}
+    </button>
+
+    {/* Removable active-filter chips */}
+    {typeFilter !== "all" && (
+      <button onClick={() => setTypeFilter("all")} style={chipStyle(theme, "#fbbf24")}>
+        {typeFilter === "sales" ? "Sales" : typeFilter === "expenses" ? "Expenses" : "Returns"} <span style={{ opacity: 0.7 }}>✕</span>
+      </button>
+    )}
+    {filter !== "today" && (
+      <button onClick={() => { setFilter("today"); setCustomValue(""); setShowCustomPicker(false); }} style={chipStyle(theme, theme.accent.cyan)}>
+        {dateLabelForChip()} <span style={{ opacity: 0.7 }}>✕</span>
+      </button>
+    )}
+    {methodFilter !== "all" && (
+      <button onClick={() => setMethodFilter("all")} style={chipStyle(theme, "#34d399")}>
+        {methodFilter === "cash" ? "💵 Cash" : methodFilter === "mpesa" ? "📱 M-Pesa" : "⚡ Split"} <span style={{ opacity: 0.7 }}>✕</span>
+      </button>
+    )}
+    {sellerFilter !== "all" && (
+      <button onClick={() => setSellerFilter("all")} style={chipStyle(theme, "#c084fc")}>
+        👤 {sellerLabel} <span style={{ opacity: 0.7 }}>✕</span>
+      </button>
+    )}
+  </div>
+) : (
+  /* ══════════ DESKTOP — inline pills + seller dropdown ══════════ */
+  <>
+    {/* Type filter pills */}
+    <div style={{ display: "flex", gap: 7 }}>
+      {(["all", "sales", "expenses", "returns"] as const).map(t => {
+        const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
+        const active = typeFilter === t;
+        return (
+          <button key={t} className="filter-pill" onClick={() => setTypeFilter(t)}
+            style={{
+              padding: "7px 14px", borderRadius: 50,
+              border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
+              background: active ? "rgba(251,191,36,0.12)" : "transparent",
+              color: active ? theme.accent.gold : theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
+              cursor: "pointer",
+            }}>
+            {labels[t]}
+          </button>
+        );
+      })}
+    </div>
+
+    {/* Date filter pills + Seller dropdown */}
+    <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+      {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
+        <button key={f} className="filter-pill"
+          onClick={() => {
+            setFilter(f);
+            if (f === "custom") setShowCustomPicker(true);
+            else setShowCustomPicker(false);
+          }}
+          style={{
+            padding: "7px 14px", borderRadius: 50,
+            border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
+            background: filter === f ? "rgba(6,182,212,0.15)" : "transparent",
+            color: filter === f ? theme.accent.cyan : theme.text.muted,
+            fontFamily: theme.font.mono, fontSize: 11, fontWeight: filter === f ? 600 : 400,
+            whiteSpace: "nowrap",
+          }}>
+          {FILTER_LABELS[f]}
+        </button>
+      ))}
+
+      {/* Seller dropdown */}
+      {sellerOptions.length > 0 && (
+        <select
+          value={sellerFilter}
+          onChange={e => setSellerFilter(e.target.value)}
+          style={{
+            marginLeft: "auto",
+            padding: "7px 12px", borderRadius: 50,
+            border: `1px solid ${sellerFilter !== "all" ? "#c084fc" : theme.border.default}`,
+            background: sellerFilter !== "all" ? "rgba(192,132,252,0.12)" : theme.bg.card,
+            color: sellerFilter !== "all" ? "#c084fc" : theme.text.primary,
+            fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+            cursor: "pointer", outline: "none",
+          }}>
+          <option value="all">👤 All sellers</option>
+          {sellerOptions.map(s => (
+            <option key={s.id} value={s.id}>👤 {s.name}</option>
+          ))}
+        </select>
+      )}
+    </div>
+
+    {/* Custom date picker */}
+    {filter === "custom" && showCustomPicker && (
+      <div style={{
+        background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+        borderRadius: 14, padding: "14px 16px",
+        display: "flex", flexDirection: "column", gap: 12,
+        animation: "slideDown 0.18s ease",
+      }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          {(["day", "month", "year"] as CustomMode[]).map(m => (
+            <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
               style={{
-                padding: "7px 14px", borderRadius: 50,
-                border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
-                background: filter === f ? "rgba(6,182,212,0.15)" : "transparent",
-                color: filter === f ? theme.accent.cyan : theme.text.muted,
-                fontFamily: theme.font.mono, fontSize: 11, fontWeight: filter === f ? 600 : 400,
-                whiteSpace: "nowrap",
+                flex: 1, padding: "7px 0", borderRadius: 8,
+                border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
+                background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
+                color: customMode === m ? theme.accent.cyan : theme.text.muted,
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
+                cursor: "pointer", textTransform: "capitalize",
               }}>
-              {FILTER_LABELS[f]}
+              {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
             </button>
           ))}
         </div>
-
-        {/* Custom date picker — shown when "Custom" is active */}
-        {filter === "custom" && showCustomPicker && (
-          <div style={{
-            background: theme.bg.card, border: `1px solid ${theme.border.default}`,
-            borderRadius: 14, padding: "14px 16px",
-            display: "flex", flexDirection: "column", gap: 12,
-            animation: "slideDown 0.18s ease",
-          }}>
-            {/* Mode tabs */}
-            <div style={{ display: "flex", gap: 6 }}>
-              {(["day", "month", "year"] as CustomMode[]).map(m => (
-                <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
-                  style={{
-                    flex: 1, padding: "7px 0", borderRadius: 8,
-                    border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
-                    background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
-                    color: customMode === m ? theme.accent.cyan : theme.text.muted,
-                    fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
-                    cursor: "pointer", textTransform: "capitalize",
-                  }}>
-                  {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
-                </button>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {customMode === "day" && (
+            <input type="date" value={customValue} max={new Date().toISOString().slice(0, 10)}
+              onChange={e => setCustomValue(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+          )}
+          {customMode === "month" && (
+            <input type="month" value={customValue} max={new Date().toISOString().slice(0, 7)}
+              onChange={e => setCustomValue(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+          )}
+          {customMode === "year" && (
+            <select value={customValue} onChange={e => setCustomValue(e.target.value)}
+              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
+              <option value="">Select year…</option>
+              {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
+                <option key={y} value={String(y)}>{y}</option>
               ))}
-            </div>
-
-            {/* Input */}
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              {customMode === "day" && (
-                <input type="date"
-                  value={customValue}
-                  max={new Date().toISOString().slice(0, 10)}
-                  onChange={e => setCustomValue(e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
-                />
-              )}
-              {customMode === "month" && (
-                <input type="month"
-                  value={customValue}
-                  max={new Date().toISOString().slice(0, 7)}
-                  onChange={e => setCustomValue(e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
-                />
-              )}
-              {customMode === "year" && (
-                <select
-                  value={customValue}
-                  onChange={e => setCustomValue(e.target.value)}
-                  style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
-                  <option value="">Select year…</option>
-                  {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
-                    <option key={y} value={String(y)}>{y}</option>
-                  ))}
-                </select>
-              )}
-              <button
-                onClick={() => { if (customValue) setShowCustomPicker(false); }}
-                disabled={!customValue}
-                style={{
-                  padding: "10px 18px", borderRadius: 10,
-                  background: customValue ? "linear-gradient(135deg,#0891b2,#06b6d4)" : "rgba(255,255,255,0.06)",
-                  border: "none", color: customValue ? "#fff" : theme.text.muted,
-                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                  cursor: customValue ? "pointer" : "not-allowed", whiteSpace: "nowrap",
-                }}>
-                Apply ↵
-              </button>
-            </div>
-
-            {/* Active filter label */}
-            {customValue && !showCustomPicker && (
-              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-                Showing: {customMode === "day" ? new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "long", year: "numeric" }) : customMode === "month" ? new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" }) : customValue}
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Active custom filter chip */}
-        {filter === "custom" && customValue && !showCustomPicker && (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 50 }}>
-              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, fontWeight: 600 }}>
-                {customMode === "day"   ? `📆 ${new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}`
-                : customMode === "month" ? `📅 ${new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" })}`
-                : `🗓 ${customValue}`}
-              </span>
-              <button onClick={() => setShowCustomPicker(true)}
-                style={{ background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: theme.font.mono }}>
-                ✎
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Search bar */}
-        <div style={{ position: "relative" }}>
-          <span style={{ position: "absolute", left: 12, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
-          <input
-            placeholder="Product, seller, phone, M-Pesa ref…"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
+            </select>
+          )}
+          <button
+            onClick={() => { if (customValue) setShowCustomPicker(false); }}
+            disabled={!customValue}
             style={{
-              width: "100%", boxSizing: "border-box",
-              padding: "10px 12px 10px 36px",
-              background: theme.bg.card, border: `1px solid ${theme.border.default}`,
-              borderRadius: 12, color: theme.text.primary, fontSize: 13,
-              fontFamily: theme.font.mono, outline: "none",
-            }}
-          />
+              padding: "10px 18px", borderRadius: 10,
+              background: customValue ? "linear-gradient(135deg,#0891b2,#06b6d4)" : "rgba(255,255,255,0.06)",
+              border: "none", color: customValue ? "#fff" : theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+              cursor: customValue ? "pointer" : "not-allowed", whiteSpace: "nowrap",
+            }}>
+            Apply ↵
+          </button>
         </div>
+        {customValue && !showCustomPicker && (
+          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+            Showing: {customMode === "day" ? new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "long", year: "numeric" }) : customMode === "month" ? new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" }) : customValue}
+          </div>
+        )}
+      </div>
+    )}
 
-        {/* Payment method filter pills */}
-        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-          {([
-            { key: "all",   icon: "",   label: "Methods"  },
-            { key: "cash",  icon: "💵", label: "Cash"     },
-            { key: "mpesa", icon: "📱", label: "M-Pesa"   },
-            { key: "split", icon: "⚡", label: "Split"    },
-          ] as const).map(({ key, icon, label }) => {
-            const active = methodFilter === key;
-            const colors: Record<string, string> = {
-              all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan,
-              split: "#fbbf24", credit: "#f87171",
-            };
-            const col = colors[key];
-            return (
-              <button key={key} className="filter-pill"
-                onClick={() => setMethodFilter(key)}
-                style={{
-                  padding: "7px 14px", borderRadius: 50, whiteSpace: "nowrap",
-                  border: `1px solid ${active ? col : theme.border.default}`,
-                  background: active ? `${col}22` : "transparent",
-                  color: active ? col : theme.text.muted,
-                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
-                  display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
-                }}>
-                {icon && <span style={{ fontSize: 13 }}>{icon}</span>}
-                {label}
-              </button>
-            );
-          })}
+    {/* Active custom filter chip */}
+    {filter === "custom" && customValue && !showCustomPicker && (
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 50 }}>
+          <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, fontWeight: 600 }}>
+            {dateLabelForChip()}
+          </span>
+          <button onClick={() => setShowCustomPicker(true)}
+            style={{ background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: theme.font.mono }}>
+            ✎
+          </button>
         </div>
+      </div>
+    )}
+
+    {/* Payment method pills */}
+    <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+      {([
+        { key: "all",   icon: "",   label: "Methods"  },
+        { key: "cash",  icon: "💵", label: "Cash"     },
+        { key: "mpesa", icon: "📱", label: "M-Pesa"   },
+        { key: "split", icon: "⚡", label: "Split"    },
+      ] as const).map(({ key, icon, label }) => {
+        const active = methodFilter === key;
+        const colors: Record<string, string> = {
+          all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan,
+          split: "#fbbf24", credit: "#f87171",
+        };
+        const col = colors[key];
+        return (
+          <button key={key} className="filter-pill"
+            onClick={() => setMethodFilter(key)}
+            style={{
+              padding: "7px 14px", borderRadius: 50, whiteSpace: "nowrap",
+              border: `1px solid ${active ? col : theme.border.default}`,
+              background: active ? `${col}22` : "transparent",
+              color: active ? col : theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
+              display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+            }}>
+            {icon && <span style={{ fontSize: 13 }}>{icon}</span>}
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  </>
+)}
 
         {/* Summary strip — auto-fit so 3 cards stay in one row on normal phones
             and 4 cards (with queue) wrap to 2×2 on narrow screens */}
@@ -1980,7 +2100,233 @@ export default function PosTransactionsPage() {
           </button>
         </div>
       </div>
+        
+  
     )}
+   
+   {/* ── Mobile Filter Sheet ──────────────────────────────────────────── */}
+{filterSheetOpen && isMobile && (
+  <div
+    style={{ position: "fixed", inset: 0, zIndex: 120, display: "flex", alignItems: "flex-end", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
+    onClick={e => { if (e.target === e.currentTarget) setFilterSheetOpen(false); }}>
+    <div style={{
+      width: "100%", maxHeight: "88vh", overflowY: "auto",
+      background: theme.bg.card,
+      borderRadius: "20px 20px 0 0",
+      border: `1px solid ${theme.border.default}`, borderBottom: "none",
+      padding: "20px 18px 40px",
+      display: "flex", flexDirection: "column", gap: 20,
+    }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>⚙ Filters</div>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+            {activeFilterCount === 0 ? "No filters applied" : `${activeFilterCount} active`}
+          </div>
+        </div>
+        <button onClick={() => setFilterSheetOpen(false)}
+          style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          ×
+        </button>
+      </div>
+
+      {/* Type */}
+      <div>
+        <div style={sheetSectionLabel(theme)}>Record Type</div>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+          {(["all", "sales", "expenses", "returns"] as const).map(t => {
+            const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
+            const active = typeFilter === t;
+            return (
+              <button key={t} onClick={() => setTypeFilter(t)}
+                style={{
+                  padding: "9px 16px", borderRadius: 50,
+                  border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
+                  background: active ? "rgba(251,191,36,0.15)" : "transparent",
+                  color: active ? theme.accent.gold : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 400,
+                  cursor: "pointer",
+                }}>
+                {labels[t]}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Date range */}
+      <div>
+        <div style={sheetSectionLabel(theme)}>Date Range</div>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+          {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => {
+            const active = filter === f;
+            return (
+              <button key={f}
+                onClick={() => {
+                  setFilter(f);
+                  if (f !== "custom") { setCustomValue(""); setShowCustomPicker(false); }
+                }}
+                style={{
+                  padding: "9px 16px", borderRadius: 50,
+                  border: `1px solid ${active ? theme.accent.cyan : theme.border.default}`,
+                  background: active ? "rgba(6,182,212,0.15)" : "transparent",
+                  color: active ? theme.accent.cyan : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 400,
+                  cursor: "pointer",
+                }}>
+                {FILTER_LABELS[f]}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Inline custom picker inside the sheet */}
+        {filter === "custom" && (
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(["day", "month", "year"] as CustomMode[]).map(m => (
+                <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
+                  style={{
+                    flex: 1, padding: "8px 0", borderRadius: 8,
+                    border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
+                    background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
+                    color: customMode === m ? theme.accent.cyan : theme.text.muted,
+                    fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
+                    cursor: "pointer",
+                  }}>
+                  {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
+                </button>
+              ))}
+            </div>
+            {customMode === "day" && (
+              <input type="date" value={customValue} max={new Date().toISOString().slice(0, 10)}
+                onChange={e => setCustomValue(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+            )}
+            {customMode === "month" && (
+              <input type="month" value={customValue} max={new Date().toISOString().slice(0, 7)}
+                onChange={e => setCustomValue(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+            )}
+            {customMode === "year" && (
+              <select value={customValue} onChange={e => setCustomValue(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
+                <option value="">Select year…</option>
+                {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
+                  <option key={y} value={String(y)}>{y}</option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Payment method */}
+      <div>
+        <div style={sheetSectionLabel(theme)}>Payment Method</div>
+        <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+          {([
+            { key: "all",   icon: "",   label: "All"    },
+            { key: "cash",  icon: "💵", label: "Cash"   },
+            { key: "mpesa", icon: "📱", label: "M-Pesa" },
+            { key: "split", icon: "⚡", label: "Split"  },
+          ] as const).map(({ key, icon, label }) => {
+            const active = methodFilter === key;
+            const colors: Record<string, string> = { all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan, split: "#fbbf24" };
+            const col = colors[key];
+            return (
+              <button key={key} onClick={() => setMethodFilter(key)}
+                style={{
+                  padding: "9px 16px", borderRadius: 50,
+                  border: `1px solid ${active ? col : theme.border.default}`,
+                  background: active ? `${col}22` : "transparent",
+                  color: active ? col : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 400,
+                  display: "flex", alignItems: "center", gap: 6, cursor: "pointer",
+                }}>
+                {icon && <span>{icon}</span>}{label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Seller */}
+      {sellerOptions.length > 0 && (
+        <div>
+          <div style={sheetSectionLabel(theme)}>Sold By</div>
+          <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
+            <button onClick={() => setSellerFilter("all")}
+              style={{
+                padding: "9px 16px", borderRadius: 50,
+                border: `1px solid ${sellerFilter === "all" ? "#c084fc" : theme.border.default}`,
+                background: sellerFilter === "all" ? "rgba(192,132,252,0.15)" : "transparent",
+                color: sellerFilter === "all" ? "#c084fc" : theme.text.muted,
+                fontFamily: theme.font.mono, fontSize: 12, fontWeight: sellerFilter === "all" ? 700 : 400,
+                cursor: "pointer",
+              }}>
+              All sellers
+            </button>
+            {sellerOptions.map(s => {
+              const active = sellerFilter === s.id;
+              return (
+                <button key={s.id} onClick={() => setSellerFilter(s.id)}
+                  style={{
+                    padding: "9px 16px", borderRadius: 50,
+                    border: `1px solid ${active ? "#c084fc" : theme.border.default}`,
+                    background: active ? "rgba(192,132,252,0.15)" : "transparent",
+                    color: active ? "#c084fc" : theme.text.muted,
+                    fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 400,
+                    cursor: "pointer", maxWidth: "100%",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                  }}>
+                  👤 {s.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div style={{ display: "flex", gap: 10, marginTop: 4 }}>
+        <button
+          onClick={() => {
+            setTypeFilter("all");
+            setFilter("today");
+            setCustomValue("");
+            setShowCustomPicker(false);
+            setMethodFilter("all");
+            setSellerFilter("all");
+          }}
+          style={{
+            flex: 1, padding: "14px 16px",
+            background: "transparent",
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: 14, color: theme.text.muted,
+            fontFamily: theme.font.mono, fontSize: 13, fontWeight: 600,
+            cursor: "pointer",
+          }}>
+          Clear all
+        </button>
+        <button
+          onClick={() => setFilterSheetOpen(false)}
+          style={{
+            flex: 2, padding: "14px 16px",
+            background: "linear-gradient(135deg,#0891b2,#06b6d4)",
+            border: "none", borderRadius: 14, color: "#fff",
+            fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700,
+            cursor: "pointer",
+          }}>
+          Show {displayed.length} result{displayed.length !== 1 ? "s" : ""}
+        </button>
+      </div>
+    </div>
+  </div>
+)}
+
+    
     </div>
   );
 }

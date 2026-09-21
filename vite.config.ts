@@ -20,24 +20,9 @@ export default defineConfig({
         scope: '/pos/',
         start_url: '/pos',
         icons: [
-          {
-            src: 'Qash.png',
-            sizes: '192x192',
-            type: 'image/png',
-            purpose: 'any',
-          },
-          {
-            src: 'Qash.png',
-            sizes: '512x512',
-            type: 'image/png',
-            purpose: 'any',
-          },
-          {
-            src: 'Qash.png',
-            sizes: '1254x1254',
-            type: 'image/png',
-            purpose: 'any maskable',
-          },
+          { src: 'Qash.png', sizes: '192x192',  type: 'image/png', purpose: 'any' },
+          { src: 'Qash.png', sizes: '512x512',  type: 'image/png', purpose: 'any' },
+          { src: 'Qash.png', sizes: '1254x1254', type: 'image/png', purpose: 'any maskable' },
         ],
       },
       workbox: {
@@ -78,4 +63,24 @@ export default defineConfig({
       },
     }),
   ],
+
+  // ── Top-level Vite options ──────────────────────────────────────────
+  server: {
+    host: true,                  // listen on 0.0.0.0 — reachable via LAN IP
+    port: 5173,
+    strictPort: true,            // fail loudly if 5173 is taken
+    allowedHosts: [
+      '.trycloudflare.com',      // any Cloudflare quick tunnel
+      '.ngrok-free.app',         // any ngrok subdomain
+      '.loca.lt',                // localtunnel
+      '.local',                  // mDNS / bonjour names
+      'owners.qashup.co.ke',     // production domain (for PWA testing)
+    ],
+    proxy: {
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
+  },
 })
