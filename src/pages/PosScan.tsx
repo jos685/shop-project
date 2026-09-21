@@ -90,6 +90,8 @@ interface CartItem {
 const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
 const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise", success: "Done" };
 
+
+
 // Reusable product image with click-to-zoom lightbox
 function ProductImage({ 
   imageUrl, 
@@ -231,6 +233,10 @@ export default function PosScan() {
   const [step,         setStep]         = useState<Step>("scan");
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("pin");
 
+  useEffect(() => {
+    ctaGuardRef.current = Date.now();
+  }, [step]);
+
   // scan
   const [mode,           setMode]           = useState<"camera" | "manual">("manual");
   const [cameraActive,   setCameraActive]   = useState(true);
@@ -282,6 +288,8 @@ export default function PosScan() {
   const [pinCountdown, setPinCountdown] = useState(0);
   const pinLockRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const submittingRef  = useRef(false);
+
+  const ctaGuardRef = useRef(0);
 
   const startPinLock = useCallback((until: number) => {
     if (pinLockRef.current) clearInterval(pinLockRef.current);
@@ -1308,12 +1316,16 @@ const exactSkuMatch = useMemo(() => {
 
       <div style={{
           padding: isMobile
-            ? `14px 14px ${
-                step === "checkout"
-                  ? "calc(env(safe-area-inset-bottom, 0px) + 210px)"
-                  : "90px"
-              }`
-            : `24px 40px ${step === "checkout" ? "190px" : "90px"}`,
+          ? `14px 14px ${
+              step === "checkout" || (step === "scan" && cart.length > 0)
+                ? "calc(env(safe-area-inset-bottom, 0px) + 210px)"
+                : "90px"
+            }`
+          : `24px 40px ${
+              step === "checkout" || (step === "scan" && cart.length > 0)
+                ? "190px"
+                : "90px"
+            }`,
           maxWidth: isDesktop ? 1400 : 720,
           margin: "0 auto"
         }}>
@@ -2296,20 +2308,46 @@ const exactSkuMatch = useMemo(() => {
               )}
             </div>
 
-            {/* Quantity */}
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Quantity</label>
-              <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                {[1, 2, 3, 5, 10].map(q => (
-                  <button key={q} onClick={() => setAddQty(q.toString())}
-                    style={{ width: 44, height: 44, border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`, borderRadius: 10, cursor: "pointer", background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent", color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted, fontFamily: theme.font.mono, fontSize: 15, fontWeight: 600 }}>
-                    {q}
-                  </button>
-                ))}
-                <input className="ki" type="text" inputMode="numeric" value={addQty} onChange={e => setAddQty(e.target.value)}
-                  style={{ width: 70, textAlign: "center" }} />
+           {/* Quantity */}
+              <div>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                  Quantity
+                </label>
+
+                {/* Quick-pick chips */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+                  {[1, 2, 3, 5, 10].map(q => (
+                    <button key={q} onClick={() => setAddQty(q.toString())}
+                      style={{ width: 44, height: 44, border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`, borderRadius: 10, cursor: "pointer", background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent", color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted, fontFamily: theme.font.mono, fontSize: 15, fontWeight: 600 }}>
+                      {q}
+                    </button>
+                  ))}
+                </div>
+
+                {/* Custom qty input — labelled + prominent border */}
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
+                  Or enter custom quantity
+                </label>
+                <input
+                  className="ki"
+                  type="text"
+                  inputMode="numeric"
+                  value={addQty}
+                  onChange={e => setAddQty(e.target.value.replace(/[^0-9]/g, ""))}
+                  placeholder="e.g. 12"
+                  style={{
+                    width: "100%",
+                    maxWidth: 200,
+                    textAlign: "center",
+                    borderColor: "rgba(6,182,212,0.55)",
+                    borderWidth: 1.5,
+                    fontFamily: theme.font.mono,
+                    fontWeight: 700,
+                    fontSize: 16,
+                    color: theme.accent.cyan,
+                  }}
+                />
               </div>
-            </div>
 
             {/* Sell Price */}
             {(() => {
@@ -2384,15 +2422,14 @@ const exactSkuMatch = useMemo(() => {
 
 
        {/* ══════════════════ FIXED CHECKOUT CTA ══════════════════ */}
-{step === "checkout" && (
+{/* ══════════════════ FIXED BOTTOM CTA ══════════════════ */}
+{(step === "checkout" || (step === "scan" && cart.length > 0)) && (
   <div
     style={{
       position: "fixed",
       left: 0, right: 0,
-      // Nav is always visible (all screen sizes), so always sit above it.
-      // env() handles iPhone home indicator.
       bottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)",
-      zIndex: 55,                        // must be ABOVE the nav (z-index 50)
+      zIndex: 55,
       pointerEvents: "none",
       background: `linear-gradient(to top, ${theme.bg.base} 70%, transparent 100%)`,
       paddingTop: 24,
@@ -2410,7 +2447,17 @@ const exactSkuMatch = useMemo(() => {
     }}>
       <button
         className="abtn"
-        onClick={handleCheckoutNext}
+        onClick={() => {
+          // Ignore ghost clicks arriving right after a step transition
+          if (Date.now() - ctaGuardRef.current < 400) return;
+
+          if (step === "scan") {
+            setStep("checkout");
+            setError("");
+          } else {
+            handleCheckoutNext();
+          }
+        }}
         style={{
           background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
           color: "#fff",
@@ -2422,7 +2469,11 @@ const exactSkuMatch = useMemo(() => {
           width: isMobile ? "100%" : "calc(56% - 10px)",
         }}
       >
-        <span>Next — Authorise Sale</span>
+        <span>
+          {step === "scan"
+            ? `Review Cart · ${cart.length} item${cart.length !== 1 ? "s" : ""}`
+            : "Next — Authorise Sale"}
+        </span>
         <span style={{ fontFamily: theme.font.mono, fontSize: 15, marginLeft: 16 }}>
           {fmt(grandTotal)} →
         </span>

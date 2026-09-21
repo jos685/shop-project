@@ -37,7 +37,7 @@ export default function FloatingCart({
   useEffect(() => {
     const defaultPos = () => ({
       x: Math.max(EDGE_PAD, window.innerWidth - SIZE - 24),
-      y: Math.max(EDGE_PAD, window.innerHeight - SIZE - 90),
+      y: Math.max(EDGE_PAD, window.innerHeight - SIZE - 140),
     });
     let initial = defaultPos();
     try {
