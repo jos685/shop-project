@@ -1169,28 +1169,52 @@ const exactSkuMatch = useMemo(() => {
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
 
-      {/* Offline banner */}
-      {!isOnline && (
-        <div style={{
-          position: "fixed", top: 0, left: 0, right: 0, zIndex: 9999,
-          background: "#92400e",
-          color: "#fef3c7",
-          padding: "10px 16px",
-          display: "flex", alignItems: "center", justifyContent: "space-between",
-          fontFamily: "monospace", fontSize: 13, fontWeight: 600,
-          boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
-        }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span>⚡</span>
-            Offline — sales will be queued and synced when connection returns.
+     {/* Offline banner */}
+        {!isOnline && (
+          <div style={{
+            position: "fixed",
+            top: isMobile ? 8 : 0,
+            left: isMobile ? "50%" : 0,
+            right: isMobile ? "auto" : 0,
+            transform: isMobile ? "translateX(-50%)" : "none",
+            width: isMobile ? "calc(100% - 24px)" : "100%",
+            maxWidth: isMobile ? 420 : "100%",
+            zIndex: 9999,
+            background: "#92400e",
+            color: "#fef3c7",
+            padding: isMobile ? "8px 12px" : "10px 16px",
+            display: "flex", alignItems: "center",
+            justifyContent: isMobile ? "center" : "space-between",
+            gap: isMobile ? 6 : 12,
+            fontFamily: "monospace",
+            fontSize: isMobile ? 11 : 13,
+            fontWeight: 600,
+            borderRadius: isMobile ? 12 : 0,
+            boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
+            textAlign: isMobile ? "center" : "left",
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <span style={{ flexShrink: 0 }}>⚡</span>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {isMobile
+                  ? "Offline — sales will be queued"
+                  : "Offline — sales will be queued and synced when connection returns."}
+              </span>
+            </div>
+            {pendingCount > 0 && (
+              <span style={{
+                background: "#fef3c7",
+                color: "#92400e",
+                borderRadius: 20,
+                padding: isMobile ? "1px 8px" : "2px 10px",
+                fontSize: isMobile ? 10 : 11,
+                flexShrink: 0,
+              }}>
+                {pendingCount} queued
+              </span>
+            )}
           </div>
-          {pendingCount > 0 && (
-            <span style={{ background: "#fef3c7", color: "#92400e", borderRadius: 20, padding: "2px 10px", fontSize: 11 }}>
-              {pendingCount} queued
-            </span>
-          )}
-        </div>
-      )}
+        )}
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
         @keyframes fadeUp     { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
@@ -2308,46 +2332,94 @@ const exactSkuMatch = useMemo(() => {
               )}
             </div>
 
-           {/* Quantity */}
-              <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                  Quantity
-                </label>
+           
 
-                {/* Quick-pick chips */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
-                  {[1, 2, 3, 5, 10].map(q => (
-                    <button key={q} onClick={() => setAddQty(q.toString())}
-                      style={{ width: 44, height: 44, border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`, borderRadius: 10, cursor: "pointer", background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent", color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted, fontFamily: theme.font.mono, fontSize: 15, fontWeight: 600 }}>
-                      {q}
-                    </button>
-                  ))}
-                </div>
+                          {/* Quantity */}
+                                <div>
+                                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                                    Quantity
+                                  </label>
 
-                {/* Custom qty input — labelled + prominent border */}
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                  Or enter custom quantity
-                </label>
-                <input
-                  className="ki"
-                  type="text"
-                  inputMode="numeric"
-                  value={addQty}
-                  onChange={e => setAddQty(e.target.value.replace(/[^0-9]/g, ""))}
-                  placeholder="e.g. 12"
-                  style={{
-                    width: "100%",
-                    maxWidth: 200,
-                    textAlign: "center",
-                    borderColor: "rgba(6,182,212,0.55)",
-                    borderWidth: 1.5,
-                    fontFamily: theme.font.mono,
-                    fontWeight: 700,
-                    fontSize: 16,
-                    color: theme.accent.cyan,
-                  }}
-                />
-              </div>
+                                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                                    {/* Quick-pick chips */}
+                                    {[1, 2, 3, 5, 10].map(q => (
+                                      <button
+                                        key={q}
+                                        onClick={() => setAddQty(q.toString())}
+                                        style={{
+                                          width: 44,
+                                          height: 44,
+                                          flexShrink: 0,
+                                          border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`,
+                                          borderRadius: 10,
+                                          cursor: "pointer",
+                                          background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent",
+                                          color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted,
+                                          fontFamily: theme.font.mono,
+                                          fontSize: 15,
+                                          fontWeight: 600,
+                                        }}
+                                      >
+                                        {q}
+                                      </button>
+                                    ))}
+
+                                    {/* Custom qty input with "Qty" prefix */}
+                                    <div
+                                      style={{
+                                        flex: "1 1 130px",
+                                        minWidth: 120,
+                                        maxWidth: 170,
+                                        height: 44,
+                                        display: "flex",
+                                        alignItems: "center",
+                                        border: "1.5px solid rgba(6,182,212,0.55)",
+                                        borderRadius: 10,
+                                        overflow: "hidden",
+                                        background: theme.bg.input,
+                                      }}
+                                    >
+                                      <span
+                                        style={{
+                                          padding: "0 8px 0 12px",
+                                          fontFamily: theme.font.mono,
+                                          fontSize: 12,
+                                          fontWeight: 700,
+                                          color: theme.accent.cyan,
+                                          textTransform: "uppercase",
+                                          letterSpacing: "0.05em",
+                                          borderRight: "1px solid rgba(6,182,212,0.35)",
+                                          height: "100%",
+                                          display: "flex",
+                                          alignItems: "center",
+                                        }}
+                                      >
+                                        Qty
+                                      </span>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        value={addQty}
+                                        onChange={e => setAddQty(e.target.value.replace(/[^0-9]/g, ""))}
+                                        placeholder="Custom"
+                                        style={{
+                                          flex: 1,
+                                          height: "100%",
+                                          minWidth: 0,
+                                          background: "transparent",
+                                          border: "none",
+                                          outline: "none",
+                                          textAlign: "center",
+                                          fontFamily: theme.font.mono,
+                                          fontWeight: 700,
+                                          fontSize: 16,
+                                          color: theme.accent.cyan,
+                                          padding: "0 8px",
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
 
             {/* Sell Price */}
             {(() => {
@@ -2421,9 +2493,8 @@ const exactSkuMatch = useMemo(() => {
         )}
 
 
-       {/* ══════════════════ FIXED CHECKOUT CTA ══════════════════ */}
 {/* ══════════════════ FIXED BOTTOM CTA ══════════════════ */}
-{(step === "checkout" || (step === "scan" && cart.length > 0)) && (
+{(step === "checkout" || (step === "scan" && cart.length > 0 && !addingProduct)) && (
   <div
     style={{
       position: "fixed",
