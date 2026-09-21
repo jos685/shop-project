@@ -1144,6 +1144,83 @@ const exactSkuMatch = useMemo(() => {
     handleSubmitSale(found);
   };
 
+
+    // ── PIN digit handler — shared by on-screen numpad and physical keyboard ──
+    const handlePinKey = (k: string) => {
+      if (pinIsLocked) return;
+  
+      if (k === "⌫") {
+        setPin(p => p.slice(0, -1));
+        setPinError(""); setError("");
+        return;
+      }
+  
+      if (!/^[0-9]$/.test(k)) return;
+      setError("");
+      if (pin.length >= 4) return;
+  
+      const newPin = pin + k;
+  
+      if (newPin.length === 4 && selectedAgent) {
+        const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
+  
+        if (!storedPin) {
+          setPin("");
+          setPinError("This agent has no PIN set. Ask your owner to configure one.");
+          setPinShake(true);
+          setTimeout(() => setPinShake(false), 400);
+          return;
+        }
+  
+        if (newPin !== storedPin) {
+          const next = pinFails + 1;
+          setPinFails(next);
+          if (next >= PIN_MAX_FAILS) startPinLock(Date.now() + PIN_LOCK_MS);
+          setPin("");
+          setPinError("Incorrect PIN. Try again.");
+          setPinShake(true);
+          setTimeout(() => setPinShake(false), 400);
+          return;
+        }
+  
+        setPin("");
+        setPinError("");
+        setPinFails(0); setPinCountdown(0);
+        handleSubmitSale(selectedAgent);
+        return;
+      }
+  
+      setPin(newPin);
+      setPinError("");
+    };
+  
+    // ── Physical keyboard input while the PIN pad is open ────────────────
+    // No dep array on purpose: handlePinKey closes over pin / pinFails /
+    // selectedAgent, so we re-bind the listener each render to see fresh values.
+    useEffect(() => {
+      const pinPadOpen =
+        step === "verify" && verifyMethod === "pin" && !!selectedAgent && !processing;
+      if (!pinPadOpen) return;
+  
+      const onKey = (e: KeyboardEvent) => {
+        const el = e.target as HTMLElement | null;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+  
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setSelectedAgent(null); setPin(""); setPinError("");
+          return;
+        }
+        if (e.key === "Backspace") { e.preventDefault(); handlePinKey("⌫"); return; }
+        if (/^[0-9]$/.test(e.key)) { e.preventDefault(); handlePinKey(e.key); return; }
+        if (e.key === "Enter")     { e.preventDefault(); return; } // 4 digits auto-submits
+      };
+  
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    });
+
+
   const handleReset = () => {
     setStep("scan"); setMode("manual"); setSearchQuery("");
     setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
@@ -1342,12 +1419,12 @@ const exactSkuMatch = useMemo(() => {
           padding: isMobile
           ? `14px 14px ${
               step === "checkout" || (step === "scan" && cart.length > 0)
-                ? "calc(env(safe-area-inset-bottom, 0px) + 210px)"
+                ? "calc(env(safe-area-inset-bottom, 0px) + 270px)"
                 : "90px"
             }`
           : `24px 40px ${
               step === "checkout" || (step === "scan" && cart.length > 0)
-                ? "190px"
+                ? "260px"
                 : "90px"
             }`,
           maxWidth: isDesktop ? 1400 : 720,
@@ -2232,55 +2309,30 @@ const exactSkuMatch = useMemo(() => {
                         ⚠ {error}
                       </div>
                     )}
+
+                     {!isMobile && (
+                      <div style={{
+                        marginTop: 4,
+                        fontSize: 10,
+                        fontFamily: theme.font.mono,
+                        color: theme.text.muted,
+                        opacity: 0.75,
+                        letterSpacing: "0.02em",
+                        textAlign: "center",
+                      }}>
+                        ⌨️ Type digits · ⌫ Backspace · Esc to cancel
+                      </div>
+                    )}  
                   </div>
 
                   {/* Numpad */}
                   <div style={{ width: "100%" }}>
                   <div style={{ background: "rgba(255,255,255,0.025)", border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: isMobile ? "10px 8px" : "12px 10px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: numGap }}>
-                    {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
+                  {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
                       <button key={k}
                         className={k === "⌫" ? "num-del" : k ? "num-btn" : ""}
                         disabled={!k || pinIsLocked}
-                        onClick={() => {
-                          if (pinIsLocked) return;
-                          if (k === "⌫") { setPin(p => p.slice(0, -1)); setPinError(""); setError(""); }
-                          else if (k) {
-                            setError("");
-                            if (pin.length >= 4) return;
-                            const newPin = pin + k;
-                            if (newPin.length === 4 && selectedAgent) {
-                              const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
-                              if (!storedPin) {
-                                setPin("");
-                                setPinError("This agent has no PIN set. Ask your owner to configure one.");
-                                setPinShake(true);
-                                setTimeout(() => setPinShake(false), 400);
-                                return;
-                              }
-                              if (newPin !== storedPin) {
-                                const next = pinFails + 1;
-                                setPinFails(next);
-                                if (next >= PIN_MAX_FAILS) {
-                                  const until = Date.now() + PIN_LOCK_MS;
-                                  startPinLock(until);
-                                }
-                                setPin("");
-                                setPinError("Incorrect PIN. Try again.");
-                                setPinShake(true);
-                                setTimeout(() => setPinShake(false), 400);
-                                return;
-                              } else {
-                                setPin("");
-                                setPinError("");
-                                setPinFails(0); setPinCountdown(0);
-                                handleSubmitSale(selectedAgent);
-                                return;
-                              }
-                            }
-                            setPin(newPin);
-                            setPinError("");
-                          }
-                        }}
+                        onClick={() => { if (k) handlePinKey(k); }}
                         style={{
                           height: btnH,
                           border: "none",
@@ -2493,7 +2545,7 @@ const exactSkuMatch = useMemo(() => {
         )}
 
 
-{/* ══════════════════ FIXED BOTTOM CTA ══════════════════ */}
+     {/* ══════════════════ FIXED BOTTOM CTA ══════════════════ */}
 {(step === "checkout" || (step === "scan" && cart.length > 0 && !addingProduct)) && (
   <div
     style={{
@@ -2502,8 +2554,6 @@ const exactSkuMatch = useMemo(() => {
       bottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)",
       zIndex: 55,
       pointerEvents: "none",
-      background: `linear-gradient(to top, ${theme.bg.base} 70%, transparent 100%)`,
-      paddingTop: 24,
       paddingBottom: isMobile ? 10 : 22,
       paddingLeft: isMobile ? 14 : 40,
       paddingRight: isMobile ? 14 : 40,
@@ -2514,25 +2564,20 @@ const exactSkuMatch = useMemo(() => {
       margin: "0 auto",
       display: "flex",
       justifyContent: isMobile ? "stretch" : "flex-end",
-      pointerEvents: "auto",
+      pointerEvents: "none",
     }}>
       <button
         className="abtn"
         onClick={() => {
-          // Ignore ghost clicks arriving right after a step transition
           if (Date.now() - ctaGuardRef.current < 400) return;
-
-          if (step === "scan") {
-            setStep("checkout");
-            setError("");
-          } else {
-            handleCheckoutNext();
-          }
+          if (step === "scan") { setStep("checkout"); setError(""); }
+          else { handleCheckoutNext(); }
         }}
         style={{
+          pointerEvents: "auto",
           background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
           color: "#fff",
-          boxShadow: "0 10px 28px rgba(6,182,212,0.4), 0 2px 8px rgba(0,0,0,0.3)",
+          boxShadow: "0 12px 32px rgba(6,182,212,0.45), 0 4px 12px rgba(0,0,0,0.45)",
           padding: "17px 22px",
           display: "flex",
           alignItems: "center",

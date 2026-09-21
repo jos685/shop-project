@@ -61,10 +61,12 @@ export default function TopNav() {
   const navigate              = useNavigate();
   const width                 = useWindowWidth();
   const isMobile              = width < 640;
+  const isTablet              = width >= 640 && width < 1024;
 
   const [time,        setTime]        = useState(new Date());
   const [showLogout,  setShowLogout]  = useState(false);
   const [alertCount,  setAlertCount]  = useState(0);
+  const [refreshing, setRefreshing] = useState(false);
   // Guard against stray touch events propagating from the login screen.
   const [logoutReady, setLogoutReady] = useState(false);
   useEffect(() => {
@@ -349,6 +351,28 @@ export default function TopNav() {
     }
   };
 
+  const handleRefresh = useCallback(() => {
+    if (refreshing) return;
+    setRefreshing(true);
+
+    // Two-stage yield: requestAnimationFrame lets React commit the
+    // `refreshing=true` render, then the short setTimeout gives the browser
+    // one paint cycle to actually draw the spin before we block the main
+    // thread with the unload sequence. Without this, reload() fires before
+    // the spinner is ever visible — which is what felt like "lag".
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        // `replace` swaps the history entry instead of pushing a new one, so
+        // spamming refresh doesn't litter the back stack. The cache-bust
+        // query is only needed in dev (Vite's module cache); strip it if
+        // you'd rather keep clean URLs.
+        const url = new URL(window.location.href);
+        url.searchParams.set("_r", Date.now().toString());
+        window.location.replace(url.toString());
+      }, 80);
+    });
+  }, [refreshing]);
+
   if (!shop) return null;
 
   return (
@@ -382,8 +406,8 @@ export default function TopNav() {
         display:       "flex",
         alignItems:    "center",
         justifyContent:"space-between",
-        padding:       isMobile ? "0 12px" : "0 28px",
-        gap:           12,
+        padding:       isMobile ? "0 12px" : isTablet ? "0 18px" : "0 28px",
+        gap:           isMobile ? 6 : isTablet ? 8 : 10,
         boxShadow:     theme.isDark
           ? "0 2px 24px rgba(0,0,0,0.5)"
           : "0 2px 16px rgba(0,0,0,0.06)",
@@ -395,11 +419,11 @@ export default function TopNav() {
           {/* Logo — click → home */}
           <img
             src="/Qash.png"
-            alt="Qash"
+            alt="Qashup"
             onClick={() => navigate("/pos")}
             title="Go to dashboard"
             style={{
-              height:       isMobile ? 28 : 70,
+              height:       isMobile ? 28 : isTablet ? 42 : 70,
               width:        "auto",
               objectFit:    "contain",
               flexShrink:   0,
@@ -459,14 +483,22 @@ export default function TopNav() {
               <div style={{
                 fontFamily:    theme.font.display,
                 fontWeight:    800,
-                fontSize:      20,
+                fontSize:      width >= 1400 ? 22 : width >= 1024 ? 20 : 18,
                 color:         theme.text.primary,
                 letterSpacing: "-0.02em",
                 lineHeight:    1.2,
                 whiteSpace:    "nowrap",
                 overflow:      "hidden",
                 textOverflow:  "ellipsis",
-                maxWidth:      220,
+                // Give the name progressively more room as the viewport grows,
+                // so on wide screens the full business name shows without
+                // clipping. `minWidth: 0` on the parent + `flex: 1` here lets
+                // the right-side controls keep their natural size.
+                maxWidth: width >= 1600 ? 760
+                        : width >= 1400 ? 560
+                        : width >= 1280 ? 440
+                        : width >= 1024 ? 320
+                        : 240,
               }}>
                 {shop.name}
               </div>
@@ -475,10 +507,10 @@ export default function TopNav() {
         </div>
 
         {/* ── RIGHT: clock · alerts · bell · toggle · tour · logout ── */}
-        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : 10, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 6 : isTablet ? 8 : 10, flexShrink: 0 }}>
 
           {/* Clock — desktop only */}
-          {!isMobile && (
+          {!isMobile && !isTablet && (
             <div style={{ textAlign: "right", flexShrink: 0 }}>
               <div style={{
                 fontFamily:    theme.font.mono,
@@ -827,24 +859,38 @@ export default function TopNav() {
             {isMobile ? "🧭" : "🧭 Tour"}
           </button>
 
-          {/* Refresh */}
-          <button className="tnav-btn"
-            onClick={() => window.location.reload()}
-            title="Refresh"
+                    {/* Refresh */}
+                    <button
+            className="tnav-btn"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            title={refreshing ? "Refreshing…" : "Refresh"}
             style={{
               width:          isMobile ? 30 : 34,
               height:         isMobile ? 30 : 34,
               borderRadius:   "50%",
-              background:     "rgba(6,182,212,0.08)",
+              background:     refreshing
+                ? "rgba(6,182,212,0.18)"
+                : "rgba(6,182,212,0.08)",
               border:         "1px solid rgba(6,182,212,0.25)",
-              cursor:         "pointer",
+              cursor:         refreshing ? "wait" : "pointer",
               display:        "flex",
               alignItems:     "center",
               justifyContent: "center",
               flexShrink:     0,
               WebkitTapHighlightColor: "transparent",
-            }}>
-            <svg width={isMobile ? 14 : 16} height={isMobile ? 14 : 16} viewBox="0 0 24 24" fill="none">
+              transition:     "background 0.15s",
+            }}
+          >
+            <svg
+              width={isMobile ? 14 : 16}
+              height={isMobile ? 14 : 16}
+              viewBox="0 0 24 24"
+              fill="none"
+              style={refreshing
+                ? { animation: "spin 0.7s linear infinite", transformOrigin: "50% 50%" }
+                : undefined}
+            >
               <path d="M23 4v6h-6" stroke="#06b6d4" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" stroke="#06b6d4" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"/>
             </svg>
