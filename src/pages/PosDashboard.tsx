@@ -374,14 +374,46 @@ export default function PosDashboard() {
           </div>
         )}
 
-        {/* ── Scan & Sell hero ── */}
-        <div className="section" style={{ animationDelay: "0.04s" }}>
+                {/* ── Scan & Sell hero ── */}
+                <div className="section" style={{ animationDelay: "0.04s" }}>
           <button className="action-btn" onClick={() => navigate("/pos/scan")}
-            style={{ width: "100%", minHeight: isMobile ? "34vh" : 210, background: "linear-gradient(145deg,rgba(6,182,212,0.18),rgba(6,182,212,0.06))", border: "1px solid rgba(6,182,212,0.32)", borderRadius: 22, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, boxShadow: "0 6px 32px rgba(6,182,212,0.12),inset 0 1px 0 rgba(255,255,255,0.05)", position: "relative", overflow: "hidden" }}>
-            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-60%)", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle,rgba(6,182,212,0.15) 0%,transparent 70%)", pointerEvents: "none" }} />
-            <span style={{ fontSize: isMobile ? 56 : 64, lineHeight: 1, position: "relative" }}>📷</span>
-            <div style={{ textAlign: "center", position: "relative" }}>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 24 : 30, color: theme.accent.cyan, letterSpacing: "-0.02em" }}>Scan & Sell</div>
+            style={{ width: "100%", minHeight: isMobile ? "58vh" : 410, background: "linear-gradient(145deg,rgba(6,182,212,0.18),rgba(6,182,212,0.06))", border: "1px solid rgba(6,182,212,0.32)", borderRadius: 22, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, boxShadow: "0 6px 32px rgba(6,182,212,0.12),inset 0 1px 0 rgba(255,255,255,0.05)", position: "relative", overflow: "hidden" }}>
+
+            {/* Watermark logo — fades into the gradient, sits behind all content */}
+            <img
+              src="/watermark.png"
+              alt=""
+              aria-hidden="true"
+              draggable={false}
+              style={{
+                position:      "absolute",
+                top:           "50%",
+                left:          "50%",
+                transform:     "translate(-50%, -50%)",
+
+                // Mobile: fits fully inside the taller card with padding.
+                // Desktop: same idea, slightly smaller relative to card height.
+                height:   isMobile ? "72%" : "62%",
+                width:    "auto",
+                maxWidth: isMobile ? "88%" : "55%",
+
+                objectFit:     "contain",
+                opacity:       theme.isDark ? 0.30 : 0.6,
+                filter:        "saturate(0.7)",
+                pointerEvents: "none",
+                userSelect:    "none",
+                zIndex:        0,
+                maskImage:        "radial-gradient(circle at center, black 78%, transparent 92%)",
+                WebkitMaskImage:  "radial-gradient(circle at center, black 78%, transparent 92%)",
+              }}
+            />
+
+            {/* Existing radial glow — nudged above the watermark */}
+            <div style={{ position: "absolute", top: "50%", left: "50%", transform: "translate(-50%,-60%)", width: 180, height: 180, borderRadius: "50%", background: "radial-gradient(circle,rgba(6,182,212,0.15) 0%,transparent 70%)", pointerEvents: "none", zIndex: 1 }} />
+
+            {/* <span style={{ fontSize: isMobile ? 56 : 64, lineHeight: 1, position: "relative", zIndex: 2 }}>📷</span> */}
+            <div style={{ textAlign: "center", position: "relative", zIndex: 2 }}>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 24 : 30, color: theme.accent.cyan, letterSpacing: "-0.02em" }}>Tap to Sell</div>
               <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 4 }}>Tap to start a new transaction</div>
             </div>
           </button>
