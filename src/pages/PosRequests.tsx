@@ -107,6 +107,7 @@ interface CustomerCreditGroup {
   totalPaid: number;
   totalAmount: number;
   hasOpen: boolean;
+  latestSaleAt: number;
 }
 
 interface TransactionReturn {
@@ -162,7 +163,7 @@ export default function PosRequests() {
   const isMobile = width < 640;
   const isTablet = width < 1024;
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("requests");
+  const [activeTab, setActiveTab] = useState<ActiveTab>("credit");
 
   // Offline queued misc items (requests + expenses)
   const [queuedItems, setQueuedItems] = useState<(QueuedRequest | QueuedExpense)[]>([]);
@@ -255,6 +256,7 @@ export default function PosRequests() {
   const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
   const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
   const [creditReturns, setCreditReturns] = useState<Record<string, TransactionReturn[]>>({});
+  
 
   const [businessName,    setBusinessName]    = useState("");
   const [sendStmtGroup,   setSendStmtGroup]   = useState<CustomerCreditGroup | null>(null);
@@ -263,30 +265,6 @@ export default function PosRequests() {
   const [sendStmtError,   setSendStmtError]   = useState("");
   const [sendStmtSent,    setSendStmtSent]    = useState(false);
 
-
-  // receipts for credit sales helper function
-  const getOutstandingItems = (cs: CreditSale): { name: string; quantity: number; unit_price: number; total: number }[] => {
-    const returnsForSale = creditReturns[cs.id] || [];
-    const returnedMap: Record<string, number> = {};
-    for (const ret of returnsForSale) {
-      if (ret.product_id) {
-        returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
-      }
-    }
-    return cs.items
-      .map(item => {
-        const returned = returnedMap[item.product_id] || 0;
-        const remaining = item.quantity - returned;
-        if (remaining <= 0) return null;
-        return {
-          name: item.product_name,
-          quantity: remaining,
-          unit_price: item.unit_price,
-          total: remaining * item.unit_price,
-        };
-      })
-      .filter((item): item is NonNullable<typeof item> => item !== null);
-  };
 
 
   // ── Shared PIN lockout ────────────────────────────────────────────────
@@ -314,20 +292,28 @@ export default function PosRequests() {
   
     // Build item list with remaining quantities
     const items = cs.items
-      .map(item => {
-        const alreadyReturned = returnedMap[item.product_id] || 0;
-        const remaining = item.quantity - alreadyReturned;
-        if (remaining <= 0) return null; // skip fully returned items
-        return {
-          product_id: item.product_id,
-          product_name: item.product_name,
-          original_qty: item.quantity,      // keep for reference
-          remaining_qty: remaining,          // what's left
-          unit_price: item.unit_price,
-          return_qty: remaining,             // default: return all remaining
-        };
-      })
-      .filter((item): item is NonNullable<typeof item> => item !== null);
+  .map(item => {
+    const alreadyReturned = returnedMap[item.product_id] || 0;
+    const remaining = item.quantity - alreadyReturned;
+    if (remaining <= 0) return null;
+
+    // Prefer the price the item was actually sold at.
+    // `subtotal / quantity` is the most reliable source if unit_price
+    // was ever overwritten by a catalog join.
+    const soldPrice = item.quantity > 0
+      ? Math.round(item.subtotal / item.quantity)
+      : item.unit_price;
+
+    return {
+      product_id:    item.product_id,
+      product_name:  item.product_name,
+      original_qty:  item.quantity,
+      remaining_qty: remaining,
+      unit_price:    soldPrice || item.unit_price,   // ← real sale price
+      return_qty:    remaining,
+    };
+  })
+  .filter((x): x is NonNullable<typeof x> => x !== null);
   
     setReturnTarget(cs);
     setReturnItems(items);
@@ -436,6 +422,15 @@ export default function PosRequests() {
     const { data } = await supabase.rpc("get_shop_credit_sales", { p_shop_id: shop.id });
     const salesData = (data || []) as CreditSale[];
     setCreditSales(salesData);
+
+    if (import.meta.env.DEV) {
+      for (const s of salesData) {
+        const sum = s.items.reduce((acc, i) => acc + i.quantity * i.unit_price, 0);
+        if (Math.abs(sum - s.amount) > 0.5) {
+          console.warn(`[credit] Sale ${s.id} items sum ${sum} ≠ amount ${s.amount}. Backfill missed this row.`);
+        }
+      }
+    }
     setCreditLoading(false);
   
     // Fetch returns for all sales
@@ -911,19 +906,71 @@ export default function PosRequests() {
     for (const cs of sales) {
       const key = (cs.customer_phone || cs.customer_name).toLowerCase().trim();
       if (!map.has(key)) {
-        map.set(key, { key, customer_name: cs.customer_name, customer_phone: cs.customer_phone, sales: [], totalOutstanding: 0, totalPaid: 0, totalAmount: 0, hasOpen: false });
+        map.set(key, {
+          key,
+          customer_name: cs.customer_name,
+          customer_phone: cs.customer_phone,
+          sales: [],
+          totalOutstanding: 0,
+          totalPaid: 0,
+          totalAmount: 0,
+          hasOpen: false,
+          latestSaleAt: 0,
+        });
       }
       const g = map.get(key)!;
       g.sales.push(cs);
       g.totalAmount += cs.amount;
       g.totalPaid   += cs.amount_paid;
+      const ts = new Date(cs.created_at).getTime();
+      if (ts > g.latestSaleAt) g.latestSaleAt = ts;
       if (cs.status === "pending" || cs.status === "partial") {
         g.totalOutstanding += cs.amount - cs.amount_paid;
         g.hasOpen = true;
       }
     }
-    return [...map.values()].sort((a, b) => b.totalOutstanding - a.totalOutstanding);
+    for (const g of map.values()) {
+      g.sales.sort((a, b) =>
+        new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+      );
+    }
+    // Newest activity first — regardless of whether the group is settled or open.
+    return [...map.values()].sort((a, b) => b.latestSaleAt - a.latestSaleAt);
   }
+
+  // Returns each item with the quantity still owed after returns,
+// priced at the ACTUAL sale price (subtotal / quantity), not the catalog price.
+function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; total: number }[] {
+  const returnsForSale = creditReturns[cs.id] || [];
+  const returnedMap: Record<string, number> = {};
+  for (const ret of returnsForSale) {
+    if (ret.product_id) {
+      returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+    }
+  }
+
+  return cs.items
+    .map(item => {
+      const alreadyReturned = returnedMap[item.product_id] || 0;
+      const remaining = item.quantity - alreadyReturned;
+      if (remaining <= 0) return null;
+
+      // Prefer the real sold price: subtotal ÷ quantity.
+      // This is what fixes 399-vs-350 — the customer paid 399, so 399 is
+      // what we owe them back / what we show on the statement.
+      const soldPrice =
+        item.quantity > 0
+          ? Math.round(item.subtotal / item.quantity)
+          : item.unit_price;
+
+      return {
+        name:     item.product_name,
+        quantity: remaining,
+        total:    remaining * soldPrice,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+}
 
   async function handleSendStatement() {
     if (!sendStmtGroup || !shop) return;
@@ -1082,9 +1129,9 @@ export default function PosRequests() {
 
   // ── Tab labels ────────────────────────────────────────────────────────
   const tabs: { key: ActiveTab; label: string }[] = [
+    { key: "credit",   label: `📝 Credit (${openCredit.length})` },
     { key: "requests", label: `📋 Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` },
     { key: "expenses", label: `💸 Expenses (${expenses.length})` },
-    { key: "credit",   label: `📝 Credit (${openCredit.length})` },
   ];
 
   return (
@@ -1420,7 +1467,7 @@ export default function PosRequests() {
       {/* ══ CREDIT TAB ══ */}
       {activeTab === "credit" && (
         <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {/* Summary cards */}
+         {/* Summary cards */}
           <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 10 }}>
             <div style={{ background: theme.bg.card, border: "1px solid rgba(248,113,113,0.25)", borderRadius: 14, padding: "16px 18px" }}>
               <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Outstanding</div>
@@ -1440,7 +1487,9 @@ export default function PosRequests() {
               </div>
             )}
           </div>
-
+                    
+          
+          
           {creditLoading ? (
             <div style={{ textAlign: "center", padding: "40px 0" }}>
               <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
@@ -1654,7 +1703,7 @@ export default function PosRequests() {
                                           return (
                                             <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
                                               <span>{remaining}× {item.product_name}</span>
-                                              <span>{fmt(item.subtotal)}</span>
+                                              <span>{fmt(remaining * item.unit_price)}</span>
                                             </div>
                                           );
                                         });
@@ -2099,36 +2148,114 @@ export default function PosRequests() {
         </div>
         );
       })()}
-     {/* ══ MARK RETURNED MODAL ══ */}
+{/* ══ MARK RETURNED MODAL ══ */}
+               {/* ══ MARK RETURNED MODAL ══ */}
 {returnTarget && (() => {
-  const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
-  return (
-    <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
-      onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}>
-      <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>Partial Return</div>
-            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-              {returnTarget.customer_name} · Select items to return
-            </div>
-          </div>
-          <button onClick={resetReturnModal} style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px" }}>✕</button>
-        </div>
+        const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
+        return (
+          <div
+          style={{
+            position: "fixed",
+            top: 0, right: 0, bottom: 0, left: 0,
+            background: theme.bg.overlay,
+            zIndex: 50,
+            display: "flex",
+            alignItems: isMobile ? "stretch" : "center",
+            justifyContent: "center",
+            // On mobile, push the whole sheet below the app's top bar.
+            // 60 = top bar height; tune to match your nav.
+            padding: isMobile ? "60px 0 0 0" : "0 16px",
+            boxSizing: "border-box",
+          }}
+          onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}
+        >
+            {/* ── Floating close button — always visible ── */}
+            <button
+              onClick={resetReturnModal}
+              aria-label="Close"
+              style={{
+                position: "fixed",
+                top: "calc(env(safe-area-inset-top, 0px) + 72px)",
+                right: 12,
+                zIndex: 100,
+                width: 38, height: 38,
+                borderRadius: "50%",
+                background: "rgba(20,20,20,0.85)",
+                border: "1px solid rgba(255,255,255,0.25)",
+                color: "#fff",
+                fontSize: 18,
+                lineHeight: 1,
+                cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                padding: 0,
+                boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
+                backdropFilter: "blur(6px)",
+                WebkitBackdropFilter: "blur(6px)",
+              }}
+            >✕</button>
+      
+            <div
+              style={{
+                background: theme.bg.card,
+                border: isMobile ? "none" : `1px solid ${theme.border.default}`,
+                borderRadius: isMobile ? 0 : 20,
+                padding: isMobile ? "14px 12px 20px" : "24px 20px 28px",
+                paddingTop: isMobile ? "calc(env(safe-area-inset-top, 0px) + 14px)" : 24,
+                width: "100%",
+                maxWidth: isMobile ? "100%" : 460,
+                display: "flex",
+                flexDirection: "column",
+                gap: isMobile ? 10 : 14,
+                animation: "slideUp 0.22s ease",
+                maxHeight: isMobile ? "calc(100dvh - 60px)" : "90vh",
+                overflowY: "auto",
+              }}
+            >
+              {/* Header — plain, no sticky. The ✕ is fixed above. */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 16 : 17 }}>
+                    Partial Return
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {returnTarget.customer_name} · Select items to return
+                  </div>
+                </div>
+                {isMobile && <div style={{ width: 38, flexShrink: 0 }} />}
+                {!isMobile && (
+                  <button
+                    onClick={resetReturnModal}
+                    aria-label="Close"
+                    style={{
+                      background: "rgba(255,255,255,0.05)",
+                      border: `1px solid ${theme.border.default}`,
+                      borderRadius: 8,
+                      width: 32, height: 32,
+                      color: theme.text.muted, fontSize: 16,
+                      cursor: "pointer",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      flexShrink: 0, padding: 0, lineHeight: 1,
+                    }}
+                  >✕</button>
+                )}
+              </div>
 
-        {/* Item list with quantity controls */}
-        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {/* Item list */}
+        <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 8 : 10 }}>
           {returnItems.map((item, idx) => {
             const maxQ = item.remaining_qty;
             const refund = item.return_qty * item.unit_price;
             return (
-              <div key={idx} style={{ background: theme.bg.input, borderRadius: 12, padding: "12px 14px", border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}` }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13 }}>{item.product_name}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                       {fmt(item.unit_price)}/unit · Remaining: {item.remaining_qty}
-                    </div>
+              <div key={idx} style={{
+                background: theme.bg.input,
+                borderRadius: 10,
+                padding: isMobile ? "10px 12px" : "12px 14px",
+                border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}`,
+              }}>
+                {/* Row 1 — name + running refund */}
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                    {item.product_name}
                   </div>
                   {item.return_qty > 0 && (
                     <div style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", flexShrink: 0 }}>
@@ -2136,24 +2263,53 @@ export default function PosRequests() {
                     </div>
                   )}
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 10 }}>
-                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Return:</span>
-                  <button onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.max(0, it.return_qty - 1) } : it))}
-                    style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer" }}>
-                    −
-                  </button>
+
+                {/* Row 2 — editable price + remaining */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  <span>Price</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    value={item.unit_price}
+                    onChange={e => {
+                      const val = Math.round(Number(sanitizeAmount(e.target.value)) || 0);
+                      setReturnItems(prev => prev.map((it, i) => (i === idx ? { ...it, unit_price: val } : it)));
+                    }}
+                    style={{
+                      width: 70,
+                      textAlign: "right",
+                      padding: "3px 6px",
+                      background: theme.bg.base,
+                      border: `1px solid ${theme.border.default}`,
+                      borderRadius: 6,
+                      color: theme.text.primary,
+                      fontFamily: theme.font.mono,
+                      fontSize: 12,
+                      outline: "none",
+                    }}
+                  />
+                  <span>/unit · Remaining {item.remaining_qty}</span>
+                </div>
+
+                {/* Row 3 — quantity stepper */}
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>Return</span>
+                  <button
+                    onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.max(0, it.return_qty - 1) } : it))}
+                    style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >−</button>
                   <input
                     type="text" inputMode="numeric" value={item.return_qty}
                     onChange={e => {
                       const val = parseInt(e.target.value) || 0;
                       setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, Math.max(0, val)) } : it));
                     }}
-                    style={{ width: 54, textAlign: "center", padding: "6px 8px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, outline: "none" }}
+                    style={{ width: 48, textAlign: "center", padding: "4px 6px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 7, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
                   />
-                  <button onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, it.return_qty + 1) } : it))}
-                    style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 16, cursor: "pointer" }}>
-                    +
-                  </button>
+                  <button
+                    onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, it.return_qty + 1) } : it))}
+                    style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  >+</button>
                   <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>of {maxQ}</span>
                 </div>
               </div>
@@ -2161,94 +2317,92 @@ export default function PosRequests() {
           })}
         </div>
 
-        {/* Refund summary */}
+        {/* Total refund — one compact strip */}
         {totalRefund > 0 && (
-          <div style={{ padding: "12px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, display: "flex", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Total Refund</span>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10 }}>
+            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Total Refund</span>
             <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
           </div>
         )}
 
-        {/* Refund method and amounts */}
+        {/* Refund method + amounts */}
         {totalRefund > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div>
-              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                Refund Method
-              </label>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
-                  <button key={key} type="button" onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
-                    style={{ padding: "10px 8px", border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`, borderRadius: 12, background: returnRefundMethod === key ? col + "18" : "transparent", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                    <span style={{ fontSize: 18 }}>{icon}</span>
-                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
-                  </button>
-                ))}
-              </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+              {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
+                  style={{
+                    padding: isMobile ? "7px 6px" : "9px 8px",
+                    border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`,
+                    borderRadius: 10,
+                    background: returnRefundMethod === key ? col + "18" : "transparent",
+                    cursor: "pointer",
+                    display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
+                  }}
+                >
+                  <span style={{ fontSize: isMobile ? 14 : 16 }}>{icon}</span>
+                  <span style={{ fontSize: isMobile ? 11 : 12, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
+                </button>
+              ))}
             </div>
+
             {returnRefundMethod === "split" ? (
-              <div style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.2)", borderRadius: 12, padding: "12px 14px", display: "flex", flexDirection: "column", gap: 10 }}>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24" }}>⚡ Split refund — Total: {fmt(totalRefund)}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                  <div>
-                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
-                    <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                      placeholder="0" />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                    <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                      placeholder="0" />
-                  </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <div>
+                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 3, textTransform: "uppercase" }}>💵 Cash</label>
+                  <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                    onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                    placeholder="0" />
+                </div>
+                <div>
+                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 3, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                  <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                    onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                    placeholder="0" />
                 </div>
               </div>
             ) : returnRefundMethod === "cash" ? (
-              <div>
-                <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash Amount</label>
-                <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                  onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
-                  placeholder={String(totalRefund)} />
-              </div>
+              <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
+                placeholder={`Cash refund — ${fmt(totalRefund)}`} />
             ) : (
-              <div>
-                <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa Amount</label>
-                <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                  onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
-                  placeholder={String(totalRefund)} />
-              </div>
+              <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
+                placeholder={`M-Pesa refund — ${fmt(totalRefund)}`} />
             )}
-            {totalRefund > 0 && (
-              <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 12px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 9 }}>
-                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {(() => {
-                    const c = Math.round(Number(returnCashRefund) || 0);
-                    const m = Math.round(Number(returnMpesaRefund) || 0);
-                    const tot = c + m;
-                    if (tot === 0) return "Enter amounts";
-                    if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
-                    if (tot > totalRefund) return "⚠ Over";
-                    return `⚠ Under by ${fmt(totalRefund - tot)}`;
-                  })()}
-                </span>
-                <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
-                  {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
-                </span>
-              </div>
-            )}
+
+            <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 8 }}>
+              <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                {(() => {
+                  const c = Math.round(Number(returnCashRefund) || 0);
+                  const m = Math.round(Number(returnMpesaRefund) || 0);
+                  const tot = c + m;
+                  if (tot === 0) return "Enter amounts";
+                  if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
+                  if (tot > totalRefund) return "⚠ Over";
+                  return `⚠ Under by ${fmt(totalRefund - tot)}`;
+                })()}
+              </span>
+              <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
+                {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
+              </span>
+            </div>
           </div>
         )}
 
-        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
-          ⚠ This will restore stock for the returned items and reduce the customer’s balance. This cannot be undone.
+        {/* Warning — compact one-liner */}
+        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.5 }}>
+          ⚠ Restores stock and reduces the customer's balance. Cannot be undone.
         </div>
 
         {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
 
         {!returnAgent ? (
           <div>
-            <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Confirm your identity</label>
+            <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Confirm your identity</label>
             <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
           </div>
         ) : (
@@ -2260,7 +2414,7 @@ export default function PosRequests() {
       </div>
     </div>
   );
-  })()}
+})()}
     </div>
   );
 }

@@ -773,7 +773,7 @@ const exactSkuMatch = useMemo(() => {
     }
     if (name === "customerPhone") {
       const v = value.trim();
-      if (method === "credit" && !v) return "Phone is required for credit sales";
+      // Phone is now optional for credit sales — only validate the format when provided.
       if (v) {
         const err = validatePhone(v);
         if (err) return err;
@@ -1957,9 +1957,7 @@ const exactSkuMatch = useMemo(() => {
                 {/* Customer Phone — always visible */}
                 <div>
                   <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                    Customer Phone {payMethod === "credit"
-                      ? <span style={{ color: theme.accent.red }}>*</span>
-                      : <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>}
+                  Customer Phone <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
                   </label>
                   <input className="ki" type="tel" value={customerPhone}
                     onChange={e => {
