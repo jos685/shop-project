@@ -68,7 +68,7 @@ export default defineConfig({
   server: {
     host: true,                  // listen on 0.0.0.0 — reachable via LAN IP
     port: 5173,
-    strictPort: true,            // fail loudly if 5173 is taken
+    strictPort: false,           
     allowedHosts: [
       '.trycloudflare.com',      // any Cloudflare quick tunnel
       '.ngrok-free.app',         // any ngrok subdomain

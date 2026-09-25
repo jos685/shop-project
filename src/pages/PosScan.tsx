@@ -935,8 +935,8 @@ const exactSkuMatch = useMemo(() => {
         product_id:    item.allocation.product.id,
         product_name:  item.allocation.product.name,
         quantity:      item.quantity,
-        unit_price:    item.allocation.product.price,
-        subtotal:      item.allocation.product.price * item.quantity,
+        unit_price:    item.sellPrice,                       // ← use sell price
+        subtotal:      item.sellPrice * item.quantity,
       }));
 
       const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);

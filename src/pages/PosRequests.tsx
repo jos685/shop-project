@@ -240,6 +240,16 @@ export default function PosRequests() {
   const [payProcessing,  setPayProcessing]  = useState(false);
   const [payError,       setPayError]       = useState("");
 
+    // ── Delete unpaid credit state ────────────────────────────────────────
+    const [deleteGroup,      setDeleteGroup]      = useState<CustomerCreditGroup | null>(null);
+    const [deleteAgent,      setDeleteAgent]      = useState<ShopAgent | null>(null);
+    const [deletePin,        setDeletePin]        = useState("");
+    const [deletePinError,   setDeletePinError]   = useState("");
+    const [deletePinShake,   setDeletePinShake]   = useState(false);
+    const [deleteProcessing, setDeleteProcessing] = useState(false);
+    const [deleteError,      setDeleteError]      = useState("");
+    const [deleteMode,       setDeleteMode]       = useState<"unpaid" | "all">("unpaid");
+
   const [returnTarget,       setReturnTarget]       = useState<CreditSale | null>(null);
   const [returnRefundMethod, setReturnRefundMethod] = useState<"cash" | "mpesa" | "split">("cash");
   const [returnCashRefund,   setReturnCashRefund]   = useState("");
@@ -804,6 +814,62 @@ export default function PosRequests() {
     resetPinLockout();
   };
 
+  const resetDeleteModal = () => {
+    setDeleteGroup(null);
+    setDeleteAgent(null);
+    setDeletePin(""); setDeletePinError("");
+    setDeleteMode("unpaid");
+    setDeleteError(""); setDeleteProcessing(false);
+    resetPinLockout();
+  };
+
+  const handleDeleteUnpaid = async (agent: ShopAgent) => {
+    if (!deleteGroup || !shop) return;
+    if (!isOnline) { setDeleteError("Deletion requires an internet connection."); return; }
+
+    // Which sales are we sending?
+    const saleIds = deleteMode === "all"
+      ? deleteGroup.sales.map(s => s.id)
+      : deleteGroup.sales
+          .filter(s => s.status === "pending" || s.status === "partial")
+          .map(s => s.id);
+
+    if (saleIds.length === 0) { setDeleteError("Nothing to delete."); return; }
+
+    setDeleteProcessing(true);
+    try {
+      const { data, error } = await supabase.rpc("delete_credit_sales", {
+        p_shop_id:         shop.id,
+        p_owner_id:        shop.owner_id,
+        p_credit_sale_ids: saleIds,
+        p_include_paid:    deleteMode === "all",
+        p_actor_name:      agent.agent.name,
+        p_actor_code:      agent.agent.agent_id,
+      });
+
+      if (error) {
+        console.error("delete_credit_sales error:", error);
+        setDeleteError(error.message || "Failed to delete. Try again.");
+        setDeleteProcessing(false);
+        return;
+      }
+
+      const deleted = (data as any)?.deleted ?? 0;
+      if (deleted === 0) {
+        setDeleteError("Nothing was deleted — the sales may have changed. Refresh and try again.");
+        setDeleteProcessing(false);
+        return;
+      }
+
+      resetDeleteModal();
+      setExpandedCustomerKey(null);
+      fetchCreditSales();
+    } catch (e: any) {
+      setDeleteError(e?.message || "Unknown error");
+      setDeleteProcessing(false);
+    }
+  };
+
   const handleMarkReturned = async (_agent: ShopAgent) => {
     if (!returnTarget || !shop) return;
     if (!isOnline) {
@@ -849,21 +915,38 @@ export default function PosRequests() {
   
     setReturnProcessing(true);
     try {
-      const { error } = await supabase.rpc("process_credit_return", {
-        p_credit_sale_id: returnTarget.id,
-        p_shop_id: shop.id,
-        p_owner_id: shop.owner_id,
-        p_items: itemsForRpc,
-        p_actor_name: _agent.agent.name,
-        p_actor_code: _agent.agent.agent_id,
-        p_refund_method: method,
-        p_cash_amount: cash,
-        p_mpesa_amount: mpesa,
-        p_reason: "Customer return",
-      });
-      if (error) {
-        console.error("Return error:", error);
-        setReturnError(error.message || "Failed to process return.");
+      // Build a product_id → name map for the activity log note
+      const productNames: Record<string, string> = {};
+      for (const it of selectedItems) productNames[it.product_id] = it.product_name;
+
+      const { data: result, error } = await supabase.functions.invoke(
+        "record-credit-return",
+        {
+          body: {
+            credit_sale_id: returnTarget.id,
+            shop_id:        shop.id,
+            owner_id:       shop.owner_id,
+            items:          itemsForRpc,
+            actor_name:     _agent.agent.name,
+            actor_code:     _agent.agent.agent_id,
+            actor_id:       _agent.agent.id,
+            refund_method:  method,
+            cash_amount:    cash,
+            mpesa_amount:   mpesa,
+            reason:         "Customer return",
+            product_names:  productNames,
+            customer_name:  returnTarget.customer_name,
+          },
+        },
+      );
+
+      if (error || !result?.success) {
+        console.error("Return error:", error ?? result?.error);
+        setReturnError(
+          (error as any)?.message
+            ?? result?.error
+            ?? "Failed to process return.",
+        );
         setReturnProcessing(false);
         return;
       }
@@ -896,7 +979,6 @@ export default function PosRequests() {
   const pendingCount   = requests.filter(r => r.status === "pending").length;
   const totalExpenses  = expenses.reduce((s, e) => s + e.amount, 0);
   const openCredit     = creditSales.filter(c => c.status === "pending" || c.status === "partial");
-  const totalOutstanding = openCredit.reduce((s, c) => s + (c.amount - c.amount_paid), 0);
 
   const statusColor = (s: string) => s === "paid" ? "#34d399" : s === "returned" ? "#6b7280" : s === "partial" ? "#fbbf24" : "#f87171";
   const statusLabel = (s: string) => s === "paid" ? "Paid" : s === "returned" ? "Returned" : s === "partial" ? "Partial" : "Pending";
@@ -1024,7 +1106,51 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
     pinError: string; setPinError: (v: string) => void;
     pinShake: boolean; setPinShake: (v: boolean) => void;
     processing: boolean; onVerify: (agent: ShopAgent) => void;
-  }) => (
+  }) => {
+    const handleDigit = (d: string) => {
+      if (pinIsLocked || processing) return;
+      if (pin.length >= 4) return;
+      const newPin = pin + d;
+      setPin(newPin);
+      if (newPin.length === 4) {
+        if (newPin !== selectedAgent.pin) {
+          recordPinFail();
+          setPinError("Incorrect PIN. Try again.");
+          setPinShake(true);
+          setTimeout(() => { setPinShake(false); setPin(""); }, 400);
+        } else {
+          setPinError("");
+          resetPinLockout();
+          onVerify(selectedAgent);
+        }
+      }
+    };
+
+    const handleBackspace = () => {
+      if (pinIsLocked || processing) return;
+      setPin(pin.slice(0, -1));
+      setPinError("");
+    };
+
+    // ── Physical keyboard binding — re-binds each render to see fresh state ──
+    useEffect(() => {
+      const onKey = (e: KeyboardEvent) => {
+        const el = e.target as HTMLElement | null;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) return;
+
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setPin(""); setPinError("");
+          return;
+        }
+        if (e.key === "Backspace") { e.preventDefault(); handleBackspace(); return; }
+        if (/^[0-9]$/.test(e.key))  { e.preventDefault(); handleDigit(e.key); }
+      };
+      window.addEventListener("keydown", onKey);
+      return () => window.removeEventListener("keydown", onKey);
+    });
+
+    return (
     <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
       <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", textAlign: "center", marginBottom: 12 }}>
         PIN for {selectedAgent.agent.name}
@@ -1055,27 +1181,12 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, maxWidth: 280, margin: "0 auto", width: "100%" }}>
         {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
-          <button key={k} disabled={!k || processing || pinIsLocked}
-            onClick={() => {
-              if (pinIsLocked) return;
-              if (k === "⌫") { setPin(pin.slice(0, -1)); setPinError(""); }
-              else if (k && pin.length < 4) {
-                const newPin = pin + k;
-                setPin(newPin);
-                if (newPin.length === 4) {
-                  if (newPin !== selectedAgent.pin) {
-                    recordPinFail();
-                    setPinError("Incorrect PIN. Try again.");
-                    setPinShake(true);
-                    setTimeout(() => { setPinShake(false); setPin(""); }, 400);
-                  } else {
-                    setPinError("");
-                    resetPinLockout();
-                    onVerify(selectedAgent);
-                  }
-                }
-              }
-            }}
+                    <button key={k} disabled={!k || processing || pinIsLocked}
+                    onClick={() => {
+                      if (pinIsLocked) return;
+                      if (k === "⌫") handleBackspace();
+                      else if (k) handleDigit(k);
+                    }}
             style={{ height: 50, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 10, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: "DM Mono, monospace", fontSize: k === "⌫" ? 18 : 20, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1 }}>
             {k}
           </button>
@@ -1086,6 +1197,17 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
           ⚠ {pinError}
         </div>
       )}
+
+     {!isMobile && !pinIsLocked && !pinError && (
+        <div style={{
+          marginTop: 4, marginBottom: 10,
+          fontSize: 10, fontFamily: theme.font.mono,
+          color: theme.text.muted, opacity: 0.75,
+          letterSpacing: "0.02em", textAlign: "center",
+        }}>
+          ⌨️ Type digits · ⌫ Backspace · Esc to clear
+        </div>
+      )}
       {processing && (
         <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, marginTop: 8, background: "rgba(255,255,255,0.03)", borderRadius: 10, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 13 }}>
           <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
@@ -1094,6 +1216,7 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
       )}
     </div>
   );
+ };
 
   // ── Agent selector render helper ──────────────────────────────────────
   const AgentList = ({ onSelect }: { onSelect: (sa: ShopAgent) => void }) => (
@@ -1466,30 +1589,7 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
 
       {/* ══ CREDIT TAB ══ */}
       {activeTab === "credit" && (
-        <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
-         {/* Summary cards */}
-          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(3,1fr)", gap: 10 }}>
-            <div style={{ background: theme.bg.card, border: "1px solid rgba(248,113,113,0.25)", borderRadius: 14, padding: "16px 18px" }}>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Outstanding</div>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 18 : 22, color: theme.accent.red }}>{fmt(totalOutstanding)}</div>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>{openCredit.length} open sale{openCredit.length !== 1 ? "s" : ""}</div>
-            </div>
-            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "16px 18px" }}>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Total Credit Sales</div>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 18 : 22, color: theme.accent.gold }}>{creditSales.length}</div>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>{creditSales.filter(c => c.status === "paid").length} paid</div>
-            </div>
-            {!isMobile && (
-              <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "16px 18px" }}>
-                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Returned</div>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: "#6b7280" }}>{creditSales.filter(c => c.status === "returned").length}</div>
-                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>sales returned</div>
-              </div>
-            )}
-          </div>
-                    
-          
-          
+        <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>     
           {creditLoading ? (
             <div style={{ textAlign: "center", padding: "40px 0" }}>
               <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
@@ -1523,11 +1623,32 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                               {openCount} open
                             </div>
                           )}
-                          {group.sales.length > 1 && (
+                                                   {group.sales.length > 1 && (
                             <div style={{ background: "rgba(192,132,252,0.12)", border: "1px solid rgba(192,132,252,0.25)", borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", fontWeight: 600 }}>
                               {group.sales.length} sales
                             </div>
                           )}
+                          {(() => {
+                            const totalReturns = group.sales.reduce((sum, s) => {
+                              const saleReturns = creditReturns[s.id] || [];
+                              return sum + saleReturns.reduce((rs, r) => rs + r.quantity_returned, 0);
+                            }, 0);
+                            if (totalReturns === 0) return null;
+                            return (
+                              <div style={{
+                                background: "rgba(251,191,36,0.12)",
+                                border: "1px solid rgba(251,191,36,0.35)",
+                                borderRadius: 10,
+                                padding: "2px 8px",
+                                fontSize: 9,
+                                fontFamily: theme.font.mono,
+                                color: "#fbbf24",
+                                fontWeight: 700,
+                              }}>
+                                ↩ {totalReturns} returned
+                              </div>
+                            );
+                          })()}
                         </div>
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
                           {group.customer_phone || "No phone"}{group.totalPaid > 0 && group.hasOpen ? ` · ${fmt(group.totalPaid)} paid` : ""}
@@ -1552,21 +1673,51 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                     {isGroupExpanded && (
                       <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
 
-                        {/* Action buttons — Record Payment + Send Statement */}
-                        {group.hasOpen && (
-                          <div style={{ padding: "10px 16px", borderBottom: `1px solid ${theme.border.default}`, display: "flex", gap: 8 }}>
-                            <button
-                              onClick={() => { setPayGroupSales(group.sales.filter(s => s.status === "pending" || s.status === "partial")); setPayMpesaRef(""); setPayCashAmount(""); setPayMpesaAmount(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
-                              style={{ flex: 1, padding: "10px 14px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                              💰 Record Payment
-                            </button>
-                            <button
-                              onClick={() => { setSendStmtGroup(group); setSendStmtPhone(group.customer_phone || ""); setSendStmtError(""); setSendStmtSent(false); }}
-                              style={{ flex: 1, padding: "10px 14px", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 10, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                              📱 Send Statement
-                            </button>
-                          </div>
-                        )}
+                                               {/* Action row — delete always available, others only when open */}
+                                               <div style={{ padding: "10px 16px", borderBottom: `1px solid ${theme.border.default}`, display: "flex", gap: 8 }}>
+                          {group.hasOpen && (
+                            <>
+                              <button
+                                onClick={() => { setPayGroupSales(group.sales.filter(s => s.status === "pending" || s.status === "partial")); setPayMpesaRef(""); setPayCashAmount(""); setPayMpesaAmount(""); setPayAgent(null); setPayPin(""); setPayPinError(""); setPayError(""); }}
+                                style={{ flex: 1, padding: "10px 14px", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10, color: "#34d399", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                💰 Record Payment
+                              </button>
+                              <button
+                                onClick={() => { setSendStmtGroup(group); setSendStmtPhone(group.customer_phone || ""); setSendStmtError(""); setSendStmtSent(false); }}
+                                style={{ flex: 1, padding: "10px 14px", background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)", borderRadius: 10, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                                📱 Send Statement
+                              </button>
+                            </>
+                          )}
+                          <button
+                            onClick={() => {
+                              setDeleteGroup(group);
+                              setDeleteAgent(null);
+                              setDeletePin(""); setDeletePinError("");
+                              setDeleteError("");
+                              setDeleteMode("unpaid");
+                            }}
+                            title={group.hasOpen ? "Delete credit sales" : "Delete all credit history for this customer"}
+                            style={{
+                              flex: group.hasOpen ? 0 : 1,
+                              minWidth: group.hasOpen ? 44 : undefined,
+                              padding: "10px 14px",
+                              background: "rgba(248,113,113,0.08)",
+                              border: "1px solid rgba(248,113,113,0.3)",
+                              borderRadius: 10,
+                              color: "#f87171",
+                              fontFamily: theme.font.mono,
+                              fontSize: 12,
+                              fontWeight: 700,
+                              cursor: "pointer",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              gap: 6,
+                            }}>
+                            🗑 {group.hasOpen ? "" : "Delete History"}
+                          </button>
+                        </div>
 
                         {/* ── Unified Payment History ── */}
                         {(() => {
@@ -1615,16 +1766,7 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                                       </div>
                                     );
                                   })}
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(255,255,255,0.03)", borderTop: `1px solid ${theme.border.default}` }}>
-                                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Total Paid</span>
-                                    <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#34d399" }}>{fmt(group.totalPaid)}</span>
-                                  </div>
-                                  {group.hasOpen && (
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: "rgba(248,113,113,0.04)" }}>
-                                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Still Owed</span>
-                                      <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171" }}>{fmt(group.totalOutstanding)}</span>
-                                    </div>
-                                  )}
+                                  
                                 </div>
                               )}
                             </div>
@@ -1632,7 +1774,7 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                         })()}
 
                         {/* Individual sales — hide fully returned */}
-                        {group.sales.filter(cs => cs.status !== "returned").map((cs, csIdx, arr) => {
+                        {group.sales.map((cs, csIdx, arr) => {
                           const balance    = cs.amount - cs.amount_paid;
                           const sc         = statusColor(cs.status);
                           const isOpen     = cs.status === "pending" || cs.status === "partial";
@@ -1641,49 +1783,130 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                           const loadingPay = paymentsLoading === cs.id;
                           const isLast     = csIdx === arr.length - 1;
                           return (
+                            
                             <div key={cs.id} style={{ borderBottom: isLast ? "none" : `1px solid ${theme.border.default}` }}>
-                              <button onClick={() => toggleCreditCard(cs.id)}
-                                style={{ width: "100%", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: isExpanded ? "rgba(6,182,212,0.03)" : "transparent", border: "none", cursor: "pointer", textAlign: "left", color: "inherit" }}>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
-                                    <div style={{ background: `${sc}20`, border: `1px solid ${sc}50`, borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: sc, fontWeight: 600 }}>
-                                      {statusLabel(cs.status)}
-                                    </div>
-                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                                      {new Date(cs.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} · {cs.seller_name}
-                                    </div>
+                            <div
+                              onClick={() => toggleCreditCard(cs.id)}
+                              style={{ width: "100%", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start", background: isExpanded ? "rgba(6,182,212,0.03)" : "transparent", cursor: "pointer", textAlign: "left", color: "inherit" }}>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                                  <div style={{ background: `${sc}20`, border: `1px solid ${sc}50`, borderRadius: 10, padding: "2px 8px", fontSize: 9, fontFamily: theme.font.mono, color: sc, fontWeight: 600 }}>
+                                    {statusLabel(cs.status)}
                                   </div>
-                                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
-                                      {(() => {
-                                        const returnsForSale = creditReturns[cs.id] || [];
-                                        const returnedMap: Record<string, number> = {};
-                                        for (const ret of returnsForSale) {
-                                          if (ret.product_id) {
-                                            returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
-                                          }
-                                        }
-                                        return cs.items
-                                          .map(item => {
-                                            const returned = returnedMap[item.product_id] || 0;
-                                            const remaining = item.quantity - returned;
-                                            return `${item.product_name} ×${remaining}`;
-                                          })
-                                          .join(", ");
-                                      })()}
-                                    </div>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>CR-{cs.id.slice(0, 8).toUpperCase()}</div>
-                                </div>
-                                <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
-                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: isOpen ? "#f87171" : "#34d399" }}>
-                                    {isOpen ? fmt(balance) : fmt(cs.amount)}
+                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                    {new Date(cs.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} · {cs.seller_name}
                                   </div>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>{isOpen ? "balance" : "total"}</div>
-                                  {cs.amount_paid > 0 && isOpen && (
-                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>{fmt(cs.amount_paid)} paid</div>
-                                  )}
-                                  <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 1 }}>{isExpanded ? "▲" : "▼"}</div>
                                 </div>
-                              </button>
+                                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                  {(() => {
+                                    const returnsForSale = creditReturns[cs.id] || [];
+                                    const returnedMap: Record<string, number> = {};
+                                    for (const ret of returnsForSale) {
+                                      if (ret.product_id) {
+                                        returnedMap[ret.product_id] = (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+                                      }
+                                    }
+                                    return cs.items.map((item, i) => {
+                                      const returned  = returnedMap[item.product_id] || 0;
+                                      const remaining = item.quantity - returned;
+                                      const last      = i === cs.items.length - 1;
+
+                                      return (
+                                        <span key={i} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                          {remaining === 0 ? (
+                                            /* Fully returned — strikethrough so it stays visible but reads as "returned" */
+                                            <>
+                                              <span style={{ textDecoration: "line-through", opacity: 0.55 }}>
+                                                {item.product_name} ×{item.quantity}
+                                              </span>
+                                              <span style={{ fontSize: 9, color: "#fbbf24", fontWeight: 700 }}>
+                                                ↩ returned
+                                              </span>
+                                            </>
+                                          ) : (
+                                            <>
+                                              <span>{item.product_name} ×{remaining}</span>
+                                              {returned > 0 && (
+                                                <span style={{ fontSize: 9, color: "#fbbf24", fontWeight: 700 }}>
+                                                  ↩ {returned} of {item.quantity}
+                                                </span>
+                                              )}
+                                            </>
+                                          )}
+                                          {!last && <span style={{ opacity: 0.4 }}>·</span>}
+                                        </span>
+                                      );
+                                    });
+                                  })()}
+                                </div>
+                                  {(() => {
+                                    const returnsForSale = creditReturns[cs.id] || [];
+                                    const totalReturned = returnsForSale.reduce((s, r) => s + r.quantity_returned, 0);
+                                    return (
+                                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" as const }}>
+                                        <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)" }}>
+                                          CR-{cs.id.slice(0, 8).toUpperCase()}
+                                        </span>
+                                        {totalReturned > 0 && (
+                                          <span style={{
+                                            fontSize: 9,
+                                            fontFamily: theme.font.mono,
+                                            fontWeight: 700,
+                                            color: "#fbbf24",
+                                            background: "rgba(251,191,36,0.12)",
+                                            border: "1px solid rgba(251,191,36,0.35)",
+                                            borderRadius: 4,
+                                            padding: "1px 6px",
+                                          }}>
+                                            ↩ {totalReturned} returned
+                                          </span>
+                                        )}
+                                        {isOpen && (
+                                          <button
+                                            onClick={e => { e.stopPropagation(); openReturnModal(cs); }}
+                                            style={{
+                                              fontSize: 10,
+                                              fontFamily: theme.font.mono,
+                                              fontWeight: 700,
+                                              color: "#f87171",
+                                              background: "rgba(248,113,113,0.1)",
+                                              border: "1px solid rgba(248,113,113,0.4)",
+                                              borderRadius: 6,
+                                              padding: "4px 10px",
+                                              cursor: "pointer",
+                                              display: "flex",
+                                              alignItems: "center",
+                                              gap: 4,
+                                              whiteSpace: "nowrap" as const,
+                                              transition: "background 0.15s, border-color 0.15s",
+                                            }}
+                                            onMouseEnter={e => {
+                                              e.currentTarget.style.background = "rgba(248,113,113,0.2)";
+                                              e.currentTarget.style.borderColor = "rgba(248,113,113,0.6)";
+                                            }}
+                                            onMouseLeave={e => {
+                                              e.currentTarget.style.background = "rgba(248,113,113,0.1)";
+                                              e.currentTarget.style.borderColor = "rgba(248,113,113,0.4)";
+                                            }}
+                                          >
+                                            ↩ Return Items
+                                          </button>
+                                        )}
+                                      </div>
+                                    );
+                                  })()}
+                              </div>
+                              <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
+                                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: isOpen ? "#f87171" : "#34d399" }}>
+                                  {isOpen ? fmt(balance) : fmt(cs.amount)}
+                                </div>
+                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>{isOpen ? "balance" : "total"}</div>
+                                {cs.amount_paid > 0 && isOpen && (
+                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>{fmt(cs.amount_paid)} paid</div>
+                                )}
+                                <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 1 }}>{isExpanded ? "▲" : "▼"}</div>
+                              </div>
+                            </div>
 
                               {isExpanded && (
                                 <div style={{ borderTop: `1px solid ${theme.border.default}` }}>
@@ -1698,12 +1921,82 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                                           }
                                         }
                                         return cs.items.map((item, idx) => {
-                                          const returned = returnedMap[item.product_id] || 0;
-                                          const remaining = item.quantity - returned;
+                                          const returned   = returnedMap[item.product_id] || 0;
+                                          const remaining  = item.quantity - returned;
+                                          const isFullyOut = remaining === 0;
+
                                           return (
-                                            <div key={idx} style={{ display: "flex", justifyContent: "space-between", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>
-                                              <span>{remaining}× {item.product_name}</span>
-                                              <span>{fmt(remaining * item.unit_price)}</span>
+                                            <div
+                                              key={idx}
+                                              style={{
+                                                display: "flex",
+                                                justifyContent: "space-between",
+                                                alignItems: "center",
+                                                gap: 8,
+                                                fontSize: 11,
+                                                fontFamily: theme.font.mono,
+                                                color: theme.text.secondary,
+                                                padding: returned > 0 ? "5px 8px" : 0,
+                                                borderRadius: 6,
+                                                background: isFullyOut
+                                                  ? "rgba(107,114,128,0.06)"
+                                                  : returned > 0
+                                                    ? "rgba(251,191,36,0.05)"
+                                                    : "transparent",
+                                                border: isFullyOut
+                                                  ? "1px solid rgba(107,114,128,0.2)"
+                                                  : returned > 0
+                                                    ? "1px solid rgba(251,191,36,0.15)"
+                                                    : "none",
+                                              }}
+                                            >
+                                              <span style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, overflow: "hidden" }}>
+                                                <span style={{
+                                                  overflow: "hidden",
+                                                  textOverflow: "ellipsis",
+                                                  whiteSpace: "nowrap",
+                                                  textDecoration: isFullyOut ? "line-through" : "none",
+                                                  opacity:        isFullyOut ? 0.6 : 1,
+                                                }}>
+                                                  {isFullyOut ? `${item.quantity}×` : `${remaining}×`} {item.product_name}
+                                                </span>
+
+                                                {isFullyOut && (
+                                                  <span style={{
+                                                    fontSize: 9,
+                                                    fontFamily: theme.font.mono,
+                                                    fontWeight: 700,
+                                                    color: "#6b7280",
+                                                    background: "rgba(107,114,128,0.12)",
+                                                    border: "1px solid rgba(107,114,128,0.3)",
+                                                    borderRadius: 4,
+                                                    padding: "1px 6px",
+                                                    flexShrink: 0,
+                                                  }}>
+                                                    ↩ fully returned ({returned}/{item.quantity})
+                                                  </span>
+                                                )}
+
+                                                {!isFullyOut && returned > 0 && (
+                                                  <span style={{
+                                                    fontSize: 9,
+                                                    fontFamily: theme.font.mono,
+                                                    fontWeight: 700,
+                                                    color: "#fbbf24",
+                                                    background: "rgba(251,191,36,0.12)",
+                                                    border: "1px solid rgba(251,191,36,0.3)",
+                                                    borderRadius: 4,
+                                                    padding: "1px 6px",
+                                                    flexShrink: 0,
+                                                  }}>
+                                                    ↩ {returned} of {item.quantity} returned
+                                                  </span>
+                                                )}
+                                              </span>
+
+                                              <span style={{ flexShrink: 0 }}>
+                                                {isFullyOut ? "—" : fmt(remaining * item.unit_price)}
+                                              </span>
                                             </div>
                                           );
                                         });
@@ -1758,46 +2051,60 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
                                       </div>
                                     )}
                                   </div>
-
-                                  {isOpen && (
-                                    <div style={{ padding: "10px 16px 14px", borderTop: `1px solid ${theme.border.default}` }}>
-                           <button
-                                  onClick={() => openReturnModal(cs)}
-                                  style={{
-                                    width: "100%",
-                                    padding: "10px 14px",
-                                    background: "rgba(248,113,113,0.08)",
-                                    border: "1px solid rgba(248,113,113,0.3)",
-                                    borderRadius: 10,
-                                    color: "#f87171",
-                                    fontFamily: theme.font.mono,
-                                    fontSize: 12,
-                                    fontWeight: 700,
-                                    cursor: "pointer",
-                                    display: "flex",
-                                    alignItems: "center",
-                                    justifyContent: "center",
-                                    gap: 8,
-                                    transition: "all 0.15s",
-                                  }}
-                                  onMouseEnter={(e) => {
-                                    e.currentTarget.style.background = "rgba(248,113,113,0.15)";
-                                    e.currentTarget.style.borderColor = "rgba(248,113,113,0.5)";
-                                  }}
-                                  onMouseLeave={(e) => {
-                                    e.currentTarget.style.background = "rgba(248,113,113,0.08)";
-                                    e.currentTarget.style.borderColor = "rgba(248,113,113,0.3)";
-                                  }}
-                                >
-                                  ↩ Return Items
-                                </button>
-                                    </div>
-                                  )}
                                 </div>
                               )}
                             </div>
                           );
                         })}
+
+                                                {/* ── Bottom summary — totals for the whole customer group ── */}
+                                                <div style={{
+                          padding: "14px 16px",
+                          background: "rgba(255,255,255,0.02)",
+                          borderTop: `1px solid ${theme.border.default}`,
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 8,
+                        }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{
+                              fontSize: 10,
+                              fontFamily: theme.font.mono,
+                              color: theme.text.muted,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                            }}>
+                              Total Paid
+                            </span>
+                            <span style={{
+                              fontSize: 16,
+                              fontFamily: theme.font.mono,
+                              fontWeight: 800,
+                              color: "#34d399",
+                            }}>
+                              {fmt(group.totalPaid)}
+                            </span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <span style={{
+                              fontSize: 10,
+                              fontFamily: theme.font.mono,
+                              color: theme.text.muted,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.06em",
+                            }}>
+                              Total Balance
+                            </span>
+                            <span style={{
+                              fontSize: 16,
+                              fontFamily: theme.font.mono,
+                              fontWeight: 800,
+                              color: group.hasOpen ? "#f87171" : "#34d399",
+                            }}>
+                              {group.hasOpen ? fmt(group.totalOutstanding) : "Settled ✓"}
+                            </span>
+                          </div>
+                        </div>
                       </div>
                     )}
                   </div>
@@ -2056,6 +2363,242 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
           </div>
         </div>
       )}
+
+                  {/* ══ DELETE CREDIT MODAL ══ */}
+      {deleteGroup && (() => {
+        const openSales   = deleteGroup.sales.filter(s => s.status === "pending" || s.status === "partial");
+        const targetSales = deleteMode === "all" ? deleteGroup.sales : openSales;
+
+        const totalAmount      = targetSales.reduce((s, x) => s + x.amount, 0);
+        const totalCollected   = targetSales.reduce((s, x) => s + x.amount_paid, 0);
+        const totalOutstanding = totalAmount - totalCollected;
+        const paidCount        = targetSales.filter(s => s.status === "paid").length;
+        const returnedCount    = targetSales.filter(s => s.status === "returned").length;
+
+        const nothingToDelete = targetSales.length === 0;
+
+        return (
+          <div
+            style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
+            onClick={e => { if (e.target === e.currentTarget && !deleteProcessing) resetDeleteModal(); }}>
+            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
+
+              {/* Header */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17, color: "#f87171" }}>
+                    🗑 Delete Credit History
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                    {deleteGroup.customer_name} · {deleteGroup.sales.length} total sale{deleteGroup.sales.length !== 1 ? "s" : ""}
+                  </div>
+                </div>
+                <button onClick={resetDeleteModal} disabled={deleteProcessing}
+                  style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px", opacity: deleteProcessing ? 0.4 : 1 }}>
+                  ✕
+                </button>
+              </div>
+
+              {/* Mode toggle */}
+              <div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.secondary, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>
+                  What to delete
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteMode("unpaid")}
+                    disabled={openSales.length === 0}
+                    style={{
+                      padding: "10px 8px",
+                      border: `1px solid ${deleteMode === "unpaid" ? "rgba(248,113,113,0.6)" : theme.border.default}`,
+                      borderRadius: 10,
+                      background: deleteMode === "unpaid" ? "rgba(248,113,113,0.12)" : "transparent",
+                      color: deleteMode === "unpaid" ? "#f87171" : theme.text.muted,
+                      fontFamily: theme.font.mono,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: openSales.length === 0 ? "not-allowed" : "pointer",
+                      opacity: openSales.length === 0 ? 0.4 : 1,
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                    }}>
+                    <span>Unpaid only</span>
+                    <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.8 }}>{openSales.length} sale{openSales.length !== 1 ? "s" : ""}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDeleteMode("all")}
+                    style={{
+                      padding: "10px 8px",
+                      border: `1px solid ${deleteMode === "all" ? "rgba(248,113,113,0.6)" : theme.border.default}`,
+                      borderRadius: 10,
+                      background: deleteMode === "all" ? "rgba(248,113,113,0.12)" : "transparent",
+                      color: deleteMode === "all" ? "#f87171" : theme.text.muted,
+                      fontFamily: theme.font.mono,
+                      fontSize: 11,
+                      fontWeight: 700,
+                      cursor: "pointer",
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                    }}>
+                    <span>Everything</span>
+                    <span style={{ fontSize: 9, fontWeight: 500, opacity: 0.8 }}>{deleteGroup.sales.length} sale{deleteGroup.sales.length !== 1 ? "s" : ""}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Summary strips */}
+              {!nothingToDelete && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 13px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10 }}>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Sales to delete</span>
+                    <span style={{ fontFamily: theme.font.mono, fontWeight: 700, color: theme.text.primary }}>{targetSales.length}</span>
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 13px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10 }}>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Total value</span>
+                    <span style={{ fontFamily: theme.font.mono, fontWeight: 700, color: theme.text.primary }}>{fmt(totalAmount)}</span>
+                  </div>
+                  {totalCollected > 0 && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 13px", background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 10 }}>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fbbf24", textTransform: "uppercase", letterSpacing: "0.06em" }}>⚠ Collected (will be lost)</span>
+                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24" }}>{fmt(totalCollected)}</span>
+                    </div>
+                  )}
+
+                    {totalOutstanding > 0 && (
+                      <div style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        padding: "9px 13px",
+                        background: "rgba(248,113,113,0.06)",
+                        border: "1px solid rgba(248,113,113,0.25)",
+                        borderRadius: 10,
+                      }}>
+                        <span style={{
+                          fontSize: 10,
+                          fontFamily: theme.font.mono,
+                          color: "#f87171",
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                        }}>
+                          ⚠ Still unpaid (write-off)
+                        </span>
+                        <span style={{
+                          fontFamily: theme.font.mono,
+                          fontWeight: 700,
+                          color: "#f87171",
+                        }}>
+                          {fmt(totalOutstanding)}
+                        </span>
+                      </div>
+                    )}
+                  {deleteMode === "all" && (paidCount > 0 || returnedCount > 0) && (
+                    <div style={{ display: "flex", justifyContent: "space-between", padding: "9px 13px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.25)", borderRadius: 10 }}>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", textTransform: "uppercase", letterSpacing: "0.06em" }}>Paid / returned rows</span>
+                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171" }}>
+                        {paidCount + returnedCount}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Sale list */}
+              {!nothingToDelete && (
+                <div style={{ display: "flex", flexDirection: "column", background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border.default}`, borderRadius: 10, overflow: "hidden", maxHeight: 200, overflowY: "auto" }}>
+                  {targetSales.map((s, idx) => {
+                    const isOpen = s.status === "pending" || s.status === "partial";
+                    return (
+                      <div key={s.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", borderBottom: idx < targetSales.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, display: "flex", alignItems: "center", gap: 6 }}>
+                            CR-{s.id.slice(0, 8).toUpperCase()}
+                            <span style={{
+                              fontSize: 8,
+                              fontFamily: theme.font.mono,
+                              fontWeight: 700,
+                              textTransform: "uppercase",
+                              padding: "1px 5px",
+                              borderRadius: 4,
+                              color: isOpen ? "#f87171" : s.status === "paid" ? "#34d399" : "#6b7280",
+                              background: isOpen ? "rgba(248,113,113,0.12)" : s.status === "paid" ? "rgba(52,211,153,0.12)" : "rgba(107,114,128,0.12)",
+                            }}>
+                              {s.status}
+                            </span>
+                          </div>
+                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>
+                            {new Date(s.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} · {s.items.length} item{s.items.length !== 1 ? "s" : ""}
+                          </div>
+                        </div>
+                        <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 8 }}>
+                          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 12, color: isOpen ? "#f87171" : "#34d399" }}>
+                            {fmt(isOpen ? s.amount - s.amount_paid : s.amount)}
+                          </div>
+                          {s.amount_paid > 0 && isOpen && (
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#fbbf24" }}>
+                              {fmt(s.amount_paid)} paid
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              {/* Warning */}
+              {!nothingToDelete && (
+                <div style={{
+                  background: deleteMode === "all" ? "rgba(248,113,113,0.09)" : "rgba(248,113,113,0.06)",
+                  border: `1px solid ${deleteMode === "all" ? "rgba(248,113,113,0.4)" : "rgba(248,113,113,0.25)"}`,
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  fontSize: 11,
+                  fontFamily: theme.font.mono,
+                  color: theme.accent.red,
+                  lineHeight: 1.55,
+                }}>
+                  {deleteMode === "all"
+                    ? <>⚠ <strong>Everything is deleted</strong> — paid sales, payment history, returns, and the linked revenue transactions will all be permanently removed. This <strong>cannot be undone.</strong> Stock is <strong>NOT</strong> restored.</>
+                    : <>⚠ Only <strong>unpaid</strong> sales are deleted, along with any partial payments already collected against them. This <strong>cannot be undone.</strong> Stock is <strong>NOT</strong> restored.</>}
+                </div>
+              )}
+
+              {nothingToDelete && (
+                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "12px" }}>
+                  Nothing to delete in this mode.
+                </div>
+              )}
+
+              {deleteError && (
+                <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>
+                  ⚠ {deleteError}
+                </div>
+              )}
+
+              {!nothingToDelete && (!deleteAgent ? (
+                <div>
+                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                    Confirm your identity
+                  </label>
+                  <AgentList onSelect={sa => { setDeleteAgent(sa); setDeletePin(""); setDeletePinError(""); }} />
+                </div>
+              ) : (
+                <div>
+                  <SelectedAgentRow agent={deleteAgent} onClear={() => { setDeleteAgent(null); setDeletePin(""); setDeletePinError(""); }} />
+                  <PinKeypad
+                    selectedAgent={deleteAgent}
+                    pin={deletePin} setPin={setDeletePin}
+                    pinError={deletePinError} setPinError={setDeletePinError}
+                    pinShake={deletePinShake} setPinShake={setDeletePinShake}
+                    processing={deleteProcessing}
+                    onVerify={handleDeleteUnpaid}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ══ RECORD PAYMENT MODAL ══ */}
       {(payTarget || payGroupSales) && (() => {
@@ -2317,16 +2860,17 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
           })}
         </div>
 
-        {/* Total refund — one compact strip */}
-        {totalRefund > 0 && (
+               {/* Total refund — one compact strip (relabelled when nothing was paid) */}
+               {totalRefund > 0 && (
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10 }}>
-            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Total Refund</span>
+            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              {returnTarget.amount_paid > 0 ? "Total Refund" : "Return Value"}
+            </span>
             <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
           </div>
         )}
-
-        {/* Refund method + amounts */}
-        {totalRefund > 0 && (
+        {/* Refund method + amounts — only when the customer actually paid something */}
+        {totalRefund > 0 && returnTarget.amount_paid > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
               {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
@@ -2397,6 +2941,24 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
         <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.5 }}>
           ⚠ Restores stock and reduces the customer's balance. Cannot be undone.
         </div>
+
+                {/* Unpaid sale — no refund, just balance reduction */}
+                {totalRefund > 0 && returnTarget.amount_paid === 0 && (
+          <div style={{
+            background: "rgba(6,182,212,0.06)",
+            border: "1px solid rgba(6,182,212,0.25)",
+            borderRadius: 10,
+            padding: "12px 14px",
+            fontSize: 11,
+            fontFamily: theme.font.mono,
+            color: theme.accent.cyan,
+            lineHeight: 1.6,
+          }}>
+            ℹ️ <strong>No refund needed.</strong> This sale was fully unpaid —
+            the return value ({fmt(totalRefund)}) will simply reduce the customer's
+            outstanding balance. No money changes hands.
+          </div>
+        )}
 
         {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
 
