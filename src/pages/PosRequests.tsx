@@ -1216,7 +1216,7 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
       )}
     </div>
   );
- };
+ }
 
   // ── Agent selector render helper ──────────────────────────────────────
   const AgentList = ({ onSelect }: { onSelect: (sa: ShopAgent) => void }) => (
@@ -1269,7 +1269,36 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
         .exp-row  { transition: background 0.12s; }
         .exp-row:hover { background: rgba(255,255,255,0.03) !important; }
         .shake { animation: shake 0.35s ease; }
-        ${theme.kiCss}
+       /* ── Return modal: vh → dvh fallback ─────────────────────────────
+   vh is the universal baseline. dvh overrides it on browsers that
+   support it (Safari 15.4+, Chrome 108+) so the sheet tracks the
+   VISIBLE viewport as the mobile URL bar collapses/expands.
+   On phones it's a bottom sheet capped at 92dvh; on tablet/desktop
+   it's a centered dialog capped at 90dvh. */
+.return-modal-overlay {
+  height: 100vh;
+  height: 100dvh;          /* ignored by old browsers, wins on new */
+}
+.return-modal-shell {
+  max-height: 90vh;
+}
+@supports (height: 100dvh) {
+  .return-modal-shell { max-height: 90dvh; }
+}
+@media (max-width: 640px) {
+  .return-modal-shell {
+    max-height: 92dvh;
+    /* iOS home-indicator clearance — the inner body also adds
+       env(safe-area-inset-bottom), so the sheet always keeps the
+       PIN pad fully tappable. */
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+}
+/* Tablet-ish — a touch more breathing room than desktop */
+@media (min-width: 641px) and (max-width: 1024px) {
+  .return-modal-shell { max-height: 92dvh; }
+}
+${theme.kiCss}
       `}</style>
 
       {/* ── Header ── */}
@@ -2691,292 +2720,287 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
         </div>
         );
       })()}
+
 {/* ══ MARK RETURNED MODAL ══ */}
-               {/* ══ MARK RETURNED MODAL ══ */}
 {returnTarget && (() => {
-        const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
-        return (
-          <div
-          style={{
-            position: "fixed",
-            top: 0, right: 0, bottom: 0, left: 0,
-            background: theme.bg.overlay,
-            zIndex: 50,
-            display: "flex",
-            alignItems: isMobile ? "stretch" : "center",
-            justifyContent: "center",
-            // On mobile, push the whole sheet below the app's top bar.
-            // 60 = top bar height; tune to match your nav.
-            padding: isMobile ? "60px 0 0 0" : "0 16px",
-            boxSizing: "border-box",
-          }}
-          onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}
-        >
-            {/* ── Floating close button — always visible ── */}
-            <button
-              onClick={resetReturnModal}
-              aria-label="Close"
-              style={{
-                position: "fixed",
-                top: "calc(env(safe-area-inset-top, 0px) + 72px)",
-                right: 12,
-                zIndex: 100,
-                width: 38, height: 38,
-                borderRadius: "50%",
-                background: "rgba(20,20,20,0.85)",
-                border: "1px solid rgba(255,255,255,0.25)",
-                color: "#fff",
-                fontSize: 18,
-                lineHeight: 1,
-                cursor: "pointer",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                padding: 0,
-                boxShadow: "0 4px 14px rgba(0,0,0,0.45)",
-                backdropFilter: "blur(6px)",
-                WebkitBackdropFilter: "blur(6px)",
-              }}
-            >✕</button>
-      
+  const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
+  return (
+   
+    <div
+  className="return-modal-overlay"
+  style={{
+    position: "fixed",
+    top: 0, right: 0, left: 0,     // ← drop bottom: 0; height does the work
+    background: theme.bg.overlay,
+    zIndex: 50,
+    display: "flex",
+    alignItems: isMobile ? "flex-end" : "center",
+    justifyContent: "center",
+    padding: isMobile ? 0 : "0 16px",
+    boxSizing: "border-box",
+  }}
+  onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}
+>
             <div
-              style={{
-                background: theme.bg.card,
-                border: isMobile ? "none" : `1px solid ${theme.border.default}`,
-                borderRadius: isMobile ? 0 : 20,
-                padding: isMobile ? "14px 12px 20px" : "24px 20px 28px",
-                paddingTop: isMobile ? "calc(env(safe-area-inset-top, 0px) + 14px)" : 24,
-                width: "100%",
-                maxWidth: isMobile ? "100%" : 460,
-                display: "flex",
-                flexDirection: "column",
-                gap: isMobile ? 10 : 14,
-                animation: "slideUp 0.22s ease",
-                maxHeight: isMobile ? "calc(100dvh - 60px)" : "90vh",
-                overflowY: "auto",
-              }}
-            >
-              {/* Header — plain, no sticky. The ✕ is fixed above. */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 16 : 17 }}>
-                    Partial Return
-                  </div>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {returnTarget.customer_name} · Select items to return
-                  </div>
-                </div>
-                {isMobile && <div style={{ width: 38, flexShrink: 0 }} />}
-                {!isMobile && (
-                  <button
-                    onClick={resetReturnModal}
-                    aria-label="Close"
-                    style={{
-                      background: "rgba(255,255,255,0.05)",
-                      border: `1px solid ${theme.border.default}`,
-                      borderRadius: 8,
-                      width: 32, height: 32,
-                      color: theme.text.muted, fontSize: 16,
-                      cursor: "pointer",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      flexShrink: 0, padding: 0, lineHeight: 1,
-                    }}
-                  >✕</button>
-                )}
-              </div>
+        className="return-modal-shell"
+        style={{
+          background: theme.bg.card,
+          border: isMobile ? "none" : `1px solid ${theme.border.default}`,
+          borderRadius: isMobile ? "20px 20px 0 0" : 20,
+          width: "100%",
+          maxWidth: isMobile ? "100%" : 460,
 
-        {/* Item list */}
-        <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 8 : 10 }}>
-          {returnItems.map((item, idx) => {
-            const maxQ = item.remaining_qty;
-            const refund = item.return_qty * item.unit_price;
-            return (
-              <div key={idx} style={{
-                background: theme.bg.input,
-                borderRadius: 10,
-                padding: isMobile ? "10px 12px" : "12px 14px",
-                border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}`,
-              }}>
-                {/* Row 1 — name + running refund */}
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-                    {item.product_name}
-                  </div>
-                  {item.return_qty > 0 && (
-                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", flexShrink: 0 }}>
-                      -{fmt(refund)}
+          // Modal itself never scrolls — the body inside does. This is what
+          // lets the header stay put and the body scroll cleanly, without any
+          // sticky tricks that fight iOS Safari.
+          display: "flex",
+          flexDirection: "column",
+          boxSizing: "border-box",
+          overflow: "hidden",
+
+          // Height is set by the .return-modal-shell class in the <style> block,
+          // which uses a vh → dvh fallback via @supports.
+        }}
+      >
+        {/* ── Fixed header — never scrolls ── */}
+        <div
+          style={{
+            flexShrink: 0,
+            background: theme.bg.card,
+            borderBottom: `1px solid ${theme.border.default}`,
+            padding: isMobile ? "16px 16px 12px" : "20px 20px 14px",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            gap: 8,
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 16 : 17 }}>
+              Partial Return
+            </div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {returnTarget.customer_name} · Select items to return
+            </div>
+          </div>
+          <button
+            onClick={resetReturnModal}
+            aria-label="Close"
+            style={{
+              background: "rgba(255,255,255,0.05)",
+              border: `1px solid ${theme.border.default}`,
+              borderRadius: 8,
+              width: 32, height: 32,
+              color: theme.text.muted, fontSize: 16,
+              cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              flexShrink: 0, padding: 0, lineHeight: 1,
+            }}
+          >✕</button>
+        </div>
+
+        {/* ── Scrollable body — everything below the header ── */}
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,                       // ← lets flexbox actually shrink
+            overflowY: "auto",
+            WebkitOverflowScrolling: "touch",
+            overscrollBehavior: "contain",
+            display: "flex",
+            flexDirection: "column",
+            gap: isMobile ? 10 : 14,
+            padding: isMobile ? "12px 16px 16px" : "16px 20px 20px",
+            paddingBottom: isMobile
+              ? "calc(env(safe-area-inset-bottom, 0px) + 84px)"   /* was 28px */
+              : 40,                                                /* was 24 */
+            scrollPaddingBottom: isMobile
+              ? "calc(env(safe-area-inset-bottom, 0px) + 56px)"
+              : 32,
+          }}
+        >
+          {/* Item list */}
+          <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 8 : 10 }}>
+            {returnItems.map((item, idx) => {
+              const maxQ = item.remaining_qty;
+              const refund = item.return_qty * item.unit_price;
+              return (
+                <div key={idx} style={{
+                  background: theme.bg.input,
+                  borderRadius: 10,
+                  padding: isMobile ? "10px 12px" : "12px 14px",
+                  border: item.return_qty > 0 ? "1px solid rgba(248,113,113,0.4)" : `1px solid ${theme.border.default}`,
+                }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
+                      {item.product_name}
                     </div>
-                  )}
-                </div>
+                    {item.return_qty > 0 && (
+                      <div style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", flexShrink: 0 }}>
+                        -{fmt(refund)}
+                      </div>
+                    )}
+                  </div>
 
-                {/* Row 2 — editable price + remaining */}
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  <span>Price</span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    value={item.unit_price}
-                    onChange={e => {
-                      const val = Math.round(Number(sanitizeAmount(e.target.value)) || 0);
-                      setReturnItems(prev => prev.map((it, i) => (i === idx ? { ...it, unit_price: val } : it)));
-                    }}
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    <span>Price</span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={item.unit_price}
+                      onChange={e => {
+                        const val = Math.round(Number(sanitizeAmount(e.target.value)) || 0);
+                        setReturnItems(prev => prev.map((it, i) => (i === idx ? { ...it, unit_price: val } : it)));
+                      }}
+                      style={{
+                        width: 70,
+                        textAlign: "right",
+                        padding: "3px 6px",
+                        background: theme.bg.base,
+                        border: `1px solid ${theme.border.default}`,
+                        borderRadius: 6,
+                        color: theme.text.primary,
+                        fontFamily: theme.font.mono,
+                        fontSize: 12,
+                        outline: "none",
+                      }}
+                    />
+                    <span>/unit · Remaining {item.remaining_qty}</span>
+                  </div>
+
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>Return</span>
+                    <button
+                      onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.max(0, it.return_qty - 1) } : it))}
+                      style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >−</button>
+                    <input
+                      type="text" inputMode="numeric" value={item.return_qty}
+                      onChange={e => {
+                        const val = parseInt(e.target.value) || 0;
+                        setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, Math.max(0, val)) } : it));
+                      }}
+                      style={{ width: 48, textAlign: "center", padding: "4px 6px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 7, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+                    />
+                    <button
+                      onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, it.return_qty + 1) } : it))}
+                      style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
+                    >+</button>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>of {maxQ}</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {totalRefund > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10 }}>
+              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                {returnTarget.amount_paid > 0 ? "Total Refund" : "Return Value"}
+              </span>
+              <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
+            </div>
+          )}
+
+          {totalRefund > 0 && returnTarget.amount_paid > 0 && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
+                {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
                     style={{
-                      width: 70,
-                      textAlign: "right",
-                      padding: "3px 6px",
-                      background: theme.bg.base,
-                      border: `1px solid ${theme.border.default}`,
-                      borderRadius: 6,
-                      color: theme.text.primary,
-                      fontFamily: theme.font.mono,
-                      fontSize: 12,
-                      outline: "none",
+                      padding: isMobile ? "7px 6px" : "9px 8px",
+                      border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`,
+                      borderRadius: 10,
+                      background: returnRefundMethod === key ? col + "18" : "transparent",
+                      cursor: "pointer",
+                      display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
                     }}
-                  />
-                  <span>/unit · Remaining {item.remaining_qty}</span>
-                </div>
-
-                {/* Row 3 — quantity stepper */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0 }}>Return</span>
-                  <button
-                    onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.max(0, it.return_qty - 1) } : it))}
-                    style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                  >−</button>
-                  <input
-                    type="text" inputMode="numeric" value={item.return_qty}
-                    onChange={e => {
-                      const val = parseInt(e.target.value) || 0;
-                      setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, Math.max(0, val)) } : it));
-                    }}
-                    style={{ width: 48, textAlign: "center", padding: "4px 6px", background: theme.bg.base, border: `1px solid ${theme.border.default}`, borderRadius: 7, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
-                  />
-                  <button
-                    onClick={() => setReturnItems(prev => prev.map((it, i) => i === idx ? { ...it, return_qty: Math.min(maxQ, it.return_qty + 1) } : it))}
-                    style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}
-                  >+</button>
-                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>of {maxQ}</span>
-                </div>
+                  >
+                    <span style={{ fontSize: isMobile ? 14 : 16 }}>{icon}</span>
+                    <span style={{ fontSize: isMobile ? 11 : 12, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
+                  </button>
+                ))}
               </div>
-            );
-          })}
-        </div>
 
-               {/* Total refund — one compact strip (relabelled when nothing was paid) */}
-               {totalRefund > 0 && (
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10 }}>
-            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              {returnTarget.amount_paid > 0 ? "Total Refund" : "Return Value"}
-            </span>
-            <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
-          </div>
-        )}
-        {/* Refund method + amounts — only when the customer actually paid something */}
-        {totalRefund > 0 && returnTarget.amount_paid > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
-              {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => { setReturnRefundMethod(key); setReturnCashRefund(""); setReturnMpesaRefund(""); }}
-                  style={{
-                    padding: isMobile ? "7px 6px" : "9px 8px",
-                    border: `1px solid ${returnRefundMethod === key ? col + "80" : theme.border.default}`,
-                    borderRadius: 10,
-                    background: returnRefundMethod === key ? col + "18" : "transparent",
-                    cursor: "pointer",
-                    display: "flex", flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5,
-                  }}
-                >
-                  <span style={{ fontSize: isMobile ? 14 : 16 }}>{icon}</span>
-                  <span style={{ fontSize: isMobile ? 11 : 12, fontFamily: theme.font.mono, fontWeight: 600, color: returnRefundMethod === key ? col : theme.text.muted }}>{label}</span>
-                </button>
-              ))}
-            </div>
+              {returnRefundMethod === "split" ? (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 3, textTransform: "uppercase" }}>💵 Cash</label>
+                    <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      placeholder="0" />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 3, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                    <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      placeholder="0" />
+                  </div>
+                </div>
+              ) : returnRefundMethod === "cash" ? (
+                <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
+                  onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
+                  placeholder={`Cash refund — ${fmt(totalRefund)}`} />
+              ) : (
+                <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
+                  onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
+                  placeholder={`M-Pesa refund — ${fmt(totalRefund)}`} />
+              )}
 
-            {returnRefundMethod === "split" ? (
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                <div>
-                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 3, textTransform: "uppercase" }}>💵 Cash</label>
-                  <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                    onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                    placeholder="0" />
-                </div>
-                <div>
-                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 3, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                  <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                    onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
-                    placeholder="0" />
-                </div>
+              <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 8 }}>
+                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  {(() => {
+                    const c = Math.round(Number(returnCashRefund) || 0);
+                    const m = Math.round(Number(returnMpesaRefund) || 0);
+                    const tot = c + m;
+                    if (tot === 0) return "Enter amounts";
+                    if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
+                    if (tot > totalRefund) return "⚠ Over";
+                    return `⚠ Under by ${fmt(totalRefund - tot)}`;
+                  })()}
+                </span>
+                <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
+                  {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
+                </span>
               </div>
-            ) : returnRefundMethod === "cash" ? (
-              <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
-                placeholder={`Cash refund — ${fmt(totalRefund)}`} />
-            ) : (
-              <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
-                placeholder={`M-Pesa refund — ${fmt(totalRefund)}`} />
-            )}
-
-            <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 8 }}>
-              <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                {(() => {
-                  const c = Math.round(Number(returnCashRefund) || 0);
-                  const m = Math.round(Number(returnMpesaRefund) || 0);
-                  const tot = c + m;
-                  if (tot === 0) return "Enter amounts";
-                  if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
-                  if (tot > totalRefund) return "⚠ Over";
-                  return `⚠ Under by ${fmt(totalRefund - tot)}`;
-                })()}
-              </span>
-              <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
-                {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
-              </span>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Warning — compact one-liner */}
-        <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.5 }}>
-          ⚠ Restores stock and reduces the customer's balance. Cannot be undone.
+          <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.5 }}>
+            ⚠ Restores stock and reduces the customer's balance. Cannot be undone.
+          </div>
+
+          {totalRefund > 0 && returnTarget.amount_paid === 0 && (
+            <div style={{ background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 10, padding: "12px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, lineHeight: 1.6 }}>
+              ℹ️ <strong>No refund needed.</strong> This sale was fully unpaid —
+              the return value ({fmt(totalRefund)}) will simply reduce the customer's
+              outstanding balance. No money changes hands.
+            </div>
+          )}
+
+          {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
+
+          {!returnAgent ? (
+            <div>
+              <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Confirm your identity</label>
+              <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
+            </div>
+          ) : (
+            <div>
+              <SelectedAgentRow agent={returnAgent} onClear={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }} />
+              <PinKeypad selectedAgent={returnAgent} pin={returnPin} setPin={setReturnPin} pinError={returnPinError} setPinError={setReturnPinError} pinShake={returnPinShake} setPinShake={setReturnPinShake} processing={returnProcessing} onVerify={handleMarkReturned} />
+            </div>
+          )}
         </div>
-
-                {/* Unpaid sale — no refund, just balance reduction */}
-                {totalRefund > 0 && returnTarget.amount_paid === 0 && (
-          <div style={{
-            background: "rgba(6,182,212,0.06)",
-            border: "1px solid rgba(6,182,212,0.25)",
-            borderRadius: 10,
-            padding: "12px 14px",
-            fontSize: 11,
-            fontFamily: theme.font.mono,
-            color: theme.accent.cyan,
-            lineHeight: 1.6,
-          }}>
-            ℹ️ <strong>No refund needed.</strong> This sale was fully unpaid —
-            the return value ({fmt(totalRefund)}) will simply reduce the customer's
-            outstanding balance. No money changes hands.
-          </div>
-        )}
-
-        {returnError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {returnError}</div>}
-
-        {!returnAgent ? (
-          <div>
-            <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>Confirm your identity</label>
-            <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
-          </div>
-        ) : (
-          <div>
-            <SelectedAgentRow agent={returnAgent} onClear={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }} />
-            <PinKeypad selectedAgent={returnAgent} pin={returnPin} setPin={setReturnPin} pinError={returnPinError} setPinError={setReturnPinError} pinShake={returnPinShake} setPinShake={setReturnPinShake} processing={returnProcessing} onVerify={handleMarkReturned} />
-          </div>
-        )}
       </div>
     </div>
   );
 })()}
+
+
     </div>
   );
 }
