@@ -9,6 +9,52 @@ import { supabase } from "../lib/supabase";
 import { sanitizeInteger, sanitizeText, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
 import { enqueueRequest, enqueueExpense, getMiscQueue, type QueuedRequest, type QueuedExpense } from "../lib/offlineQueue";
 
+// Sums what has already been spent per method. Handles:
+//   - pure cash  (cash_amount set, mpesa_amount 0)
+//   - pure mpesa (mpesa_amount set, cash_amount 0)
+//   - split      (both set)
+//   - legacy rows where cash_amount/mpesa_amount are null but
+//     payment_method tells us which bucket the whole amount belongs to.
+function sumExpensedByMethod(list: Expense[]): { cash: number; mpesa: number } {
+  let cash = 0, mpesa = 0;
+  for (const e of list) {
+    const c = e.cash_amount  ?? (e.payment_method === "cash"  ? e.amount : 0);
+    const m = e.mpesa_amount ?? (e.payment_method === "mpesa" ? e.amount : 0);
+    cash  += Number(c) || 0;
+    mpesa += Number(m) || 0;
+  }
+  return { cash, mpesa };
+}
+
+// Signed net position for a single sale.
+//   > 0 → customer still owes the shop
+//   < 0 → shop owes the customer (over-paid after returns/refunds)
+//
+// This is THE formula. Every "balance" in the credit UI must come from here.
+function getSaleNet(sale: CreditSale, returns: TransactionReturn[]): number {
+  const totalReturnValue = returns.reduce(
+    (s, r) => s + Number(r.quantity_returned) * Number(r.unit_price), 0);
+
+  const totalRefunded = returns.reduce((s, r) => {
+    const split =
+      Number(r.refund_cash_amount  || 0) +
+      Number(r.refund_mpesa_amount || 0);
+    // Prefer the split (needed for cash-vs-M-Pesa reporting);
+    // fall back to the aggregate when the split wasn't recorded.
+    const refund = split > 0 ? split : Number(r.amount_refunded || 0);
+    return s + refund;
+  }, 0);
+
+  return (sale.amount - totalReturnValue) - (sale.amount_paid - totalRefunded);
+}
+
+const owedByCustomer = (sale: CreditSale, returns: TransactionReturn[]) =>
+  Math.max(0, getSaleNet(sale, returns));
+
+const owedByShop = (sale: CreditSale, returns: TransactionReturn[]) =>
+  Math.max(0, -getSaleNet(sale, returns));
+
+
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
 function useWindowWidth() {
@@ -118,6 +164,9 @@ interface TransactionReturn {
   quantity_returned: number;
   unit_price: number;
   amount_refunded: number;
+  refund_cash_amount: number;       // ← actual cash handed back
+  refund_mpesa_amount: number;      // ← actual M-Pesa handed back
+  refund_method: string | null;     // 'cash' | 'mpesa' | 'split' | null
   reason: string;
   created_at: string;
 }
@@ -153,92 +202,92 @@ function statusBadge(status: RequestStatus) {
   );
 }
 
-// ── Component ─────────────────────────────────────────────────────────────────
+ // ── Component ─────────────────────────────────────────────────────────────────
 
-export default function PosRequests() {
-  const { theme } = useTheme();
+ export default function PosRequests() {
+   const { theme } = useTheme();
   const { shop, logout } = useShopAuth();
-  const { isOnline, pendingCount: offlineQueueCount, refreshPendingCount } = useNetwork();
-  const width = useWindowWidth();
-  const isMobile = width < 640;
+   const { isOnline, pendingCount: offlineQueueCount, refreshPendingCount } = useNetwork();
+   const width = useWindowWidth();
+   const isMobile = width < 640;
   const isTablet = width < 1024;
 
-  const [activeTab, setActiveTab] = useState<ActiveTab>("credit");
+    const [activeTab, setActiveTab] = useState<ActiveTab>("credit");
 
-  // Offline queued misc items (requests + expenses)
+   // Offline queued misc items (requests + expenses)
   const [queuedItems, setQueuedItems] = useState<(QueuedRequest | QueuedExpense)[]>([]);
-  useEffect(() => {
+   useEffect(() => {
     const all = getMiscQueue();
     setQueuedItems(all.map(i => {
       const { kind: _k, ...rest } = i as any;
       return rest as QueuedRequest | QueuedExpense;
     }));
-  }, [offlineQueueCount]);
+    }, [offlineQueueCount]);
 
-  // ── Requests state ────────────────────────────────────────────────────
-  const [requests, setRequests]     = useState<ShopRequest[]>([]);
-  const [products, setProducts]     = useState<StockProduct[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [showForm, setShowForm]     = useState(false);
-  const [submitting, setSubmitting] = useState(false);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+    // ── Requests state ────────────────────────────────────────────────────
+    const [requests, setRequests]     = useState<ShopRequest[]>([]);
+    const [products, setProducts]     = useState<StockProduct[]>([]);
+    const [loading, setLoading]       = useState(true);
+    const [showForm, setShowForm]     = useState(false);
+    const [submitting, setSubmitting] = useState(false);
+    const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  // Form state
-  const [type, setType]             = useState<RequestType>("stock_request");
-  const [productId, setProductId]   = useState("");
-  const [quantity, setQuantity]     = useState("");
-  const [message, setMessage]       = useState("");
-  const [formError, setFormError]   = useState("");
-  const [successMsg, setSuccessMsg] = useState("");
+    // Form state
+    const [type, setType]             = useState<RequestType>("stock_request");
+    const [productId, setProductId]   = useState("");
+    const [quantity, setQuantity]     = useState("");
+    const [message, setMessage]       = useState("");
+    const [formError, setFormError]   = useState("");
+    const [successMsg, setSuccessMsg] = useState("");
 
-  const needsProduct = type === "stock_request" || type === "damage_report" || type === "demand_report";
-  const needsQty     = type === "stock_request" || type === "damage_report";
+    const needsProduct = type === "stock_request" || type === "damage_report" || type === "demand_report";
+    const needsQty     = type === "stock_request" || type === "damage_report";
 
-  // ── Agents state ──────────────────────────────────────────────────────
-  const [agents, setAgents] = useState<ShopAgent[]>([]);
+    // ── Agents state ──────────────────────────────────────────────────────
+    const [agents, setAgents] = useState<ShopAgent[]>([]);
 
-  // ── Expenses state ────────────────────────────────────────────────────
-  const [expenses,      setExpenses]      = useState<Expense[]>([]);
-  const [expLoading,    setExpLoading]    = useState(false);
+    // ── Expenses state ────────────────────────────────────────────────────
+    const [expenses,      setExpenses]      = useState<Expense[]>([]);
+    const [expLoading,    setExpLoading]    = useState(false);
 
-  const [logOpen,        setLogOpen]        = useState(false);
-  const [expDesc,        setExpDesc]        = useState("");
-  const [expCashAmount,  setExpCashAmount]  = useState("");
-  const [expMpesaAmount, setExpMpesaAmount] = useState("");
-  const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
-  const [expPin,         setExpPin]         = useState("");
-  const [expPinError,    setExpPinError]    = useState("");
-  const [expPinShake,    setExpPinShake]    = useState(false);
-  const [expProcessing,  setExpProcessing]  = useState(false);
-  const [expError,       setExpError]       = useState("");
-  const [shopCashTotal,   setShopCashTotal]   = useState<number | null>(null);
-  const [shopMpesaTotal,  setShopMpesaTotal]  = useState<number | null>(null);
+    const [logOpen,        setLogOpen]        = useState(false);
+    const [expDesc,        setExpDesc]        = useState("");
+    const [expCashAmount,  setExpCashAmount]  = useState("");
+    const [expMpesaAmount, setExpMpesaAmount] = useState("");
+    const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
+    const [expPin,         setExpPin]         = useState("");
+    const [expPinError,    setExpPinError]    = useState("");
+    const [expPinShake,    setExpPinShake]    = useState(false);
+    const [expProcessing,  setExpProcessing]  = useState(false);
+    const [expError,       setExpError]       = useState("");
+    const [shopCashTotal,   setShopCashTotal]   = useState<number | null>(null);
+    const [shopMpesaTotal,  setShopMpesaTotal]  = useState<number | null>(null);
 
-  const [editTarget,    setEditTarget]    = useState<Expense | null>(null);
-  const [editAmount,    setEditAmount]    = useState("");
-  const [editDesc,      setEditDesc]      = useState("");
-  const [editAgent,     setEditAgent]     = useState<ShopAgent | null>(null);
-  const [editPin,       setEditPin]       = useState("");
-  const [editPinError,  setEditPinError]  = useState("");
-  const [editPinShake,  setEditPinShake]  = useState(false);
-  const [editProcessing,setEditProcessing]= useState(false);
-  const [editError,     setEditError]     = useState("");
+    const [editTarget,    setEditTarget]    = useState<Expense | null>(null);
+    const [editAmount,    setEditAmount]    = useState("");
+    const [editDesc,      setEditDesc]      = useState("");
+    const [editAgent,     setEditAgent]     = useState<ShopAgent | null>(null);
+    const [editPin,       setEditPin]       = useState("");
+    const [editPinError,  setEditPinError]  = useState("");
+    const [editPinShake,  setEditPinShake]  = useState(false);
+    const [editProcessing,setEditProcessing]= useState(false);
+    const [editError,     setEditError]     = useState("");
 
-  // ── Credit state ──────────────────────────────────────────────────────
-  const [creditSales,    setCreditSales]    = useState<CreditSale[]>([]);
-  const [creditLoading,  setCreditLoading]  = useState(false);
+    // ── Credit state ──────────────────────────────────────────────────────
+    const [creditSales,    setCreditSales]    = useState<CreditSale[]>([]);
+    const [creditLoading,  setCreditLoading]  = useState(false);
 
-  const [payTarget,      setPayTarget]      = useState<CreditSale | null>(null);
-  const [payGroupSales,  setPayGroupSales]  = useState<CreditSale[] | null>(null); // group-level payment
-  const [payCashAmount,  setPayCashAmount]  = useState("");
-  const [payMpesaAmount, setPayMpesaAmount] = useState("");
-  const [payMpesaRef,    setPayMpesaRef]    = useState("");
-  const [payAgent,       setPayAgent]       = useState<ShopAgent | null>(null);
-  const [payPin,         setPayPin]         = useState("");
-  const [payPinError,    setPayPinError]    = useState("");
-  const [payPinShake,    setPayPinShake]    = useState(false);
-  const [payProcessing,  setPayProcessing]  = useState(false);
-  const [payError,       setPayError]       = useState("");
+    const [payTarget,      setPayTarget]      = useState<CreditSale | null>(null);
+    const [payGroupSales,  setPayGroupSales]  = useState<CreditSale[] | null>(null); // group-level payment
+    const [payCashAmount,  setPayCashAmount]  = useState("");
+    const [payMpesaAmount, setPayMpesaAmount] = useState("");
+    const [payMpesaRef,    setPayMpesaRef]    = useState("");
+    const [payAgent,       setPayAgent]       = useState<ShopAgent | null>(null);
+    const [payPin,         setPayPin]         = useState("");
+    const [payPinError,    setPayPinError]    = useState("");
+    const [payPinShake,    setPayPinShake]    = useState(false);
+    const [payProcessing,  setPayProcessing]  = useState(false);
+    const [payError,       setPayError]       = useState("");
 
     // ── Delete unpaid credit state ────────────────────────────────────────
     const [deleteGroup,      setDeleteGroup]      = useState<CustomerCreditGroup | null>(null);
@@ -250,55 +299,55 @@ export default function PosRequests() {
     const [deleteError,      setDeleteError]      = useState("");
     const [deleteMode,       setDeleteMode]       = useState<"unpaid" | "all">("unpaid");
 
-  const [returnTarget,       setReturnTarget]       = useState<CreditSale | null>(null);
-  const [returnRefundMethod, setReturnRefundMethod] = useState<"cash" | "mpesa" | "split">("cash");
-  const [returnCashRefund,   setReturnCashRefund]   = useState("");
-  const [returnMpesaRefund,  setReturnMpesaRefund]  = useState("");
-  const [returnAgent,        setReturnAgent]        = useState<ShopAgent | null>(null);
-  const [returnPin,          setReturnPin]          = useState("");
-  const [returnPinError,     setReturnPinError]     = useState("");
-  const [returnPinShake,     setReturnPinShake]     = useState(false);
-  const [returnProcessing,   setReturnProcessing]   = useState(false);
-  const [returnError,        setReturnError]        = useState("");
+    const [returnTarget,       setReturnTarget]       = useState<CreditSale | null>(null);
+    const [returnRefundMethod, setReturnRefundMethod] = useState<"cash" | "mpesa" | "split">("cash");
+    const [returnCashRefund,   setReturnCashRefund]   = useState("");
+    const [returnMpesaRefund,  setReturnMpesaRefund]  = useState("");
+    const [returnAgent,        setReturnAgent]        = useState<ShopAgent | null>(null);
+    const [returnPin,          setReturnPin]          = useState("");
+    const [returnPinError,     setReturnPinError]     = useState("");
+    const [returnPinShake,     setReturnPinShake]     = useState(false);
+    const [returnProcessing,   setReturnProcessing]   = useState(false);
+    const [returnError,        setReturnError]        = useState("");
 
-  const [expandedCreditId,    setExpandedCreditId]    = useState<string | null>(null);
-  const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
-  const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
-  const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
-  const [creditReturns, setCreditReturns] = useState<Record<string, TransactionReturn[]>>({});
-  
+    const [expandedCreditId,    setExpandedCreditId]    = useState<string | null>(null);
+    const [expandedCustomerKey, setExpandedCustomerKey] = useState<string | null>(null);
+    const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
+    const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
+    const [creditReturns, setCreditReturns] = useState<Record<string, TransactionReturn[]>>({});
+    
 
-  const [businessName,    setBusinessName]    = useState("");
-  const [sendStmtGroup,   setSendStmtGroup]   = useState<CustomerCreditGroup | null>(null);
-  const [sendStmtPhone,   setSendStmtPhone]   = useState("");
-  const [sendStmtSending, setSendStmtSending] = useState(false);
-  const [sendStmtError,   setSendStmtError]   = useState("");
-  const [sendStmtSent,    setSendStmtSent]    = useState(false);
+    const [businessName,    setBusinessName]    = useState("");
+    const [sendStmtGroup,   setSendStmtGroup]   = useState<CustomerCreditGroup | null>(null);
+    const [sendStmtPhone,   setSendStmtPhone]   = useState("");
+    const [sendStmtSending, setSendStmtSending] = useState(false);
+    const [sendStmtError,   setSendStmtError]   = useState("");
+    const [sendStmtSent,    setSendStmtSent]    = useState(false);
 
 
 
-  // ── Shared PIN lockout ────────────────────────────────────────────────
-  const PIN_MAX_FAILS   = 5;
-  const PIN_LOCKOUT_MS  = 30_000;
-  const [pinModalFails,       setPinModalFails]       = useState(0);
-  const [pinModalCountdown,   setPinModalCountdown]   = useState(0);
-  const pinLockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+    // ── Shared PIN lockout ────────────────────────────────────────────────
+    const PIN_MAX_FAILS   = 5;
+    const PIN_LOCKOUT_MS  = 30_000;
+    const [pinModalFails,       setPinModalFails]       = useState(0);
+    const [pinModalCountdown,   setPinModalCountdown]   = useState(0);
+    const pinLockTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const [returnItems, setReturnItems] = useState<{ product_id: string; product_name: string; original_qty: number; remaining_qty: number; unit_price: number; return_qty: number }[]>([]);
-  const openReturnModal = async (cs: CreditSale) => {
-    // Fetch existing returns for this credit sale
-    const { data: returnsData } = await supabase.rpc("get_transaction_returns", {
-      p_transaction_ids: [cs.id]
-    });
-  
-    // Build map: product_id -> total returned quantity
-    const returnedMap: Record<string, number> = {};
-    for (const ret of (returnsData || [])) {
-      const pid = ret.product_id;
-      if (pid) {
-        returnedMap[pid] = (returnedMap[pid] || 0) + ret.quantity_returned;
+    const [returnItems, setReturnItems] = useState<{ product_id: string; product_name: string; original_qty: number; remaining_qty: number; unit_price: number; return_qty: number }[]>([]);
+    const openReturnModal = async (cs: CreditSale) => {
+      // Fetch existing returns for this credit sale
+      const { data: returnsData } = await supabase.rpc("get_transaction_returns", {
+        p_transaction_ids: [cs.id]
+      });
+    
+      // Build map: product_id -> total returned quantity
+      const returnedMap: Record<string, number> = {};
+      for (const ret of (returnsData || [])) {
+        const pid = ret.product_id;
+        if (pid) {
+          returnedMap[pid] = (returnedMap[pid] || 0) + ret.quantity_returned;
+        }
       }
-    }
   
     // Build item list with remaining quantities
     const items = cs.items
@@ -429,34 +478,27 @@ export default function PosRequests() {
   const fetchCreditSales = useCallback(async () => {
     if (!shop) return;
     setCreditLoading(true);
-    const { data } = await supabase.rpc("get_shop_credit_sales", { p_shop_id: shop.id });
-    const salesData = (data || []) as CreditSale[];
-    setCreditSales(salesData);
-
-    if (import.meta.env.DEV) {
-      for (const s of salesData) {
-        const sum = s.items.reduce((acc, i) => acc + i.quantity * i.unit_price, 0);
-        if (Math.abs(sum - s.amount) > 0.5) {
-          console.warn(`[credit] Sale ${s.id} items sum ${sum} ≠ amount ${s.amount}. Backfill missed this row.`);
-        }
-      }
-    }
-    setCreditLoading(false);
   
-    // Fetch returns for all sales
-    const saleIds = salesData.map((s: CreditSale) => s.id);
+    const { data: salesRes } = await supabase.rpc("get_shop_credit_sales", { p_shop_id: shop.id });
+    const salesData = (salesRes || []) as CreditSale[];
+  
+    let returnsMap: Record<string, TransactionReturn[]> = {};
+    const saleIds = salesData.map(s => s.id);
     if (saleIds.length > 0) {
-      const { data: returnsData } = await supabase.rpc("get_transaction_returns", { p_transaction_ids: saleIds });
-      const returnsMap: Record<string, TransactionReturn[]> = {};
-      for (const ret of (returnsData || [])) {
-        const tid = (ret as TransactionReturn).original_transaction_id;
-        if (!returnsMap[tid]) returnsMap[tid] = [];
-        returnsMap[tid].push(ret as TransactionReturn);
+      const { data: returnsData } = await supabase.rpc("get_transaction_returns", {
+        p_transaction_ids: saleIds,
+      });
+      for (const ret of (returnsData || []) as TransactionReturn[]) {
+        const tid = ret.original_transaction_id;
+        (returnsMap[tid] ||= []).push(ret);
       }
-      setCreditReturns(returnsMap);
-    } else {
-      setCreditReturns({});
     }
+  
+    // One batched update: sales + returns committed together.
+    // No render can observe one without the other.
+    setCreditSales(salesData);
+    setCreditReturns(returnsMap);
+    setCreditLoading(false);
   }, [shop]);
 
 
@@ -588,19 +630,22 @@ export default function PosRequests() {
   };
 
   // ── Fetch shop sales totals (overall + per payment method) when expense modal opens ──
-  useEffect(() => {
-    if (!logOpen || !shop) return;
-    setShopCashTotal(null); setShopMpesaTotal(null);
-    supabase
-      .from("shop_transactions")
-      .select("cash_amount, mpesa_amount")
-      .eq("shop_id", shop.id)
-      .then(({ data }) => {
-        const rows = data ?? [];
-        setShopCashTotal(rows.reduce((s: number, t: any) => s + (t.cash_amount ?? 0), 0));
-        setShopMpesaTotal(rows.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
-      });
-  }, [logOpen, shop]);
+ // ── Fetch shop sales totals (overall + per payment method) when expense modal opens ──
+useEffect(() => {
+  if (!logOpen || !shop) return;
+  setShopCashTotal(null); setShopMpesaTotal(null);
+  supabase
+    .rpc("get_shop_wallet_totals", { p_shop_id: shop.id })
+    .then(({ data, error }) => {
+      if (error) {
+        console.error("get_shop_wallet_totals error:", error);
+        return;
+      }
+      const row = Array.isArray(data) ? data[0] : data;
+      setShopCashTotal(Number(row?.cash_total  ?? 0));
+      setShopMpesaTotal(Number(row?.mpesa_total ?? 0));
+    });
+}, [logOpen, shop]);
 
   // ── Expense handlers ──────────────────────────────────────────────────
   const handleLogExpense = async (agent: ShopAgent) => {
@@ -609,15 +654,15 @@ export default function PosRequests() {
     const amount   = expCash + expMpesa;
     if (!amount || amount <= 0) { setExpError("Enter a Cash or M-Pesa amount."); return; }
     if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
+    
     const autoMethod = expCash > 0 && expMpesa > 0 ? "split" : expMpesa > 0 ? "mpesa" : "cash";
 
-    const cashExpensed  = expenses.reduce((s, e) => s + (e.cash_amount  ?? (e.payment_method === "cash"  ? e.amount : 0)), 0);
-    const mpesaExpensed = expenses.reduce((s, e) => s + (e.mpesa_amount ?? (e.payment_method === "mpesa" ? e.amount : 0)), 0);
+    const { cash: cashExpensed, mpesa: mpesaExpensed } = sumExpensedByMethod(expenses);
     const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
     const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
     if (cashAvail  !== null && expCash  > cashAvail)  { setExpError(`Cash amount exceeds available (${fmt(cashAvail)}).`);  return; }
     if (mpesaAvail !== null && expMpesa > mpesaAvail) { setExpError(`M-Pesa amount exceeds available (${fmt(mpesaAvail)}).`); return; }
-    setExpProcessing(true);
+        setExpProcessing(true);
 
     if (!isOnline) {
       enqueueExpense({
@@ -708,7 +753,10 @@ export default function PosRequests() {
       const openSales = payGroupSales
         .filter(s => s.status === "pending" || s.status === "partial")
         .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-      const totalOwed      = openSales.reduce((s, x) => s + (x.amount - x.amount_paid), 0);
+        const totalOwed      = openSales.reduce(
+          (s, x) => s + owedByCustomer(x, creditReturns[x.id] || []),
+          0
+        );
       const totalCreditAmt = openSales.reduce((s, x) => s + x.amount, 0);
       const totalPaidBefore= openSales.reduce((s, x) => s + x.amount_paid, 0);
       if (amount > totalOwed + 0.01) { setPayError(`Amount exceeds total balance of ${fmt(totalOwed)}.`); return; }
@@ -717,7 +765,8 @@ export default function PosRequests() {
       for (let i = 0; i < openSales.length; i++) {
         if (remaining <= 0.01) break;
         const sale      = openSales[i];
-        const applying  = Math.min(remaining, sale.amount - sale.amount_paid);
+        const saleOwed  = owedByCustomer(sale, creditReturns[sale.id] || []);   // ← add this
+        const applying  = Math.min(remaining, saleOwed);
         const isLast    = i === openSales.length - 1 || remaining - applying <= 0.01;
         const ratio     = amount > 0 ? applying / amount : 0;
         const saleCash  = isLast ? payCash  - allocCash  : Math.round(payCash  * ratio);
@@ -764,7 +813,8 @@ export default function PosRequests() {
     }
 
     // ── Single-sale ──
-    const balance = payTarget!.amount - payTarget!.amount_paid;
+    const targetReturns = creditReturns[payTarget!.id] || [];
+    const balance = owedByCustomer(payTarget!, targetReturns);
     if (amount > balance) { setPayError(`Amount exceeds what is owed. Balance is ${fmt(balance)}.`); return; }
     setPayProcessing(true);
     const { error: insErr } = await supabase.rpc("record_credit_payment", {
@@ -891,15 +941,22 @@ export default function PosRequests() {
       return;
     }
   
-    const totalRefund = selectedItems.reduce((s, it) => s + it.return_qty * it.unit_price, 0);
-    const cash = Math.round(Number(returnCashRefund) || 0);
-    const mpesa = Math.round(Number(returnMpesaRefund) || 0);
-    const tot = cash + mpesa;
-  
-    if (tot > 0 && Math.abs(tot - totalRefund) > 0.5) {
-      setReturnError(`Refund total (${fmt(tot)}) must equal ${fmt(totalRefund)}.`);
-      return;
-    }
+    const returnValue   = selectedItems.reduce((s, it) => s + it.return_qty * it.unit_price, 0);
+const refundable    = Math.min(returnValue, returnTarget.amount_paid);   // ← the cap
+const clearsBalance = Math.max(0, returnValue - refundable);
+
+const cash  = Math.round(Number(returnCashRefund)  || 0);
+const mpesa = Math.round(Number(returnMpesaRefund) || 0);
+const tot   = cash + mpesa;
+
+// Refund can never exceed what the customer actually paid.
+if (tot > refundable + 0.5) {
+  setReturnError(
+    `Refund cannot exceed what was paid (${fmt(refundable)}). ` +
+    `The remaining ${fmt(clearsBalance)} will clear the balance instead.`
+  );
+  return;
+}
     
     const method = tot > 0
       ? (cash > 0 && mpesa > 0 ? "split" : mpesa > 0 ? "mpesa" : "cash")
@@ -933,6 +990,9 @@ export default function PosRequests() {
             refund_method:  method,
             cash_amount:    cash,
             mpesa_amount:   mpesa,
+            return_value:   returnValue,   // ← full value of goods returned
+            refundable:     refundable,    // ← the cap
+            clears_balance: clearsBalance,  // ← how much debt is simply written off
             reason:         "Customer return",
             product_names:  productNames,
             customer_name:  returnTarget.customer_name,
@@ -1007,8 +1067,9 @@ export default function PosRequests() {
       const ts = new Date(cs.created_at).getTime();
       if (ts > g.latestSaleAt) g.latestSaleAt = ts;
       if (cs.status === "pending" || cs.status === "partial") {
-        g.totalOutstanding += cs.amount - cs.amount_paid;
-        g.hasOpen = true;
+        const returns = creditReturns[cs.id] || [];
+        g.totalOutstanding += owedByCustomer(cs, returns);
+        g.hasOpen = g.hasOpen || g.totalOutstanding > 0;
       }
     }
     for (const g of map.values()) {
@@ -1054,6 +1115,17 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
     .filter((x): x is NonNullable<typeof x> => x !== null);
 }
 
+// How much the SHOP owes the CUSTOMER on a single sale.
+// Positive only when the customer has paid more than their current balance
+// (i.e. a return pushed the balance below zero and we haven't refunded yet).
+function getShopOwesForSale(sale: CreditSale): number {
+  return owedByShop(sale, creditReturns[sale.id] || []);
+}
+
+function getGroupShopOwes(group: CustomerCreditGroup): number {
+  return group.sales.reduce((sum, s) => sum + getShopOwesForSale(s), 0);
+}
+
   async function handleSendStatement() {
     if (!sendStmtGroup || !shop) return;
     const phone = sendStmtPhone.trim();
@@ -1066,9 +1138,18 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
     
     // ── Compute outstanding items for each sale ──
     const allItems = openSales.flatMap(cs => getOutstandingItems(cs));
-    const totalAmount = allItems.reduce((s, item) => s + item.total, 0);
-    const totalPaid = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
-    const balanceDue = totalAmount - totalPaid;
+    const totalAmount = openSales.reduce((s, cs) => s + cs.amount, 0);   // original invoice
+      const totalReturned = openSales.reduce((s, cs) => {
+        const returns = creditReturns[cs.id] || [];
+        return s + returns.reduce((rs, r) => rs + Number(r.quantity_returned) * Number(r.unit_price), 0);
+      }, 0);
+      const totalPaid = openSales.reduce((s, cs) => s + cs.amount_paid, 0);
+      const totalRefunded = openSales.reduce((s, cs) => {
+        const returns = creditReturns[cs.id] || [];
+        return s + returns.reduce(
+          (rs, r) => rs + Number(r.refund_cash_amount || 0) + Number(r.refund_mpesa_amount || 0), 0);
+      }, 0);
+      const balanceDue = Math.max(0, totalAmount - totalReturned - totalPaid + totalRefunded);
   
     try {
       const { data } = await supabase.functions.invoke("send-receipt", {
@@ -1678,25 +1759,62 @@ ${theme.kiCss}
                               </div>
                             );
                           })()}
+                          {(() => {
+                          const shopOwes = getGroupShopOwes(group);
+                          if (shopOwes <= 0) return null;
+                          return (
+                            <div style={{
+                              background: "rgba(192,132,252,0.15)",
+                              border: "1px solid rgba(192,132,252,0.45)",
+                              borderRadius: 10,
+                              padding: "2px 8px",
+                              fontSize: 9,
+                              fontFamily: theme.font.mono,
+                              color: "#c084fc",
+                              fontWeight: 700,
+                            }}>
+                              💸 We owe customer {fmt(shopOwes)}
+                            </div>
+                          );
+                        })()}
                         </div>
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                          {group.customer_phone || "No phone"}{group.totalPaid > 0 && group.hasOpen ? ` · ${fmt(group.totalPaid)} paid` : ""}
+                          {[
+                            group.customer_phone || null,
+                            group.totalPaid > 0 && group.hasOpen ? `${fmt(group.totalPaid)} paid` : null,
+                          ]
+                            .filter(Boolean)
+                            .join(" · ")}
                         </div>
                       </div>
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
-                        {group.hasOpen ? (
+                    {(() => {
+                      const shopOwes = getGroupShopOwes(group);
+                      if (shopOwes > 0) {
+                        return (
+                          <>
+                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#c084fc" }}>{fmt(shopOwes)}</div>
+                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", fontWeight: 700 }}>we owe customer</div>
+                          </>
+                        );
+                      }
+                      if (group.hasOpen) {
+                        return (
                           <>
                             <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(group.totalOutstanding)}</div>
                             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>outstanding</div>
                           </>
-                        ) : (
-                          <>
-                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#34d399" }}>{fmt(group.totalAmount)}</div>
-                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>all settled</div>
-                          </>
-                        )}
-                        <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 2 }}>{isGroupExpanded ? "▲" : "▼"}</div>
-                      </div>
+                        );
+                      }
+                      return (
+                        <>
+                          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#34d399" }}>{fmt(group.totalAmount)}</div>
+                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399" }}>all settled</div>
+                        </>
+                      );
+                    })()}
+                    <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 2 }}>{isGroupExpanded ? "▲" : "▼"}</div>
+                  </div>
                     </button>
 
                     {isGroupExpanded && (
@@ -1802,10 +1920,10 @@ ${theme.kiCss}
                           );
                         })()}
 
-                        {/* Individual sales — hide fully returned */}
                         {group.sales.map((cs, csIdx, arr) => {
-                          const balance    = cs.amount - cs.amount_paid;
-                          const sc         = statusColor(cs.status);
+                          const saleReturns = creditReturns[cs.id] || [];
+                          const balance     = owedByCustomer(cs, saleReturns);
+                          const sc          = statusColor(cs.status);
                           const isOpen     = cs.status === "pending" || cs.status === "partial";
                           const isExpanded = expandedCreditId === cs.id;
                           const payments   = creditPayments[cs.id] || [];
@@ -1890,37 +2008,56 @@ ${theme.kiCss}
                                             ↩ {totalReturned} returned
                                           </span>
                                         )}
-                                        {isOpen && (
-                                          <button
-                                            onClick={e => { e.stopPropagation(); openReturnModal(cs); }}
-                                            style={{
-                                              fontSize: 10,
-                                              fontFamily: theme.font.mono,
-                                              fontWeight: 700,
-                                              color: "#f87171",
-                                              background: "rgba(248,113,113,0.1)",
-                                              border: "1px solid rgba(248,113,113,0.4)",
-                                              borderRadius: 6,
-                                              padding: "4px 10px",
-                                              cursor: "pointer",
-                                              display: "flex",
-                                              alignItems: "center",
-                                              gap: 4,
-                                              whiteSpace: "nowrap" as const,
-                                              transition: "background 0.15s, border-color 0.15s",
-                                            }}
-                                            onMouseEnter={e => {
-                                              e.currentTarget.style.background = "rgba(248,113,113,0.2)";
-                                              e.currentTarget.style.borderColor = "rgba(248,113,113,0.6)";
-                                            }}
-                                            onMouseLeave={e => {
-                                              e.currentTarget.style.background = "rgba(248,113,113,0.1)";
-                                              e.currentTarget.style.borderColor = "rgba(248,113,113,0.4)";
-                                            }}
-                                          >
-                                            ↩ Return Items
-                                          </button>
-                                        )}
+                                        
+                                        {(() => {
+                                      // Show the return button whenever at least one item still has
+                                      // un-returned quantity — regardless of whether the sale is
+                                      // pending, partial, or fully paid.
+                                      const returnsForSale = creditReturns[cs.id] || [];
+                                      const returnedMap: Record<string, number> = {};
+                                      for (const ret of returnsForSale) {
+                                        if (ret.product_id) {
+                                          returnedMap[ret.product_id] =
+                                            (returnedMap[ret.product_id] || 0) + ret.quantity_returned;
+                                        }
+                                      }
+                                      const hasReturnable = cs.items.some(
+                                        item => (returnedMap[item.product_id] || 0) < item.quantity
+                                      );
+                                      if (!hasReturnable) return null;
+
+                                      return (
+                                        <button
+                                          onClick={e => { e.stopPropagation(); openReturnModal(cs); }}
+                                          style={{
+                                            fontSize: 10,
+                                            fontFamily: theme.font.mono,
+                                            fontWeight: 700,
+                                            color: "#f87171",
+                                            background: "rgba(248,113,113,0.1)",
+                                            border: "1px solid rgba(248,113,113,0.4)",
+                                            borderRadius: 6,
+                                            padding: "4px 10px",
+                                            cursor: "pointer",
+                                            display: "flex",
+                                            alignItems: "center",
+                                            gap: 4,
+                                            whiteSpace: "nowrap" as const,
+                                            transition: "background 0.15s, border-color 0.15s",
+                                          }}
+                                          onMouseEnter={e => {
+                                            e.currentTarget.style.background = "rgba(248,113,113,0.2)";
+                                            e.currentTarget.style.borderColor = "rgba(248,113,113,0.6)";
+                                          }}
+                                          onMouseLeave={e => {
+                                            e.currentTarget.style.background = "rgba(248,113,113,0.1)";
+                                            e.currentTarget.style.borderColor = "rgba(248,113,113,0.4)";
+                                          }}
+                                        >
+                                          ↩ Return Items
+                                        </button>
+                                      );
+                                    })()}
                                       </div>
                                     );
                                   })()}
@@ -2115,24 +2252,49 @@ ${theme.kiCss}
                             </span>
                           </div>
                           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                        <span style={{
+                          fontSize: 10,
+                          fontFamily: theme.font.mono,
+                          color: theme.text.muted,
+                          textTransform: "uppercase",
+                          letterSpacing: "0.06em",
+                        }}>
+                          Total Balance
+                        </span>
+                        <span style={{
+                          fontSize: 16,
+                          fontFamily: theme.font.mono,
+                          fontWeight: 800,
+                          color: group.hasOpen ? "#f87171" : "#34d399",
+                        }}>
+                          {group.hasOpen ? fmt(group.totalOutstanding) : "Settled ✓"}
+                        </span>
+                      </div>
+                      {(() => {
+                        const shopOwes = getGroupShopOwes(group);
+                        if (shopOwes <= 0) return null;
+                        return (
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                             <span style={{
                               fontSize: 10,
                               fontFamily: theme.font.mono,
-                              color: theme.text.muted,
+                              color: "#c084fc",
                               textTransform: "uppercase",
                               letterSpacing: "0.06em",
                             }}>
-                              Total Balance
+                              💸 We Owe Customer (pay later)
                             </span>
                             <span style={{
                               fontSize: 16,
                               fontFamily: theme.font.mono,
                               fontWeight: 800,
-                              color: group.hasOpen ? "#f87171" : "#34d399",
+                              color: "#c084fc",
                             }}>
-                              {group.hasOpen ? fmt(group.totalOutstanding) : "Settled ✓"}
+                              {fmt(shopOwes)}
                             </span>
                           </div>
+                        );
+                      })()}
                         </div>
                       </div>
                     )}
@@ -2245,15 +2407,14 @@ ${theme.kiCss}
             </div>
 
             {/* Available balance strips */}
-            {(() => {
-              const cashExpensed  = expenses.reduce((s, e) => s + (e.cash_amount  ?? (e.payment_method === "cash"  ? e.amount : 0)), 0);
-              const mpesaExpensed = expenses.reduce((s, e) => s + (e.mpesa_amount ?? (e.payment_method === "mpesa" ? e.amount : 0)), 0);
-              const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
-              const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
-              const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
-              const enteredC   = Math.round(Number(expCashAmount)  || 0);
-              const enteredM   = Math.round(Number(expMpesaAmount) || 0);
-              return (
+              {(() => {
+                const { cash: cashExpensed, mpesa: mpesaExpensed } = sumExpensedByMethod(expenses);
+                const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
+                const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
+                const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
+                const enteredC   = Math.round(Number(expCashAmount)  || 0);
+                const enteredM   = Math.round(Number(expMpesaAmount) || 0);
+                return (
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {[
                     { icon: "💵", label: "Cash available",   avail: cashAvail,  entered: enteredC },
@@ -2400,7 +2561,10 @@ ${theme.kiCss}
 
         const totalAmount      = targetSales.reduce((s, x) => s + x.amount, 0);
         const totalCollected   = targetSales.reduce((s, x) => s + x.amount_paid, 0);
-        const totalOutstanding = totalAmount - totalCollected;
+        const totalOutstanding = targetSales.reduce(
+          (s, x) => s + owedByCustomer(x, creditReturns[x.id] || []),
+          0
+        );
         const paidCount        = targetSales.filter(s => s.status === "paid").length;
         const returnedCount    = targetSales.filter(s => s.status === "returned").length;
 
@@ -2631,10 +2795,13 @@ ${theme.kiCss}
 
       {/* ══ RECORD PAYMENT MODAL ══ */}
       {(payTarget || payGroupSales) && (() => {
-        const custName  = payGroupSales ? payGroupSales[0].customer_name : payTarget!.customer_name;
-        const totalOwed = payGroupSales
-          ? payGroupSales.reduce((s, x) => s + (x.amount - x.amount_paid), 0)
-          : payTarget!.amount - payTarget!.amount_paid;
+      const custName  = payGroupSales ? payGroupSales[0].customer_name : payTarget!.customer_name;
+      const totalOwed = payGroupSales
+    ? payGroupSales.reduce(
+        (s, x) => s + owedByCustomer(x, creditReturns[x.id] || []),
+        0
+      )
+    : owedByCustomer(payTarget!, creditReturns[payTarget!.id] || []);
         return (
         <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
           onClick={e => { if (e.target === e.currentTarget) resetPayModal(); }}>
@@ -2723,9 +2890,9 @@ ${theme.kiCss}
 
 {/* ══ MARK RETURNED MODAL ══ */}
 {returnTarget && (() => {
-  const totalRefund = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
+  const returnValue = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
+  const refundable  = Math.min(returnValue, returnTarget.amount_paid);   // ← the cap
   return (
-   
     <div
   className="return-modal-overlay"
   style={{
@@ -2893,16 +3060,18 @@ ${theme.kiCss}
             })}
           </div>
 
-          {totalRefund > 0 && (
+          {returnValue > 0 && (
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10 }}>
               <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                {returnTarget.amount_paid > 0 ? "Total Refund" : "Return Value"}
+                {returnTarget.amount_paid > 0
+                  ? `Customer is owed (paid ${fmt(returnTarget.amount_paid)})`
+                  : "Return Value"}
               </span>
-              <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(totalRefund)}</span>
+              <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 15, color: "#f87171" }}>{fmt(refundable)}</span>
             </div>
           )}
 
-          {totalRefund > 0 && returnTarget.amount_paid > 0 && (
+          {refundable > 0 && returnTarget.amount_paid > 0 && (
             <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                 {([{ key: "cash", icon: "💵", label: "Cash", col: "#34d399" }, { key: "mpesa", icon: "📱", label: "M-Pesa", col: theme.accent.cyan }, { key: "split", icon: "⚡", label: "Split", col: "#fbbf24" }] as const).map(({ key, icon, label, col }) => (
@@ -2930,42 +3099,66 @@ ${theme.kiCss}
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 3, textTransform: "uppercase" }}>💵 Cash</label>
                     <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnCashRefund(v); setReturnMpesaRefund(String(Math.max(0, Math.round(refundable - (Number(v) || 0))))); }}
                       placeholder="0" />
                   </div>
                   <div>
                     <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 3, textTransform: "uppercase" }}>📱 M-Pesa</label>
                     <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
-                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(totalRefund - (Number(v) || 0))))); }}
+                      onChange={e => { const v = sanitizeAmount(e.target.value); setReturnMpesaRefund(v); setReturnCashRefund(String(Math.max(0, Math.round(refundable - (Number(v) || 0))))); }}
                       placeholder="0" />
                   </div>
                 </div>
               ) : returnRefundMethod === "cash" ? (
                 <input className="ki" type="text" inputMode="numeric" value={returnCashRefund}
                   onChange={e => { setReturnCashRefund(sanitizeAmount(e.target.value)); setReturnMpesaRefund("0"); }}
-                  placeholder={`Cash refund — ${fmt(totalRefund)}`} />
+                  placeholder={`Cash refund — ${fmt(refundable)}`} />
               ) : (
                 <input className="ki" type="text" inputMode="numeric" value={returnMpesaRefund}
                   onChange={e => { setReturnMpesaRefund(sanitizeAmount(e.target.value)); setReturnCashRefund("0"); }}
-                  placeholder={`M-Pesa refund — ${fmt(totalRefund)}`} />
+                  placeholder={`M-Pesa refund — ${fmt(refundable)}`} />
               )}
 
               <div style={{ display: "flex", justifyContent: "space-between", padding: "6px 10px", background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 8 }}>
                 <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {(() => {
-                    const c = Math.round(Number(returnCashRefund) || 0);
-                    const m = Math.round(Number(returnMpesaRefund) || 0);
-                    const tot = c + m;
-                    if (tot === 0) return "Enter amounts";
-                    if (Math.abs(tot - totalRefund) < 0.5) return "✓ Balanced";
-                    if (tot > totalRefund) return "⚠ Over";
-                    return `⚠ Under by ${fmt(totalRefund - tot)}`;
-                  })()}
+                {(() => {
+                  const c = Math.round(Number(returnCashRefund) || 0);
+                  const m = Math.round(Number(returnMpesaRefund) || 0);
+                  const tot = c + m;
+                  if (tot > refundable) return "⚠ Over the refundable amount";
+                  if (tot === refundable) return "✓ Full refund";
+                  if (tot === 0) return "No refund now — full amount stays owed to customer";
+                  return `💡 ${fmt(refundable - tot)} will remain owed to customer`;
+                })()}
                 </span>
                 <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.gold }}>
                   {fmt(Math.round(Number(returnCashRefund) || 0) + Math.round(Number(returnMpesaRefund) || 0))}
                 </span>
               </div>
+              {(() => {
+                    const c = Math.round(Number(returnCashRefund) || 0);
+                    const m = Math.round(Number(returnMpesaRefund) || 0);
+                    const tot = c + m;
+                    if (tot >= refundable - 0.5) return null;
+                    const stillOwed = refundable - tot;
+                    return (
+                      <div style={{
+                        background: "rgba(192,132,252,0.07)",
+                        border: "1px solid rgba(192,132,252,0.3)",
+                        borderRadius: 10,
+                        padding: "10px 12px",
+                        fontSize: 11,
+                        fontFamily: theme.font.mono,
+                        color: "#c084fc",
+                        lineHeight: 1.55,
+                      }}>
+                        💸 <strong>You are paying {fmt(tot)} now.</strong> The remaining{" "}
+                        <strong>{fmt(stillOwed)}</strong> stays owed to the customer — the shop
+                        will show it as <em>"we owe customer"</em> until you pay it out.
+                        You can refund the rest later when you have cash or M-Pesa.
+                      </div>
+                    );
+                  })()}
             </div>
           )}
 
@@ -2973,10 +3166,10 @@ ${theme.kiCss}
             ⚠ Restores stock and reduces the customer's balance. Cannot be undone.
           </div>
 
-          {totalRefund > 0 && returnTarget.amount_paid === 0 && (
+          {returnValue> 0 && returnTarget.amount_paid === 0 && (
             <div style={{ background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 10, padding: "12px 14px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, lineHeight: 1.6 }}>
               ℹ️ <strong>No refund needed.</strong> This sale was fully unpaid —
-              the return value ({fmt(totalRefund)}) will simply reduce the customer's
+              the return value ({fmt(returnValue)}) will simply reduce the customer's
               outstanding balance. No money changes hands.
             </div>
           )}

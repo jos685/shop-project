@@ -150,9 +150,9 @@ export default function PosTransactionsPage() {
   const [creditPaymentRows, setCreditPaymentRows] = useState<CreditPaymentRow[]>([]);
   const [fetchError, setFetchError]     = useState<string | null>(null);
   const [loading, setLoading]           = useState(true);
-  const [loadingMore, setLoadingMore]   = useState(false);
-  const [hasMore, setHasMore]           = useState(false);
-  const [offset, setOffset]             = useState(0);
+  const [page, setPage]               = useState(1);
+  const [hasNextPage, setHasNextPage] = useState(false);
+  const filterKeyRef                  = useRef("");
   const [filter, setFilter]             = useState<DateFilter>("today");
   const [customMode,  setCustomMode]    = useState<CustomMode>("day");
   const [customValue, setCustomValue]   = useState("");
@@ -323,11 +323,38 @@ export default function PosTransactionsPage() {
     if (!returnReason.trim()) { setReturnError("Please provide a reason for the return."); return; }
     const toReturn = returnModal.items.filter(i => i.return_qty > 0);
     if (toReturn.length === 0) { setReturnError("Select at least one item to return (qty > 0)."); return; }
-    const totalRefund = toReturn.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
+   
+        // ── Figure out how much CASH actually leaves the till ───────────────
+    // Credit returns only refund cash for the portion that exceeds what the
+    // customer still owes. Unpaid credit returns produce ZERO cash refund.
+    const expectedRefund = (() => {
+      const tracker: Record<string, number> = {};
+      for (const it of toReturn) {
+        if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
+          tracker[it.credit_sale_id] = it.outstanding ?? 0;
+        }
+      }
+      let sum = 0;
+      for (const it of toReturn) {
+        const isCredit = it.status === "credit" || it.status === "credit_partial";
+        const returnValue = Math.round(it.unit_price * it.return_qty);
+        if (isCredit && it.credit_sale_id) {
+          const cur = tracker[it.credit_sale_id] ?? 0;
+          sum += Math.max(0, returnValue - cur);
+          tracker[it.credit_sale_id] = Math.max(0, cur - returnValue);
+        } else {
+          sum += returnValue;
+        }
+      }
+      return sum;
+    })();
+
     const refundCashTotal  = Math.round(Number(returnCashRefund)  || 0);
     const refundMpesaTotal = Math.round(Number(returnMpesaRefund) || 0);
-    if (refundCashTotal === 0 && refundMpesaTotal === 0) {
-      setReturnError("Enter a Cash or M-Pesa refund amount.");
+
+    // Only demand cash/mpesa figures if money is genuinely owed back
+    if (expectedRefund > 0 && refundCashTotal === 0 && refundMpesaTotal === 0) {
+      setReturnError(`Enter a Cash or M-Pesa refund amount (expected ${expectedRefund.toLocaleString()}).`);
       return;
     }
   
@@ -335,14 +362,36 @@ export default function PosTransactionsPage() {
     setReturnError("");
     try {
       const firstItem  = returnModal.group.items[0];
-      const totalRefundAmt = totalRefund;
+      const totalRefundAmt = expectedRefund;   // ← now the real cash total, not goods value
+
+      // When there is no cash refund (unpaid-credit return), don't tag it as "cash"
       const autoMethod = refundCashTotal > 0 && refundMpesaTotal > 0 ? "split"
-                       : refundMpesaTotal > 0 ? "mpesa" : "cash";
+                       : refundMpesaTotal > 0 ? "mpesa"
+                       : refundCashTotal  > 0 ? "cash"
+                       : null;             // ← null = pure debt reduction
+
+      // Second pass to build rows — same tracker so multiple items share one balance
+      const tracker: Record<string, number> = {};
+      for (const it of toReturn) {
+        if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
+          tracker[it.credit_sale_id] = it.outstanding ?? 0;
+        }
+      }
+
       let allocCash = 0, allocMpesa = 0;
       const rows = toReturn.map((item, idx) => {
-        const amountRefunded = (item.status === "credit" || item.status === "credit_partial")
-          ? Math.round((item.return_qty / item.original_qty) * item.tx_amount)
-          : Math.round(item.unit_price * item.return_qty);
+        const isCredit = item.status === "credit" || item.status === "credit_partial";
+        const returnValue = Math.round(item.unit_price * item.return_qty);
+
+        let amountRefunded: number;
+        if (isCredit && item.credit_sale_id) {
+          const cur = tracker[item.credit_sale_id] ?? 0;
+          amountRefunded = Math.max(0, returnValue - cur);
+          tracker[item.credit_sale_id] = Math.max(0, cur - returnValue);
+        } else {
+          amountRefunded = returnValue;
+        }
+
         const isLast = idx === toReturn.length - 1;
         let itemCash: number, itemMpesa: number;
         if (isLast) {
@@ -365,11 +414,11 @@ export default function PosTransactionsPage() {
           product_name:            item.product_name,
           quantity_returned:       item.return_qty,
           unit_price:              item.unit_price,
-          amount_refunded:         amountRefunded,
+          amount_refunded:         amountRefunded,     // ← 0 for unpaid credit
           reason:                  returnReason.trim(),
           actor_name:              firstItem.seller_name ?? null,
           actor_code:              firstItem.seller_code ?? null,
-          refund_method:           autoMethod,
+          refund_method:           autoMethod,         // ← null if pure debt reduction
           refund_payment_method:   autoMethod,
           refund_cash_amount:      itemCash,
           refund_mpesa_amount:     itemMpesa,
@@ -539,6 +588,12 @@ export default function PosTransactionsPage() {
     productMapRef.current = {};
     sellerMapRef.current  = {};
 
+    const fk = `${filter}|${customMode}|${customValue}`;
+    if (filterKeyRef.current !== fk) {
+      filterKeyRef.current = fk;
+      if (page !== 1) { setPage(1); return; }
+    }
+
     let pStart: string | undefined;
     let pEnd:   string | undefined;
     if (filter === "custom") {
@@ -549,15 +604,15 @@ export default function PosTransactionsPage() {
       if (startDate) pStart = startDate.toISOString();
     }
 
-    // All queries use SECURITY DEFINER RPCs — bypass RLS regardless of JWT state
+        // All queries use SECURITY DEFINER RPCs — bypasses RLS regardless of JWT state
     // Promise.allSettled so a blipping fetch never kills the transaction load
     const [txResult, expResult, cpResult] = await Promise.allSettled([
       supabase.rpc("get_shop_transactions", {
         p_shop_id: shop.id,
         p_start:   pStart ?? null,
         p_end:     pEnd   ?? null,
-        p_limit:   PAGE_SIZE,
-        p_offset:  0,
+        p_limit:   PAGE_SIZE + 1,
+        p_offset:  (page - 1) * PAGE_SIZE,
       }),
       supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
       supabase.rpc("get_shop_credit_payments_all", { p_shop_id: shop.id }),
@@ -573,7 +628,8 @@ export default function PosTransactionsPage() {
       // First attempt failed — retry once after 800ms
       await new Promise(r => setTimeout(r, 800));
       const retry = await supabase.rpc("get_shop_transactions", {
-        p_shop_id: shop.id, p_start: pStart ?? null, p_end: pEnd ?? null, p_limit: PAGE_SIZE, p_offset: 0,
+        p_shop_id: shop.id, p_start: pStart ?? null, p_end: pEnd ?? null,
+        p_limit: PAGE_SIZE + 1, p_offset: (page - 1) * PAGE_SIZE,
       });
       txData  = retry.data;
       txError = retry.error;
@@ -634,44 +690,23 @@ export default function PosTransactionsPage() {
       return startDate ? d >= startDate : true;
     });
 
-    const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
+    const rows = txData.slice(0, PAGE_SIZE);
+    const more = txData.length > PAGE_SIZE;
+
+    const enriched = await enrichRows(rows, productMapRef.current, sellerMapRef.current);
     setTransactions(enriched);
     setShopExpenses(filteredExps);
     setCreditPaymentRows(filteredCPs);
-    setOffset(PAGE_SIZE);
-    setHasMore(txData.length === PAGE_SIZE);
+    setHasNextPage(more);
     setLoading(false);
-  }, [shop, filter, customMode, customValue, enrichRows]);
+  }, [shop, filter, customMode, customValue, page, enrichRows]);
 
-  const loadMore = useCallback(async () => {
-    if (!shop || loadingMore) return;
-    setLoadingMore(true);
-
-    let pStart: string | undefined;
-    let pEnd:   string | undefined;
-    if (filter === "custom") {
-      const range = getCustomRange(customMode, customValue);
-      if (range) { pStart = range.start.toISOString(); pEnd = range.end.toISOString(); }
-    } else {
-      const startDate = getStartDate(filter);
-      if (startDate) pStart = startDate.toISOString();
-    }
-
-    const { data: txData, error } = await supabase.rpc("get_shop_transactions", {
-      p_shop_id: shop.id,
-      p_start:   pStart ?? null,
-      p_end:     pEnd   ?? null,
-      p_limit:   PAGE_SIZE,
-      p_offset:  offset,
-    });
-    if (error || !txData) { setLoadingMore(false); return; }
-
-    const enriched = await enrichRows(txData, productMapRef.current, sellerMapRef.current);
-    setTransactions(prev => [...prev, ...enriched]);
-    setOffset(prev => prev + PAGE_SIZE);
-    setHasMore(txData.length === PAGE_SIZE);
-    setLoadingMore(false);
-  }, [shop, filter, customMode, customValue, offset, loadingMore, enrichRows]);
+  const goToPage = (p: number) => {
+    if (p < 1) return;
+    if (p > page && !hasNextPage) return;
+    setPage(p);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   useEffect(() => { fetchTransactions(); }, [fetchTransactions]);
 
@@ -1433,7 +1468,7 @@ export default function PosTransactionsPage() {
           <div style={{ padding: "14px 18px", borderBottom: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 14 }}>Records</div>
             <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
-              {displayed.length} shown{hasMore ? " · more available" : ""}
+            {displayed.length} shown · page {page}
             </div>
           </div>
 
@@ -1809,19 +1844,43 @@ export default function PosTransactionsPage() {
             </div>
           )}
 
-          {hasMore && !loading && (
-            <div style={{ padding: "14px 18px", borderTop: `1px solid ${theme.border.default}`, textAlign: "center" }}>
-              <button onClick={loadMore} disabled={loadingMore}
+{!loading && (page > 1 || hasNextPage) && (
+            <div style={{
+              padding: "14px 18px", borderTop: `1px solid ${theme.border.default}`,
+              display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10,
+            }}>
+              <button
+                onClick={() => goToPage(page - 1)}
+                disabled={page === 1}
                 style={{
-                  padding: "10px 28px", background: "rgba(6,182,212,0.1)",
-                  border: "1px solid rgba(6,182,212,0.25)", borderRadius: 10,
-                  color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12,
-                  cursor: loadingMore ? "not-allowed" : "pointer", opacity: loadingMore ? 0.6 : 1,
-                  display: "inline-flex", alignItems: "center", gap: 8,
+                  padding: "9px 18px", borderRadius: 10,
+                  background: page === 1 ? "transparent" : "rgba(6,182,212,0.08)",
+                  border: `1px solid ${page === 1 ? theme.border.default : "rgba(6,182,212,0.25)"}`,
+                  color: page === 1 ? theme.text.muted : theme.accent.cyan,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600,
+                  cursor: page === 1 ? "not-allowed" : "pointer",
+                  opacity: page === 1 ? 0.5 : 1,
                 }}>
-                {loadingMore
-                  ? <><span style={{ width: 12, height: 12, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Loading...</>
-                  : `Load next ${PAGE_SIZE}`}
+                ‹ Prev
+              </button>
+
+              <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted }}>
+                Page {page}
+              </span>
+
+              <button
+                onClick={() => goToPage(page + 1)}
+                disabled={!hasNextPage}
+                style={{
+                  padding: "9px 18px", borderRadius: 10,
+                  background: hasNextPage ? "rgba(6,182,212,0.08)" : "transparent",
+                  border: `1px solid ${hasNextPage ? "rgba(6,182,212,0.25)" : theme.border.default}`,
+                  color: hasNextPage ? theme.accent.cyan : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600,
+                  cursor: hasNextPage ? "pointer" : "not-allowed",
+                  opacity: hasNextPage ? 1 : 0.5,
+                }}>
+                Next ›
               </button>
             </div>
           )}
@@ -2009,8 +2068,36 @@ export default function PosTransactionsPage() {
 
           {/* Refund amounts — always-visible dual fields, method auto-detected from what is entered */}
           {(() => {
-            const totalRefund = returnModal.items.filter(i => i.return_qty > 0).reduce((s, i) => s + i.return_qty * i.unit_price, 0);
-            if (totalRefund <= 0) return null;
+            // Expected CASH refund: only the excess beyond what the customer still owes
+            const tracker: Record<string, number> = {};
+            for (const it of returnModal.items) {
+              if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
+                tracker[it.credit_sale_id] = it.outstanding ?? 0;
+              }
+            }
+            let totalRefund = 0;
+            for (const it of returnModal.items) {
+              if (it.return_qty <= 0) continue;
+              const isCredit = it.status === "credit" || it.status === "credit_partial";
+              const returnValue = Math.round(it.return_qty * it.unit_price);
+              if (isCredit && it.credit_sale_id) {
+                const cur = tracker[it.credit_sale_id] ?? 0;
+                totalRefund += Math.max(0, returnValue - cur);
+                tracker[it.credit_sale_id] = Math.max(0, cur - returnValue);
+              } else {
+                totalRefund += returnValue;
+              }
+            }
+            if (totalRefund <= 0) {
+              // No cash to refund — show a clear explanatory banner instead
+              return returnModal.items.some(i => i.return_qty > 0) ? (
+                <div style={{ padding: "12px 16px", background: "rgba(192,132,252,0.08)",
+                  border: "1px solid rgba(192,132,252,0.25)", borderRadius: 12,
+                  fontSize: 12, fontFamily: theme.font.mono, color: "#c084fc" }}>
+                  🧾 No cash refund — this is an unpaid credit return. The customer's debt will simply be reduced.
+                </div>
+              ) : null;
+            }
             const c   = Math.round(Number(returnCashRefund)  || 0);
             const m   = Math.round(Number(returnMpesaRefund) || 0);
             const tot = c + m;
@@ -2020,8 +2107,9 @@ export default function PosTransactionsPage() {
             return (
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                  Refund amounts · Suggested: {fmt(totalRefund)}
+                  Refund amounts · Expected cash: {fmt(totalRefund)}
                 </label>
+             
 
                 {/* Cash field */}
                 <div>
