@@ -1,13 +1,27 @@
 import { supabase } from "./supabase";
 
-export interface QueuedCartItem {
+export interface QueuedListedCartItem {
+  isUnlisted: false;
   allocationId: string;
   productId: string;
   productName: string;
+  productImage: string | null;
   quantity: number;
   sellPrice: number;
   basePrice: number;
 }
+
+export interface QueuedUnlistedCartItem {
+  isUnlisted: true;
+  customItemId: string | null;
+  productName: string;
+  unit: string;
+  quantity: number;
+  sellPrice: number;
+  basePrice: number;
+}
+
+export type QueuedCartItem = QueuedListedCartItem | QueuedUnlistedCartItem;
 
 export interface QueuedSale {
   id: string;
@@ -56,7 +70,10 @@ function dequeue(id: string) {
 
 async function syncOne(sale: QueuedSale): Promise<"success" | "stock_error" | "db_error"> {
   const deducted: { id: string; quantity: number }[] = [];
+
+  // Deduct stock for listed items only. Unlisted items have no allocation.
   for (const item of sale.cart) {
+    if (item.isUnlisted) continue;
     const { error } = await supabase.rpc("deduct_shop_stock", {
       p_shop_allocation_id: item.allocationId,
       p_quantity: item.quantity,
@@ -71,14 +88,28 @@ async function syncOne(sale: QueuedSale): Promise<"success" | "stock_error" | "d
   }
 
   if (sale.type === "credit") {
-    const creditItems = sale.cart.map(item => ({
-      allocation_id: item.allocationId,
-      product_id:    item.productId,
-      product_name:  item.productName,
-      quantity:      item.quantity,
-      unit_price:    item.basePrice,
-      subtotal:      item.basePrice * item.quantity,
-    }));
+    const creditItems = sale.cart.map(item => item.isUnlisted
+      ? {
+          allocation_id:  null,
+          product_id:     null,
+          custom_item_id: item.customItemId,
+          product_name:   item.productName,
+          is_unlisted:    true,
+          quantity:       item.quantity,
+          unit_price:     item.sellPrice,
+          subtotal:       item.sellPrice * item.quantity,
+        }
+      : {
+          allocation_id:  item.allocationId,
+          product_id:     item.productId,
+          custom_item_id: null,
+          product_name:   item.productName,
+          is_unlisted:    false,
+          quantity:       item.quantity,
+          unit_price:     item.sellPrice,
+          subtotal:       item.sellPrice * item.quantity,
+        }
+    );
     const initPaid   = Math.min(Math.max(0, sale.initialPayment), sale.grandTotal);
     const initStatus = initPaid >= sale.grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
 
@@ -119,6 +150,34 @@ async function syncOne(sale: QueuedSale): Promise<"success" | "stock_error" | "d
   } else {
     const commRate = sale.commissionConfig.enabled ? sale.commissionConfig.rate : 0;
     const txRows = sale.cart.map(item => {
+      // ── Unlisted branch ──
+      if (item.isUnlisted) {
+        const itemTotal = item.sellPrice * item.quantity;
+        const ratio = sale.grandTotal > 0 ? itemTotal / sale.grandTotal : 0;
+        return {
+          shop_id:           sale.shopId,
+          owner_id:          sale.ownerId,
+          seller_agent_id:   sale.verifiedAgent.agent_id,
+          product_id:        null,
+          custom_item_id:    item.customItemId,
+          product_name:      item.productName,
+          is_unlisted:       true,
+          quantity:          item.quantity,
+          amount:            itemTotal,
+          customer_phone:    sale.customerPhone,
+          payment_method:    sale.payMethod,
+          cash_amount:  sale.payMethod === "cash"  ? itemTotal : sale.payMethod === "mpesa" ? 0 : Math.round(sale.cashAmount  * ratio),
+          mpesa_amount: sale.payMethod === "mpesa" ? itemTotal : sale.payMethod === "cash"  ? 0 : Math.round(sale.mpesaAmount * ratio),
+          mpesa_ref:    (sale.payMethod === "mpesa" || sale.payMethod === "split") ? sale.mpesaRef || null : null,
+          status:            "ok",
+          unit_price:        item.sellPrice,
+          base_price:        item.sellPrice,   // no markup for unlisted
+          commission_rate:   0,
+          commission_earned: 0,
+        };
+      }
+
+      // ── Listed branch ──
       const itemTotal  = item.sellPrice * item.quantity;
       const markup     = Math.max(0, item.sellPrice - item.basePrice);
       const commEarned = Math.round(markup * item.quantity * commRate / 100);
@@ -128,6 +187,9 @@ async function syncOne(sale: QueuedSale): Promise<"success" | "stock_error" | "d
         owner_id:          sale.ownerId,
         seller_agent_id:   sale.verifiedAgent.agent_id,
         product_id:        item.productId,
+        custom_item_id:    null,
+        product_name:      item.productName,
+        is_unlisted:       false,
         quantity:          item.quantity,
         amount:            itemTotal,
         customer_phone:    sale.customerPhone,

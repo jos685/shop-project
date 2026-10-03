@@ -34,14 +34,14 @@ const darkTheme = {
     nav:     "rgba(6,182,212,0.18)",
   },
   font: {
-    display: "'Syne', sans-serif",
-    body:    "'DM Sans', sans-serif",
-    mono:    "'DM Mono', monospace",
+    display: "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
+    body:    "'Inter', system-ui, -apple-system, sans-serif",
+    mono:    "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace",
   },
   radius: { sm: 10, md: 12, lg: 14, xl: 18 },
   // CSS string for .ki input class — injected into <style> tags
   kiCss: `
-    .ki { background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:11px 13px;color:#f9fafb;font-size:14px;font-family:'DM Mono',monospace;width:100%;box-sizing:border-box; }
+    .ki { background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:11px 13px;color:#f9fafb;font-size:14px;font-family:'JetBrains Mono',monospace,monospace;width:100%;box-sizing:border-box; }
     .ki:focus { outline:none;border-color:rgba(6,182,212,0.5); }
     .ki::placeholder { color:#374151; }
   `,
@@ -80,22 +80,23 @@ const lightTheme = {
     nav:     "rgba(2,132,199,0.15)",
   },
   font: {
-    display: "'Syne', sans-serif",
-    body:    "'DM Sans', sans-serif",
-    mono:    "'DM Mono', monospace",
+    display: "'Plus Jakarta Sans', system-ui, -apple-system, sans-serif",
+    body:    "'Inter', system-ui, -apple-system, sans-serif",
+    mono:    "'JetBrains Mono', ui-monospace, SFMono-Regular, monospace",
   },
   radius: { sm: 10, md: 12, lg: 14, xl: 18 },
   kiCss: `
-    .ki { background:rgba(0,0,0,0.04);border:1px solid rgba(0,0,0,0.12);border-radius:10px;padding:11px 13px;color:#0f172a;font-size:14px;font-family:'DM Mono',monospace;width:100%;box-sizing:border-box; }
+    .ki { background:rgba(0,0,0,0.04);border:1px solid rgba(0,0,0,0.12);border-radius:10px;padding:11px 13px;color:#0f172a;font-size:14px;font-family:'JetBrains Mono',monospace,monospace;width:100%;box-sizing:border-box; }
     .ki:focus { outline:none;border-color:rgba(2,132,199,0.5); }
     .ki::placeholder { color:#94a3b8; }
   `,
 };
-
-export type Theme = typeof darkTheme;
+// ── Widen isDark to boolean so light/dark share one type ──
+export type Theme = Omit<typeof darkTheme, "isDark"> & { isDark: boolean };
 
 const ThemeContext = createContext<{
   theme: Theme;
+  isDark: boolean;
   toggleTheme: () => void;
 }>(null!);
 
@@ -111,7 +112,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     } catch { return false; }
   });
 
-  const theme = isDark ? darkTheme : lightTheme;
+  const theme: Theme = isDark ? darkTheme : lightTheme;
 
   useEffect(() => {
     document.body.style.background = theme.bg.base;
@@ -127,7 +128,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <ThemeContext.Provider value={{ theme, toggleTheme }}>
+    <ThemeContext.Provider value={{ theme, isDark, toggleTheme }}>
       {children}
     </ThemeContext.Provider>
   );

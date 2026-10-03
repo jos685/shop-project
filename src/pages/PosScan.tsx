@@ -9,13 +9,23 @@ import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
 import { sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
 import { createPortal } from "react-dom";
-import FloatingCart from "../components/FloatingCart";
+// import FloatingCart from "../components/FloatingCart";
+import UnlistedItemModal from "../components/UnlistedItemModal";
+// import BottomSheet from "../components/BottomSheet";
+import SaleDock from "../components/SaleDock";
+import AddToast from "../components/AddToast";
+import type { CartItem, ListedCartItem, CustomItem } from "../types/pos";
+import { cartItemName, cartItemImage, cartItemBasePrice } from "../types/pos";
+import CenterModal from "../components/CenterModal";
+
+
 
 type Step         = "scan" | "checkout" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
 type VerifyMethod = "pin" | "badge";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
+
 
 function isSubsequence(q: string, t: string): boolean {
   let i = 0;
@@ -81,11 +91,7 @@ interface LocalAgent {
   id: string; pin: string; active: boolean; agent_id: string;
   name: string; agent_code: string; avatar: string;
 }
-interface CartItem {
-  allocation: LocalAlloc;
-  quantity: number;
-  sellPrice: number;
-}
+
 
 const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
 const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise", success: "Done" };
@@ -225,6 +231,18 @@ export default function PosScan() {
   const width     = useWindowWidth();
   const isMobile  = width < 640;
   const isDesktop = width >= 1024;
+  const NAV_H = isMobile ? 64 : 128;
+
+  const [reopenPayAfterEdit, setReopenPayAfterEdit] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
+  const [toast, setToast] = useState<{ text: string; lastKey?: string } | null>(null);
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = (text: string, lastKey?: string) => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    setToast({ text, lastKey });
+    toastTimer.current = setTimeout(() => setToast(null), 3000);
+  };
 
   const { features } = useOwnerFeatures(shop?.owner_id);
   const canScan = features.scan_to_sell;
@@ -237,12 +255,34 @@ export default function PosScan() {
     ctaGuardRef.current = Date.now();
   }, [step]);
 
+  useEffect(() => {
+    if (step === "success") {
+      setPayOpen(false);
+      setToast(null);
+    }
+  }, [step]);
+
   // scan
   const [mode,           setMode]           = useState<"camera" | "manual">("manual");
   const [cameraActive,   setCameraActive]   = useState(true);
   const [badgeActive,    setBadgeActive]    = useState(false);
   const [searchQuery,    setSearchQuery]    = useState("");
   const [myProducts,     setMyProducts]     = useState<LocalAlloc[]>([]);
+
+
+  const [customItems, setCustomItems] = useState<CustomItem[]>([]);
+  const [unlistedOpen, setUnlistedOpen] = useState(false);
+
+  const [editingUnlistedKey, setEditingUnlistedKey] = useState<string | null>(null);
+
+const editUnlistedItem = (key: string) => {
+  const item = cart.find(i => i.key === key);
+  if (!item || item.kind !== "unlisted") return;
+  setEditingUnlistedKey(key);
+  setUnlistedOpen(true);
+  setPayOpen(false);
+  setReopenPayAfterEdit(true);
+};
 
   // cart
   const [cart,           setCart]           = useState<CartItem[]>([]);
@@ -430,11 +470,12 @@ export default function PosScan() {
     try {
       const raw = localStorage.getItem(cacheKey);
       if (!raw) return;
-      const { agents, products, commission, bizName } = JSON.parse(raw);
-      if (agents)     setShopAgents(agents);
-      if (products)   setMyProducts(products);
-      if (commission) setCommissionConfig(commission);
-      if (bizName)    setBusinessName(bizName);
+      const { agents, products, commission, bizName, customItems: cachedCustom } = JSON.parse(raw);
+        if (agents)        setShopAgents(agents);
+        if (products)      setMyProducts(products);
+        if (commission)    setCommissionConfig(commission);
+        if (bizName)       setBusinessName(bizName);
+        if (cachedCustom)  setCustomItems(cachedCustom);
     } catch {}
   }, [cacheKey]);
 
@@ -442,7 +483,7 @@ export default function PosScan() {
   useEffect(() => {
     if (!shop || !isOnline) return;
     (async () => {
-      const [agentsRes, allocsRes, commRes, profileRes] = await Promise.all([
+      const [agentsRes, allocsRes, commRes, profileRes, customRes] = await Promise.all([
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
@@ -451,6 +492,10 @@ export default function PosScan() {
           .eq("shop_id", shop.id),
         supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
         supabase.from("profiles").select("business_name").eq("id", shop.owner_id).single(),
+        supabase.from("shop_custom_items")
+        .select("id, shop_id, name, unit, default_price, category, active")
+        .eq("shop_id", shop.id).eq("active", true)
+        .order("name"),
       ]);
 
       // Bail out if any primary fetch failed — don't overwrite good cached data with nothing.
@@ -496,13 +541,21 @@ export default function PosScan() {
 
       setCommissionConfig(commission);
       setBusinessName(bizName);
+      const cItems = (customRes.data ?? []) as CustomItem[];
+      setCustomItems(cItems);
       setShopAgents(agents);
       setMyProducts(products);
 
       // Persist to cache so the next offline session has fresh data.
       if (cacheKey) {
-        try { localStorage.setItem(cacheKey, JSON.stringify({ agents, products, commission, bizName })); } catch {}
+        try {
+          localStorage.setItem(cacheKey, JSON.stringify({
+            agents, products, commission, bizName, customItems: cItems,
+          }));
+        } catch {}
       }
+      
+    
       // Full stock cache (all items including 0-remaining) for the stock info page
       if (shop?.id) {
         try { localStorage.setItem(`pos_stock_full_${shop.id}`, JSON.stringify({ items: allProducts, cachedAt: Date.now() })); } catch {}
@@ -518,6 +571,8 @@ export default function PosScan() {
       if (cached) setSavedCustomers(JSON.parse(cached));
     } catch {}
   }, [customersKey]);
+
+  
 
   useEffect(() => {
     if (!usageKey) return;
@@ -551,6 +606,53 @@ export default function PosScan() {
       return next;
     });
   }, [usageKey]);
+
+  const saveCustomItem = useCallback(async (
+    name: string, unit: string, price: number
+  ): Promise<CustomItem | null> => {
+    if (!shop) return null;
+    const trimmed = name.trim();
+    if (!trimmed) return null;
+  
+    // Try to find an existing match first
+    const existing = customItems.find(
+      c => c.name.toLowerCase() === trimmed.toLowerCase()
+    );
+    if (existing) return existing;
+  
+    const { data, error } = await supabase
+      .from("shop_custom_items")
+      .insert({
+        shop_id: shop.id,
+        owner_id: shop.owner_id,
+        name: trimmed,
+        unit: unit || "pc",
+        default_price: price || 0,
+        created_by: shop.owner_id, // or current agent id if you track it
+      })
+      .select("id, shop_id, name, unit, default_price, category, active")
+      .single();
+  
+    if (error || !data) {
+      console.warn("saveCustomItem failed:", error?.message);
+      return null;
+    }
+  
+    const created = data as CustomItem;
+    setCustomItems(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+  
+    // Persist to cache
+    if (cacheKey) {
+      try {
+        const raw = localStorage.getItem(cacheKey);
+        const existingCache = raw ? JSON.parse(raw) : {};
+        const next = [...(existingCache.customItems ?? []), created]
+          .sort((a, b) => a.name.localeCompare(b.name));
+        localStorage.setItem(cacheKey, JSON.stringify({ ...existingCache, customItems: next }));
+      } catch {}
+    }
+    return created;
+  }, [shop, customItems, cacheKey]);
 
   const saveCustomer = useCallback(async (name: string, phone: string) => {
     if (!shop || !name.trim() || !phone.trim()) return;
@@ -687,18 +789,46 @@ const refreshProducts = useCallback(async () => {
     };
   }, [shop, myProducts]);
 
-  const handleProductFound = (alloc: LocalAlloc) => {
-    if (!alloc || alloc.remaining <= 0) {
-      setScanFeedback(`No stock available for ${alloc?.product?.name ?? "this product"}.`);
+  const editItem = (key: string) => {
+    const item = cart.find(i => i.key === key);
+    if (!item || item.kind !== "listed") return;
+    setAddingProduct(item.allocation);
+    setAddQty(String(item.quantity));
+    setAddSellPrice(String(item.sellPrice));
+    setToast(null);
+    setPayOpen(false);              // close the payment modal so the product sheet is on top
+    setReopenPayAfterEdit(true);    // remember to reopen it once the user saves
+  };
+  
+  const undoItem = (key: string) => {
+    setCart(prev => prev.filter(i => i.key !== key));
+    setToast(null);
+  };
+
+  const handleProductTap = (alloc: LocalAlloc) => {
+    if (alloc.remaining <= 0) {
+      setScanFeedback(`No stock for ${alloc.product.name}`);
       setTimeout(() => setScanFeedback(""), 2500);
       return;
     }
-    const existing   = cart.find(i => i.allocation.product_id === alloc.product_id);
-    
-    setAddQty(existing ? String(existing.quantity) : "1");
-    setAddSellPrice(existing ? String(existing.sellPrice) : String(alloc.product.price));
-    setAddingProduct(alloc);
-    setError("");
+    const existing = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
+    if (existing) {
+      // Re-tap = increment quantity by 1
+      setCart(prev => prev.map(i =>
+        i.key === existing.key ? { ...i, quantity: i.quantity + 1 } : i
+      ));
+      showToast(`${alloc.product.name} → ${existing.quantity + 1}`);
+    } else {
+      const newItem: ListedCartItem = {
+        kind: "listed",
+        key: alloc.id,
+        allocation: alloc,
+        quantity: 1,
+        sellPrice: alloc.product.price,
+      };
+      setCart(prev => [...prev, newItem]);
+      showToast(`Added · ${alloc.product.name}`, alloc.id);
+    }
   };
 
   const handleQrScan = async (text: string) => {
@@ -710,7 +840,7 @@ const refreshProducts = useCallback(async () => {
       setTimeout(() => { setCameraActive(true); setScanFeedback(""); }, 2500);
       return;
     }
-    handleProductFound(alloc);
+    handleProductTap(alloc);
   };
    
   // Live-filtered products. Matches name OR sku with fuzzy tolerance.
@@ -731,8 +861,9 @@ const exactSkuMatch = useMemo(() => {
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
     if (!addingProduct) return;
-    const qty      = Math.max(1, parseInt(addQty) || 1);
-    const sp       = Number(addSellPrice) || addingProduct.product.price;
+    const qty = Math.max(1, parseInt(addQty) || 1);
+    const sp  = Number(addSellPrice) || addingProduct.product.price;
+  
     if (qty > addingProduct.remaining) {
       setError(`Only ${addingProduct.remaining} units available.`);
       return;
@@ -741,23 +872,90 @@ const exactSkuMatch = useMemo(() => {
       setError(`Sell price cannot be less than ${fmt(addingProduct.product.price)}.`);
       return;
     }
+  
     setCart(prev => {
-      const existing = prev.find(i => i.allocation.product_id === addingProduct.product_id);
-      if (existing) return prev.map(i => i.allocation.product_id === addingProduct.product_id ? { ...i, quantity: qty, sellPrice: sp } : i);
-      return [...prev, { allocation: addingProduct, quantity: qty, sellPrice: sp }];
+      const existing = prev.find(
+        i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id
+      );
+      if (existing) {
+        return prev.map(i =>
+          i.kind === "listed" && i.allocation.product_id === addingProduct.product_id
+            ? { ...i, quantity: qty, sellPrice: sp }
+            : i
+        );
+      }
+      const newItem: ListedCartItem = {
+        kind: "listed",
+        key: addingProduct.id,
+        allocation: addingProduct,
+        quantity: qty,
+        sellPrice: sp,
+      };
+      return [...prev, newItem];
     });
     setAddingProduct(null);
     setAddQty("1");
     setAddSellPrice("");
     setError("");
+
+    if (reopenPayAfterEdit) {
+      setReopenPayAfterEdit(false);
+      setPayOpen(true);   // bring the payment modal back with the updated row
+    }
   };
 
-  const handleRemoveFromCart = (productId: string) => {
-    setCart(prev => prev.filter(i => i.allocation.product_id !== productId));
+
+  const handleAddUnlisted = (input: {
+    customItemId: string | null;
+    name: string;
+    unit: string;
+    quantity: number;
+    sellPrice: number;
+  }) => {
+    if (editingUnlistedKey) {
+      // Update the existing unlisted row
+      setCart(prev => prev.map(i =>
+        i.key === editingUnlistedKey && i.kind === "unlisted"
+          ? {
+              ...i,
+              customItemId: input.customItemId,
+              name: input.name,
+              unit: input.unit || "pc",
+              quantity: Math.max(1, input.quantity),
+              sellPrice: Math.max(0, input.sellPrice),
+            }
+          : i
+      ));
+      setEditingUnlistedKey(null);
+    } else {
+      // Add a new unlisted row
+      setCart(prev => [
+        ...prev,
+        {
+          kind: "unlisted",
+          key: crypto.randomUUID(),
+          customItemId: input.customItemId,
+          name: input.name,
+          unit: input.unit || "pc",
+          quantity: Math.max(1, input.quantity),
+          sellPrice: Math.max(0, input.sellPrice),
+        },
+      ]);
+    }
+    setUnlistedOpen(false);
+    setError("");
+    if (reopenPayAfterEdit) {
+      setReopenPayAfterEdit(false);
+      setPayOpen(true);
+    }
   };
 
-  const handleUpdateCartQty = (productId: string, qty: number) => {
-    setCart(prev => prev.map(i => i.allocation.product_id === productId ? { ...i, quantity: Math.max(1, qty) } : i));
+  const handleRemoveFromCart = (key: string) => {
+    setCart(prev => prev.filter(i => i.key !== key));
+  };
+  
+  const handleUpdateCartQty = (key: string, qty: number) => {
+    setCart(prev => prev.map(i => i.key === key ? { ...i, quantity: Math.max(1, qty) } : i));
   };
 
   // ── checkout ──────────────────────────────────────────────────────────
@@ -788,26 +986,6 @@ const exactSkuMatch = useMemo(() => {
     return "";
   }
 
-  const handleCheckoutNext = () => {
-    if (cart.length === 0) { setError("Add at least one product to the cart."); return; }
-
-    const errs: Record<string, string> = {
-      customerName:  validateField("customerName",  customerName),
-      customerPhone: validateField("customerPhone", customerPhone),
-      mpesaRef:      (payMethod === "mpesa" || payMethod === "split") ? validateField("mpesaRef", mpesaRef) : "",
-    };
-    const hasErr = Object.values(errs).some(Boolean);
-    if (hasErr) { setFieldErrors(errs); return; }
-
-    if (payMethod === "split") {
-      const c = Number(cashAmount) || 0, m = Number(mpesaAmount) || 0;
-      if (!cashAmount || !mpesaAmount) { setError("Enter both Cash and M-Pesa amounts."); return; }
-      if (Math.abs(c + m - grandTotal) > 1) { setError(`Cash + M-Pesa must equal ${fmt(grandTotal)}.`); return; }
-    }
-    setFieldErrors({});
-    setError("");
-    setStep("verify");
-  };
 
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
@@ -826,15 +1004,27 @@ const exactSkuMatch = useMemo(() => {
         shopId:        shop!.id,
         ownerId:       shop!.owner_id,
         type:          payMethod === "credit" ? "credit" : "regular",
-        cart: cart.map(item => ({
-          allocationId: item.allocation.id,
-          productId:    item.allocation.product.id,
-          productName:  item.allocation.product.name,
-          productImage: item.allocation.product.image_url,
-          quantity:     item.quantity,
-          sellPrice:    item.sellPrice,
-          basePrice:    item.allocation.product.price,
-        })),
+        cart: cart.map(item => item.kind === "unlisted"
+          ? {
+              isUnlisted:  true,
+              customItemId: item.customItemId,
+              productName: item.name,
+              unit:        item.unit,
+              quantity:    item.quantity,
+              sellPrice:   item.sellPrice,
+              basePrice:   item.sellPrice,   // no markup
+            }
+          : {
+              isUnlisted:  false,
+              allocationId: item.allocation.id,
+              productId:    item.allocation.product.id,
+              productName:  item.allocation.product.name,
+              productImage: item.allocation.product.image_url,
+              quantity:     item.quantity,
+              sellPrice:    item.sellPrice,
+              basePrice:    item.allocation.product.price,
+            }
+        ),
         payMethod,
         cashAmount:      Number(cashAmount)  || 0,
         mpesaAmount:     Number(mpesaAmount) || 0,
@@ -853,7 +1043,7 @@ const exactSkuMatch = useMemo(() => {
       // Deduct stock locally so agents can't oversell during offline mode.
       setMyProducts(prev => {
         const allUpdated = prev.map(alloc => {
-          const sold = cart.find(i => i.allocation.id === alloc.id);
+          const sold = cart.find(i => i.kind === "listed" && i.allocation.id === alloc.id);
           if (!sold) return alloc;
           return { ...alloc, remaining: Math.max(0, alloc.remaining - sold.quantity) };
         });
@@ -903,21 +1093,20 @@ const exactSkuMatch = useMemo(() => {
     // Track successfully deducted items so we can roll back on partial failure.
     const deducted: { id: string; quantity: number; name: string }[] = [];
     for (const item of cart) {
+      if (item.kind === "unlisted") continue;   // nothing to deduct
+    
       const { error: stockErr } = await supabase.rpc("deduct_shop_stock", {
         p_shop_allocation_id: item.allocation.id,
         p_quantity: item.quantity,
       });
-      
+    
       if (stockErr) {
-        // Best-effort rollback in parallel
         Promise.all(deducted.map(d =>
           supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
         )).catch(() => {});
-      
-        // Pull the fresh numbers so the card shows the correct remaining.
-        // Without this, the user keeps seeing stale stock and re-hits the same error.
+    
         await refreshProducts();
-      
+    
         setError(
           stockErr.message.includes("Insufficient") || stockErr.message.toLowerCase().includes("stock")
             ? `${item.allocation.product.name} is out of stock (or has less than ${item.quantity} left). The list has been refreshed — please pick a different item.`
@@ -929,15 +1118,30 @@ const exactSkuMatch = useMemo(() => {
     }
 
     // ── Credit / Pay Later ────────────────────────────────────────────
-    if (payMethod === "credit") {
-      const creditItems = cart.map(item => ({
-        allocation_id: item.allocation.id,
-        product_id:    item.allocation.product.id,
-        product_name:  item.allocation.product.name,
-        quantity:      item.quantity,
-        unit_price:    item.sellPrice,                       // ← use sell price
-        subtotal:      item.sellPrice * item.quantity,
-      }));
+        // ── Credit / Pay Later ────────────────────────────────────────────
+        if (payMethod === "credit") {
+          const creditItems = cart.map(item => item.kind === "unlisted"
+      ? {
+          allocation_id:  null,
+          product_id:     null,
+          custom_item_id: item.customItemId,
+          product_name:   item.name,
+          is_unlisted:    true,
+          quantity:       item.quantity,
+          unit_price:     item.sellPrice,
+          subtotal:       item.sellPrice * item.quantity,
+        }
+      : {
+          allocation_id:  item.allocation.id,
+          product_id:     item.allocation.product.id,
+          custom_item_id: null,
+          product_name:   item.allocation.product.name,
+          is_unlisted:    false,
+          quantity:       item.quantity,
+          unit_price:     item.sellPrice,
+          subtotal:       item.sellPrice * item.quantity,
+        }
+    );
 
       const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
       const initCashPaid = Math.min(Math.max(0, Number(initialCashAmount) || 0), initPaid);
@@ -945,6 +1149,10 @@ const exactSkuMatch = useMemo(() => {
       const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
       const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
 
+            // Find the first listed item, if any — used as the "primary" product on the
+            const firstListed = cart.find((i): i is ListedCartItem => i.kind === "listed");
+      const primaryProductId = firstListed ? firstListed.allocation.product.id : null;
+      const primaryBasePrice  = firstListed ? firstListed.allocation.product.price : 0;
       const { data: fnData, error: fnErr } = await supabase.functions.invoke("insert-credit-sale", {
         body: {
           shop_id:         shop?.id,
@@ -964,7 +1172,7 @@ const exactSkuMatch = useMemo(() => {
               shop_id:           shop?.id,
               owner_id:          shop?.owner_id,
               seller_agent_id:   verifiedAgent.agent_id,
-              product_id:        cart[0].allocation.product.id,
+              product_id:        primaryProductId,
               quantity:          cart.reduce((s, i) => s + i.quantity, 0),
               amount:            initPaid,
               customer_phone:    customerPhone.trim(),
@@ -973,8 +1181,8 @@ const exactSkuMatch = useMemo(() => {
               mpesa_amount:      initMpesaPaid,
               mpesa_ref:         initMpesaPaid > 0 ? mpesaRef.trim() || null : null,
               status:            txStatus,
-              unit_price:        cart[0].allocation.product.price,
-              base_price:        cart[0].allocation.product.price,
+              unit_price:        primaryBasePrice,
+              base_price:        primaryBasePrice,
               commission_rate:   0,
               commission_earned: 0,
             },
@@ -1016,11 +1224,11 @@ const exactSkuMatch = useMemo(() => {
             business_name:   businessName,
             agent_name:      verifiedAgent.name,
             customer_name:   customerName.trim() || null,
-            items:           cart.map(item => ({
-              name:       item.allocation.product.name,
+            items: cart.map(item => ({
+              name:       cartItemName(item),
               quantity:   item.quantity,
-              unit_price: item.allocation.product.price,
-              total:      item.allocation.product.price * item.quantity,
+              unit_price: item.sellPrice,
+              total:      item.sellPrice * item.quantity,
             })),
             total_amount:   grandTotal,
             payment_method: "credit",
@@ -1042,6 +1250,34 @@ const exactSkuMatch = useMemo(() => {
     const commRate = commissionConfig.enabled ? commissionConfig.rate : 0;
 
     const txRows = cart.map(item => {
+      // ── Unlisted branch ──
+      if (item.kind === "unlisted") {
+        const itemTotal = item.sellPrice * item.quantity;
+        const ratio = grandTotal > 0 ? itemTotal / grandTotal : 0;
+        return {
+          shop_id:           shop?.id,
+          owner_id:          shop?.owner_id,
+          seller_agent_id:   verifiedAgent.agent_id,
+          product_id:        null,
+          custom_item_id:    item.customItemId,
+          product_name:      item.name,
+          is_unlisted:       true,
+          quantity:          item.quantity,
+          amount:            itemTotal,
+          customer_phone:    customerPhone.trim(),
+          payment_method:    payMethod,
+          cash_amount:       payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
+          mpesa_amount:      payMethod === "mpesa" ? itemTotal : payMethod === "cash"  ? 0 : Math.round(mpesa * ratio),
+          mpesa_ref:         (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
+          status:            "ok",
+          unit_price:        item.sellPrice,
+          base_price:        item.sellPrice,   // no markup for unlisted
+          commission_rate:   0,
+          commission_earned: 0,
+        };
+      }
+    
+      // ── Listed branch (unchanged) ──
       const basePrice   = item.allocation.product.price;
       const unitPrice   = item.sellPrice;
       const itemTotal   = unitPrice * item.quantity;
@@ -1053,6 +1289,9 @@ const exactSkuMatch = useMemo(() => {
         owner_id:          shop?.owner_id,
         seller_agent_id:   verifiedAgent.agent_id,
         product_id:        item.allocation.product.id,
+        custom_item_id:    null,
+        product_name:      item.allocation.product.name,
+        is_unlisted:       false,
         quantity:          item.quantity,
         amount:            itemTotal,
         customer_phone:    customerPhone.trim(),
@@ -1103,8 +1342,8 @@ const exactSkuMatch = useMemo(() => {
           phone:          customerPhone.trim(),
           business_name:  businessName,
           agent_name:     verifiedAgent.name,
-          items:          cart.map(item => ({
-            name:       item.allocation.product.name,
+          items: cart.map(item => ({
+            name:       cartItemName(item),
             quantity:   item.quantity,
             unit_price: item.sellPrice,
             total:      item.sellPrice * item.quantity,
@@ -1163,7 +1402,7 @@ const exactSkuMatch = useMemo(() => {
   
       if (newPin.length === 4 && selectedAgent) {
         const storedPin = selectedAgent.pin != null ? String(selectedAgent.pin) : null;
-  
+      
         if (!storedPin) {
           setPin("");
           setPinError("This agent has no PIN set. Ask your owner to configure one.");
@@ -1171,7 +1410,7 @@ const exactSkuMatch = useMemo(() => {
           setTimeout(() => setPinShake(false), 400);
           return;
         }
-  
+      
         if (newPin !== storedPin) {
           const next = pinFails + 1;
           setPinFails(next);
@@ -1182,7 +1421,7 @@ const exactSkuMatch = useMemo(() => {
           setTimeout(() => setPinShake(false), 400);
           return;
         }
-  
+      
         setPin("");
         setPinError("");
         setPinFails(0); setPinCountdown(0);
@@ -1220,22 +1459,36 @@ const exactSkuMatch = useMemo(() => {
       return () => window.removeEventListener("keydown", onKey);
     });
 
+    useEffect(() => {
+      if (!shop || !isOnline) return;
+      const onFocus = async () => {
+        const { data } = await supabase
+          .from("shop_custom_items")
+          .select("id, shop_id, name, unit, default_price, category, active")
+          .eq("shop_id", shop.id).eq("active", true)
+          .order("name");
+        if (data) setCustomItems(data as CustomItem[]);
+      };
+      window.addEventListener("focus", onFocus);
+      return () => window.removeEventListener("focus", onFocus);
+    }, [shop, isOnline]);
 
-  const handleReset = () => {
-    setStep("scan"); setMode("manual"); setSearchQuery("");
-    setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
-    setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
-    setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
-    setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
-    setPayMethod("cash");
-    setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
-    setError(""); setScanFeedback(""); setProcessing(false); setFieldErrors({});
-    setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
-    if (cartKey) localStorage.removeItem(cartKey);
-    // Reset PIN lockout for the next sale
-    setPinFails(0); setPinCountdown(0);
-    if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
-  };
+
+    const handleReset = () => {
+      setStep("scan"); setMode("manual"); setSearchQuery("");
+      setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
+      setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
+      setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
+      setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
+      setPayMethod("cash");
+      setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
+      setError(""); setScanFeedback(""); setProcessing(false); setFieldErrors({});
+      setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
+      setUnlistedOpen(false);                       // ← ADD THIS
+      if (cartKey) localStorage.removeItem(cartKey);
+      setPinFails(0); setPinCountdown(0);
+      if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
+    };
 
   const goBack = () => {
     setError("");
@@ -1293,7 +1546,7 @@ const exactSkuMatch = useMemo(() => {
           </div>
         )}
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=DM+Sans:wght@400;500;600&family=DM+Mono:wght@400;500&display=swap');
+        
         @keyframes fadeUp     { from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)} }
         @keyframes spin       { to{transform:rotate(360deg)} }
         @keyframes fadeIn { from{opacity:0} to{opacity:1} }
@@ -1351,12 +1604,7 @@ const exactSkuMatch = useMemo(() => {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            {step === "scan" && cart.length > 0 && (
-              <button onClick={() => { setStep("checkout"); setError(""); }}
-                style={{ background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 10, padding: "7px 12px", color: theme.accent.cyan, fontSize: 12, fontFamily: theme.font.mono, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}>
-                🛒 {cart.length} · {fmt(grandTotal)}
-              </button>
-            )}
+            
             <button onClick={step === "scan" ? () => navigate("/pos") : handleReset}
               style={{ background: "none", border: `1px solid ${theme.border.default}`, borderRadius: 9, padding: "7px 13px", color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, cursor: "pointer", whiteSpace: "nowrap" }}>
               {step === "scan" ? "← Back" : "✕ Cancel"}
@@ -1418,13 +1666,13 @@ const exactSkuMatch = useMemo(() => {
       <div style={{
           padding: isMobile
           ? `14px 14px ${
-              step === "checkout" || (step === "scan" && cart.length > 0)
-                ? "calc(env(safe-area-inset-bottom, 0px) + 270px)"
+              step === "scan" && cart.length > 0 && !payOpen && !addingProduct
+                ? "calc(env(safe-area-inset-bottom, 0px) + 100px)"
                 : "90px"
             }`
           : `24px 40px ${
-              step === "checkout" || (step === "scan" && cart.length > 0)
-                ? "260px"
+              step === "scan" && cart.length > 0 && !payOpen && !addingProduct
+                ? "calc(env(safe-area-inset-bottom, 0px) + 100px)"
                 : "90px"
             }`,
           maxWidth: isDesktop ? 1400 : 720,
@@ -1505,11 +1753,11 @@ const exactSkuMatch = useMemo(() => {
           e.preventDefault();
           const q = searchQuery.trim();
           if (!q) return;
-          if (exactSkuMatch) { handleProductFound(exactSkuMatch); setSearchQuery(""); return; }
+          if (exactSkuMatch) { handleProductTap(exactSkuMatch); setSearchQuery(""); return; }
           // Try a network SKU lookup for a product not yet in the local list.
           const alloc = await fetchAllocationBySku(q);
-          if (alloc) { handleProductFound(alloc); setSearchQuery(""); return; }
-          if (filteredProducts.length === 1) { handleProductFound(filteredProducts[0]); setSearchQuery(""); return; }
+          if (alloc) { handleProductTap(alloc); setSearchQuery(""); return; }
+          if (filteredProducts.length === 1) { handleProductTap(filteredProducts[0]); setSearchQuery(""); return; }
           if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
         }}
         placeholder="Search by name or SKU…"
@@ -1524,9 +1772,29 @@ const exactSkuMatch = useMemo(() => {
       )}
     </div>
 
+    <button
+  onClick={() => { setUnlistedOpen(true); setError(""); }}
+  style={{
+    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+    padding: "12px 14px",
+    background: "rgba(168,85,247,0.06)",
+    border: "1px dashed rgba(168,85,247,0.4)",
+    borderRadius: 12,
+    color: "#c084fc",
+    fontFamily: theme.font.mono,
+    fontSize: 13,
+    cursor: "pointer",
+    transition: "background 0.15s",
+  }}
+  onMouseEnter={e => (e.currentTarget.style.background = "rgba(168,85,247,0.12)")}
+  onMouseLeave={e => (e.currentTarget.style.background = "rgba(168,85,247,0.06)")}
+>
+  ➕ Sell item not in stock
+</button>
+
     {/* Exact SKU quick-add */}
     {exactSkuMatch && (
-      <button onClick={() => { handleProductFound(exactSkuMatch); setSearchQuery(""); }}
+      <button onClick={() => { handleProductTap(exactSkuMatch); setSearchQuery(""); }}
         style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 12, cursor: "pointer", textAlign: "left" }}>
         <span style={{ fontSize: 16 }}>⚡</span>
         <span style={{ flex: 1, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
@@ -1559,9 +1827,11 @@ const exactSkuMatch = useMemo(() => {
           {filteredProducts.map(alloc => {
             const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
             const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
-            const inCart = cart.find(i => i.allocation.product_id === alloc.product_id);
+            const inCart = cart.find(
+              i => i.kind === "listed" && i.allocation.product_id === alloc.product_id
+            );
             return (
-              <button key={alloc.id} onClick={() => handleProductFound(alloc)}
+              <button key={alloc.id} onClick={() => handleProductTap(alloc)}
                   style={{ padding: "8px 10px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 11, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left", transition: "border-color 0.15s" }}
                   onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
                   onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
@@ -1591,6 +1861,8 @@ const exactSkuMatch = useMemo(() => {
       </div>
     )}
   </div>
+
+  
 )}
 
           </div>
@@ -1608,64 +1880,73 @@ const exactSkuMatch = useMemo(() => {
                   Cart — {cart.length} item{cart.length !== 1 ? "s" : ""}
                 </div>
                 {cart.map((item, idx) => {
-                  const itemTotal = item.sellPrice * item.quantity;
-                  return (
-                    <div key={item.allocation.product_id} className="cart-row" style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12, transition: "background 0.15s" }}>
-                    <ProductImage 
-                      imageUrl={item.allocation.product.image_url} 
-                      productName={item.allocation.product.name} 
-                      size={36} 
-                    />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.allocation.product.name}</div>
-                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                          {fmt(item.sellPrice)} each . {item.allocation.remaining} left
-                          {item.sellPrice > item.allocation.product.price && (
-                            <span style={{ color: "#34d399", marginLeft: 5 }}>+{fmt(item.sellPrice - item.allocation.product.price)} markup</span>
-                          )}
-                        </div>
-                      </div>
-                      {/* Qty stepper */}
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <button
-                          onClick={() => {
-                            if (item.quantity <= 1) handleRemoveFromCart(item.allocation.product_id);
-                            else handleUpdateCartQty(item.allocation.product_id, item.quantity - 1);
-                          }}
-                          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          {item.quantity <= 1 ? "✕" : "−"}
-                        </button>
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={item.quantity}
-                          onChange={e => {
-                            const digits = e.target.value.replace(/[^0-9]/g, "");
-                            if (digits === "") { handleUpdateCartQty(item.allocation.product_id, 1); return; }
-                            const num = Math.min(parseInt(digits, 10), item.allocation.remaining);
-                            handleUpdateCartQty(item.allocation.product_id, num);
-                          }}
-                          onFocus={e => e.target.select()}
-                          style={{
-                            width: 44, height: 28, textAlign: "center",
-                            fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600,
-                            background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)",
-                            borderRadius: 7, color: theme.text.primary, outline: "none",
-                          }}
-                        />
-                        <button
-                          onClick={() => { if (item.quantity < item.allocation.remaining) handleUpdateCartQty(item.allocation.product_id, item.quantity + 1); }}
-                          disabled={item.quantity >= item.allocation.remaining}
-                          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: theme.accent.cyan, cursor: item.quantity >= item.allocation.remaining ? "not-allowed" : "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", opacity: item.quantity >= item.allocation.remaining ? 0.35 : 1 }}>
-                          +
-                        </button>
-                      </div>
+  const itemTotal = item.sellPrice * item.quantity;
+  const isListed  = item.kind === "listed";
+  const name      = cartItemName(item);
+  const basePrice = cartItemBasePrice(item);
+  const remaining = isListed ? item.allocation.remaining : Infinity;
+  const image     = cartItemImage(item);
 
+  return (
+    <div key={item.key} className="cart-row"
+      style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12 }}>
+      <ProductImage imageUrl={image} productName={name} size={36} />
 
-                      <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>{fmt(itemTotal)}</div>
-                    </div>
-                  );
-                })}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+          {name}
+          {!isListed && (
+            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 5, padding: "1px 5px", flexShrink: 0 }}>
+              UNLISTED
+            </span>
+          )}
+        </div>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+          {fmt(item.sellPrice)} each
+          {isListed && ` · ${remaining} left`}
+          {isListed && item.sellPrice > basePrice && (
+            <span style={{ color: "#34d399", marginLeft: 5 }}>
+              +{fmt(item.sellPrice - basePrice)} markup
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Qty stepper */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <button
+          onClick={() => {
+            if (item.quantity <= 1) handleRemoveFromCart(item.key);
+            else handleUpdateCartQty(item.key, item.quantity - 1);
+          }}
+          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {item.quantity <= 1 ? "✕" : "−"}
+        </button>
+
+        <input type="text" inputMode="numeric" value={item.quantity}
+          onChange={e => {
+            const digits = e.target.value.replace(/[^0-9]/g, "");
+            if (digits === "") { handleUpdateCartQty(item.key, 1); return; }
+            const num = Math.min(parseInt(digits, 10), isListed ? remaining : 9999);
+            handleUpdateCartQty(item.key, num);
+          }}
+          onFocus={e => e.target.select()}
+          style={{ width: 44, height: 28, textAlign: "center", fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, color: theme.text.primary, outline: "none" }} />
+
+        <button
+          onClick={() => { if (!isListed || item.quantity < remaining) handleUpdateCartQty(item.key, item.quantity + 1); }}
+          disabled={isListed && item.quantity >= remaining}
+          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: theme.accent.cyan, cursor: isListed && item.quantity >= remaining ? "not-allowed" : "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", opacity: isListed && item.quantity >= remaining ? 0.35 : 1 }}>
+          +
+        </button>
+      </div>
+
+      <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>
+        {fmt(itemTotal)}
+      </div>
+    </div>
+  );
+})}
                 <div style={{ padding: "13px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.02)" }}>
                   <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>Grand Total</span>
                   <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold }}>{fmt(grandTotal)}</span>
@@ -1674,6 +1955,7 @@ const exactSkuMatch = useMemo(() => {
                 {/* Commission strip */}
                 {commissionConfig.enabled && commissionConfig.rate > 0 && (() => {
                   const totalComm = payMethod === "credit" ? 0 : cart.reduce((s, item) => {
+                    if (item.kind !== "listed") return s; // no commission on unlisted
                     const markup = Math.max(0, item.sellPrice - item.allocation.product.price);
                     return s + Math.round(markup * item.quantity * commissionConfig.rate / 100);
                   }, 0);
@@ -1990,13 +2272,35 @@ const exactSkuMatch = useMemo(() => {
               <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Order Summary</div>
                 {cart.map(item => (
-                  <div key={item.allocation.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
-                      {item.quantity}× {item.allocation.product.name}
-                    </div>
-                    <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>{fmt(item.sellPrice * item.quantity)}</div>
-                  </div>
-                ))}
+  <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+    <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
+      {item.quantity}× {cartItemName(item)}
+      {item.kind === "unlisted" && (
+        <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", marginLeft: 6 }}>· unlisted</span>
+      )}
+    </div>
+    <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>
+      {fmt(item.sellPrice * item.quantity)}
+    </div>
+
+    <button
+  onClick={() => {
+    if (item.kind === "listed") editItem(item.key);
+    else editUnlistedItem(item.key);
+  }}
+  aria-label="Edit item"
+  style={{
+    flexShrink: 0, width: 26, height: 26, borderRadius: 7,
+    border: `1px solid ${theme.border.default}`,
+    background: "transparent", color: theme.accent.cyan,
+    cursor: "pointer", fontSize: 13,
+    display: "flex", alignItems: "center", justifyContent: "center",
+  }}
+>
+  ✎
+</button>
+  </div>
+))}
                 <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
                   <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
                     {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
@@ -2154,11 +2458,18 @@ const exactSkuMatch = useMemo(() => {
               </div>
               {/* Items */}
               {cart.map(item => (
-                <div key={item.allocation.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span style={{ fontSize: 12, color: theme.text.secondary }}>{item.quantity}× {item.allocation.product.name}</span>
-                  <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.primary }}>{fmt(item.sellPrice * item.quantity)}</span>
-                </div>
-              ))}
+              <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 12, color: theme.text.secondary }}>
+                  {item.quantity}× {cartItemName(item)}
+                  {item.kind === "unlisted" && (
+                    <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", marginLeft: 6 }}>· unlisted</span>
+                  )}
+                </span>
+                <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.primary }}>
+                  {fmt(item.sellPrice * item.quantity)}
+                </span>
+              </div>
+            ))}
               {/* Summary rows */}
               {payMethod === "credit" ? (
                 <>
@@ -2360,7 +2671,16 @@ const exactSkuMatch = useMemo(() => {
       {addingProduct && (
         <div
           style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
-          onClick={e => { if (e.target === e.currentTarget) { setAddingProduct(null); setError(""); } }}>
+          onClick={e => {
+            if (e.target === e.currentTarget) {
+              setAddingProduct(null);
+              setError("");
+              if (reopenPayAfterEdit) {
+                setReopenPayAfterEdit(false);
+                setPayOpen(true);
+              }
+            }
+          }}>
           <div className="overlay-sheet" style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 16 }}>
             {/* Product info */}
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -2375,7 +2695,7 @@ const exactSkuMatch = useMemo(() => {
                   {addingProduct.product.sku} · {fmt(addingProduct.product.price)} · {addingProduct.remaining} left
                 </div>
               </div>
-              {cart.find(i => i.allocation.product_id === addingProduct.product_id) && (
+              {cart.find(i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id) && (
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 8, padding: "3px 8px", flexShrink: 0 }}>
                   In cart
                 </div>
@@ -2517,84 +2837,594 @@ const exactSkuMatch = useMemo(() => {
             )}
 
             <div style={{ display: "flex", gap: 10 }}>
-              <button onClick={() => { setAddingProduct(null); setError(""); }}
-                style={{ flex: 1, padding: "14px", border: `1px solid ${theme.border.default}`, borderRadius: 13, background: "transparent", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14, cursor: "pointer" }}>
-                Cancel
-              </button>
+            <button
+              onClick={() => {
+                setAddingProduct(null);
+                setError("");
+                if (reopenPayAfterEdit) {
+                  setReopenPayAfterEdit(false);
+                  setPayOpen(true);
+                }
+              }}
+              style={{ flex: 1, padding: "14px", border: `1px solid ${theme.border.default}`, borderRadius: 13, background: "transparent", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14, cursor: "pointer" }}
+            >
+              Cancel
+            </button>
               <button className="abtn" onClick={handleAddToCart}
                 style={{ flex: 2, background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", fontSize: 15 }}>
-                {cart.find(i => i.allocation.product_id === addingProduct.product_id) ? "Update Cart" : "Add to Cart"} →
+                {cart.find(i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id) ? "Update Cart" : "Add to Cart"} →
               </button>
             </div>
           </div>
         </div>
       )}
 
-              {/* ══════════════════ FLOATING CART ══════════════════ */}
-        {shop?.id && (
-          <FloatingCart
-            count={cart.length}
-            visible={step === "scan"}
-            onTap={() => { setStep("checkout"); setError(""); }}
-            storageKey={`pos_cart_pos_${shop.id}`}
-            isMobile={isMobile}
-            accentColor={theme.accent.cyan}
-          />
+   
+      
+<UnlistedItemModal
+  open={unlistedOpen}
+  onClose={() => {
+    setUnlistedOpen(false);
+    setEditingUnlistedKey(null);
+    if (reopenPayAfterEdit) {
+      setReopenPayAfterEdit(false);
+      setPayOpen(true);
+    }
+  }}
+  customItems={customItems}
+  theme={theme}
+  isMobile={isMobile}
+  onSaveCustomItem={saveCustomItem}
+  onAdd={handleAddUnlisted}
+  initialItem={
+    editingUnlistedKey
+      ? (() => {
+          const item = cart.find(i => i.key === editingUnlistedKey);
+          if (!item || item.kind !== "unlisted") return null;
+          return {
+            customItemId: item.customItemId,
+            name: item.name,
+            unit: item.unit,
+            quantity: item.quantity,
+            sellPrice: item.sellPrice,
+          };
+        })()
+      : null
+  }
+/>
+
+{/* ══════════════════ SALE DOCK ══════════════════ */}
+{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && (
+  <SaleDock
+    count={cart.length}
+    total={grandTotal}
+    theme={theme}
+    disabled={cart.length === 0}
+    onExpand={() => setPayOpen(true)}
+    onCharge={() => setPayOpen(true)}
+    bottomOffset={NAV_H}
+  />
+)}
+
+{/* ══════════════════ ADD TOAST ══════════════════ */}
+{toast && step === "scan" && !payOpen && (
+  <AddToast
+    text={toast.text}
+    theme={theme}
+    bottomOffset={NAV_H}
+    onEdit={toast.lastKey ? () => editItem(toast.lastKey!) : undefined}
+  onUndo={() => undoItem(toast.lastKey!)}
+  />
+)}
+
+
+<CenterModal
+  open={payOpen}
+  onClose={() => {
+    if (processing) return;
+    setPayOpen(false);
+    setPin(""); setPinError(""); setPinFails(0);
+    setSelectedAgent(null);
+    setError(""); 
+  }}
+  theme={theme}
+  maxWidth={480}
+>
+  {processing ? (
+    <div style={{ padding: "40px 24px", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+      <div style={{ position: "relative", width: 56, height: 56 }}>
+        <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
+        <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
+      </div>
+      <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted }}>
+        {payMethod === "credit" ? "Recording credit sale…" : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}…`}
+      </div>
+    </div>
+  ) : (
+    <>
+      {/* ── Header: total + close ── */}
+      <div style={{ padding: "16px 18px 12px", borderBottom: `1px solid ${theme.border.default}`, flexShrink: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Charge · {cart.length} item{cart.length !== 1 ? "s" : ""}
+            </div>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold, lineHeight: 1.1 }}>
+              {fmt(grandTotal)}
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              setPayOpen(false);
+              setPin(""); setPinError(""); setPinFails(0);
+              setSelectedAgent(null);
+              setError(""); 
+              
+            }}
+            aria-label="Close"
+            style={{
+              width: 32, height: 32, borderRadius: "50%",
+              border: `1px solid ${theme.border.default}`,
+              background: "transparent", color: theme.text.muted,
+              cursor: "pointer", fontSize: 14,
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+
+      {/* ── Scrollable body ── */}
+      <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "12px 18px 18px" }}>
+
+                {/* ── Cart items — editable ── */}
+                <div style={{ marginBottom: 14 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Items
+            </span>
+            {cart.length > 0 && (
+              <button
+                onClick={() => {
+                  if (!confirm("Clear all items from the cart?")) return;
+                  setCart([]);
+                  setSelectedAgent(null);
+                  setPin(""); setPinError("");
+                  setError("");
+                }}
+                style={{
+                  background: "none", border: "none",
+                  color: "#f87171", fontSize: 10, cursor: "pointer",
+                  fontFamily: theme.font.mono, fontWeight: 700,
+                  padding: 0,
+                }}
+              >
+                Clear all
+              </button>
+            )}
+          </div>
+          {cart.map(item => {
+            const isListed = item.kind === "listed";
+            const remaining = isListed ? item.allocation.remaining : Infinity;
+            return (
+              <div
+                key={item.key}
+                style={{
+                  display: "flex", alignItems: "center", gap: 8,
+                  padding: "8px 0", borderBottom: `1px solid ${theme.border.default}`,
+                }}
+              >
+                <ProductImage imageUrl={cartItemImage(item)} productName={cartItemName(item)} size={32} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {cartItemName(item)}
+                  </div>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    {fmt(item.sellPrice)} each
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                  <button
+                    onClick={() => {
+                      if (item.quantity <= 1) handleRemoveFromCart(item.key);
+                      else handleUpdateCartQty(item.key, item.quantity - 1);
+                    }}
+                    style={{ width: 24, height: 24, border: `1px solid ${theme.border.default}`, borderRadius: 6, background: "transparent", color: theme.text.primary, cursor: "pointer", fontSize: 13, lineHeight: 1 }}
+                  >
+                    {item.quantity <= 1 ? "✕" : "−"}
+                  </button>
+                  <span style={{ fontFamily: theme.font.mono, fontSize: 13, minWidth: 20, textAlign: "center" }}>{item.quantity}</span>
+                  <button
+                    onClick={() => { if (!isListed || item.quantity < remaining) handleUpdateCartQty(item.key, item.quantity + 1); }}
+                    disabled={isListed && item.quantity >= remaining}
+                    style={{ width: 24, height: 24, border: `1px solid ${theme.border.default}`, borderRadius: 6, background: "transparent", color: theme.accent.cyan, cursor: "pointer", fontSize: 13, lineHeight: 1, opacity: isListed && item.quantity >= remaining ? 0.35 : 1 }}
+                  >
+                    +
+                  </button>
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, color: theme.accent.gold, minWidth: 58, textAlign: "right", flexShrink: 0 }}>
+                  {fmt(item.sellPrice * item.quantity)}
+                </div>
+                {item.kind === "listed" && (
+                  <button
+                    onClick={() => editItem(item.key)}
+                    aria-label="Edit price"
+                    style={{
+                      flexShrink: 0, width: 26, height: 26, borderRadius: 7,
+                      border: `1px solid ${theme.border.default}`,
+                      background: "transparent", color: theme.accent.cyan,
+                      cursor: "pointer", fontSize: 13,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                  >
+                    ✎
+                  </button>
+                )}
+              </div>
+            );
+          })}
+
+          {/* Add more link */}
+          <button
+            onClick={() => {
+              setPayOpen(false);
+              setError("");
+            }}
+            style={{
+              marginTop: 8, width: "100%",
+              background: "transparent",
+              border: "1px dashed rgba(6,182,212,0.3)",
+              borderRadius: 10, padding: "8px 12px",
+              color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 11,
+              cursor: "pointer",
+            }}
+          >
+            + Add more products
+          </button>
+        </div>
+
+        {/* ── Payment chips ── */}
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+          Payment
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6, marginBottom: 12 }}>
+          {([
+            { key: "cash"   as const, icon: "💵", label: "Cash"      },
+            { key: "mpesa"  as const, icon: "📱", label: "M-Pesa"    },
+            { key: "split"  as const, icon: "⚡", label: "Split"     },
+            { key: "credit" as const, icon: "📝", label: "Pay Later" },
+          ]).map(({ key, icon, label }) => {
+            const sel = payMethod === key;
+            return (
+              <button
+                key={key}
+                onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); setError("") }}
+                style={{
+                  padding: "9px 4px",
+                  border: `1.5px solid ${sel ? theme.accent.cyan : theme.border.default}`,
+                  borderRadius: 10,
+                  background: sel ? "rgba(6,182,212,0.12)" : "transparent",
+                  color: sel ? theme.accent.cyan : theme.text.muted,
+                  fontFamily: theme.font.mono, fontWeight: 700, fontSize: 10,
+                  cursor: "pointer",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                }}
+              >
+                <span style={{ fontSize: 17 }}>{icon}</span>
+                <span>{label}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* ── M-Pesa ref ── */}
+        {(payMethod === "mpesa" || payMethod === "split") && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 6 }}>
+              M-Pesa Ref (optional)
+            </label>
+            <input
+              className="ki"
+              value={mpesaRef}
+              onChange={e => setMpesaRef(sanitizeCode(e.target.value, 12))}
+              placeholder="e.g. QHX7K3LM2P"
+              maxLength={12}
+              spellCheck={false}
+            />
+          </div>
         )}
 
+        {/* ── Split amounts ── */}
+        {payMethod === "split" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
+            <div>
+              <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
+              <input className="ki" type="text" inputMode="numeric" value={cashAmount}
+                onChange={e => {
+                  const v = sanitizeAmount(e.target.value);
+                  setCashAmount(v);
+                  setMpesaAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0)))));
+                }}
+                placeholder="0" />
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
+              <input className="ki" type="text" inputMode="numeric" value={mpesaAmount}
+                onChange={e => {
+                  const v = sanitizeAmount(e.target.value);
+                  setMpesaAmount(v);
+                  setCashAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0)))));
+                }}
+                placeholder="0" />
+            </div>
+          </div>
+        )}
 
-     {/* ══════════════════ FIXED BOTTOM CTA ══════════════════ */}
-{(step === "checkout" || (step === "scan" && cart.length > 0 && !addingProduct)) && (
+        {/* ── Credit fields ── */}
+        {payMethod === "credit" && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+                        <div>
+              <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                Customer Name <span style={{ color: theme.accent.red }}>*</span>
+              </label>
+              <input
+                id="credit-customer-name"
+                className="ki"
+                type="text"
+                value={customerName}
+                onChange={e => {
+                  setCustomerName(sanitizeText(e.target.value, 60));
+                  // Clear the "name required" error as soon as the user types
+                  if (error && payMethod === "credit") setError("");
+                }}
+                placeholder="e.g. John Kamau"
+                maxLength={60}
+                style={{
+                  borderColor: customerName.trim() ? undefined : "rgba(248,113,113,0.5)",
+                }}
+              />
+              {!customerName.trim() && (
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>
+                  Required for Pay Later sales
+                </div>
+              )}
+            </div>
+            <div>
+              <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                Initial Payment <span style={{ color: theme.text.muted, textTransform: "none" }}>(optional)</span>
+              </label>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input className="ki" type="text" inputMode="numeric" value={initialCashAmount}
+                  onChange={e => {
+                    const v = sanitizeAmount(e.target.value);
+                    const c = Number(v) || 0;
+                    const m = Number(initialMpesaAmount) || 0;
+                    const cap = Math.round(grandTotal);
+                    const safeC = c + m > cap ? Math.max(0, cap - m) : c;
+                    setInitialCashAmount(String(safeC));
+                    setInitialPayment(String(safeC + m));
+                  }}
+                  placeholder="💵 Cash" />
+                <input className="ki" type="text" inputMode="numeric" value={initialMpesaAmount}
+                  onChange={e => {
+                    const v = sanitizeAmount(e.target.value);
+                    const m = Number(v) || 0;
+                    const c = Number(initialCashAmount) || 0;
+                    const cap = Math.round(grandTotal);
+                    const safeM = c + m > cap ? Math.max(0, cap - c) : m;
+                    setInitialMpesaAmount(String(safeM));
+                    setInitialPayment(String(c + safeM));
+                  }}
+                  placeholder="📱 M-Pesa" />
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Phone field for receipt — always visible ── */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+            Customer Phone <span style={{ color: theme.text.muted, textTransform: "none" }}>(optional — receipt sent if provided)</span>
+          </label>
+          <input className="ki" type="tel" value={customerPhone}
+            onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
+            placeholder="07XXXXXXXXX or 254XXXXXXXXX" maxLength={13} />
+        </div>
+
+                {/* ── Error banner ── */}
+                {error && (
+          <div style={{
+            fontSize: 12,
+            fontFamily: theme.font.mono,
+            color: "#f87171",
+            background: "rgba(248,113,113,0.08)",
+            border: "1px solid rgba(248,113,113,0.25)",
+            borderRadius: 10,
+            padding: "10px 12px",
+            marginBottom: 12,
+          }}>
+            ⚠ {error}
+          </div>
+        )}
+
+       
+
+        {/* ── Agent picker ── */}
+<div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 12 }}>
+  {shopAgents.length === 0 ? (
+    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: 14, textAlign: "center" }}>
+      No agents assigned to this shop yet.
+    </div>
+  ) : (
+    <>
+      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 8 }}>
+        Who is selling?
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {shopAgents.map(sa => (
+          <button
+          key={sa.id}
+          onClick={() => {
+            if (payMethod === "credit" && !customerName.trim()) {
+              setError("Enter the customer's name before selecting an agent for a credit sale.");
+              setPinShake(true);
+              setTimeout(() => setPinShake(false), 500);
+
+              // Scroll the name field into view and focus it
+              const el = document.getElementById("credit-customer-name") as HTMLInputElement | null;
+              el?.scrollIntoView({ behavior: "smooth", block: "center" });
+              setTimeout(() => el?.focus(), 250);
+              return;
+            }
+            setError("");
+            setSelectedAgent(sa);
+            setPin("");
+            setPinError("");
+          }}
+            style={{
+              padding: "10px 12px",
+              border: `1px solid ${theme.border.default}`,
+              borderRadius: 12, background: "transparent",
+              cursor: "pointer", display: "flex", alignItems: "center", gap: 10,
+              color: theme.text.primary,
+            }}
+          >
+            <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: theme.accent.cyan, flexShrink: 0, fontSize: 13 }}>
+              {sa.avatar || sa.name.charAt(0).toUpperCase()}
+            </div>
+            <div style={{ flex: 1, minWidth: 0, textAlign: "left" }}>
+              <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{sa.agent_code}</div>
+            </div>
+          </button>
+        ))}
+      </div>
+    </>
+  )}
+</div>
+            </div>
+           </>
+         )}
+      </CenterModal>
+
+                  {/* ══════════════════ PIN OVERLAY ══════════════════ */}
+{payOpen && selectedAgent && !processing && (
   <div
+    onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
     style={{
-      position: "fixed",
-      left: 0, right: 0,
-      bottom: "calc(env(safe-area-inset-bottom, 0px) + 92px)",
-      zIndex: 55,
-      pointerEvents: "none",
-      paddingBottom: isMobile ? 10 : 22,
-      paddingLeft: isMobile ? 14 : 40,
-      paddingRight: isMobile ? 14 : 40,
+      position: "fixed", inset: 0, zIndex: 80,
+      background: "rgba(0,0,0,0.55)",
+      backdropFilter: "blur(3px)",
+      WebkitBackdropFilter: "blur(3px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 16,
+      animation: "fadeIn 0.15s ease both",
     }}
   >
-    <div style={{
-      maxWidth: isDesktop ? 1400 : 720,
-      margin: "0 auto",
-      display: "flex",
-      justifyContent: isMobile ? "stretch" : "flex-end",
-      pointerEvents: "none",
-    }}>
-      <button
-        className="abtn"
-        onClick={() => {
-          if (Date.now() - ctaGuardRef.current < 400) return;
-          if (step === "scan") { setStep("checkout"); setError(""); }
-          else { handleCheckoutNext(); }
-        }}
-        style={{
-          pointerEvents: "auto",
-          background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
-          color: "#fff",
-          boxShadow: "0 12px 32px rgba(6,182,212,0.45), 0 4px 12px rgba(0,0,0,0.45)",
-          padding: "17px 22px",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          width: isMobile ? "100%" : "calc(56% - 10px)",
-        }}
-      >
-        <span>
-          {step === "scan"
-            ? `Review Cart · ${cart.length} item${cart.length !== 1 ? "s" : ""}`
-            : "Next — Authorise Sale"}
-        </span>
-        <span style={{ fontFamily: theme.font.mono, fontSize: 15, marginLeft: 16 }}>
-          {fmt(grandTotal)} →
-        </span>
-      </button>
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        background: theme.bg.card,
+        border: `1px solid ${theme.border.default}`,
+        borderRadius: 20,
+        boxShadow: "0 24px 60px rgba(0,0,0,0.7)",
+        padding: "18px 18px 22px",
+        width: "min(340px, calc(100vw - 32px))",
+        animation: "zoomIn 0.2s ease both",
+      }}
+    >
+      {/* Header: agent + back */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <button
+          onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
+          aria-label="Back"
+          style={{
+            width: 28, height: 28, borderRadius: "50%",
+            border: `1px solid ${theme.border.default}`,
+            background: "transparent", color: theme.text.muted,
+            cursor: "pointer", fontSize: 14,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          ←
+        </button>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            {selectedAgent.name}
+          </div>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+            Enter 4-digit PIN · auto-submits
+          </div>
+        </div>
+      </div>
+
+      {/* Sale total reminder */}
+      <div style={{ textAlign: "center", marginBottom: 12 }}>
+        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 2 }}>
+          Sale Total
+        </div>
+        <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold, lineHeight: 1 }}>
+          {fmt(grandTotal)}
+        </div>
+      </div>
+
+      {/* Dots */}
+      <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 14, opacity: pinIsLocked ? 0.3 : 1 }}>
+        {[0, 1, 2, 3].map(i => (
+          <div key={i} style={{
+            width: 14, height: 14, borderRadius: "50%",
+            background: i < pin.length ? theme.accent.cyan : "transparent",
+            border: `2.5px solid ${i < pin.length ? theme.accent.cyan : "rgba(255,255,255,0.22)"}`,
+            transition: "all 0.15s cubic-bezier(0.34,1.56,0.64,1)",
+            boxShadow: i < pin.length ? `0 0 12px ${theme.accent.cyan}65` : "none",
+            transform: i < pin.length ? "scale(1.15)" : "scale(1)",
+          }} />
+        ))}
+      </div>
+
+      {/* Errors */}
+      {(pinError || error) && (
+        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", textAlign: "center", marginBottom: 10 }}>
+          ⚠ {pinError || error}
+        </div>
+      )}
+      {pinIsLocked && (
+        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", textAlign: "center", marginBottom: 10 }}>
+          🔒 Too many wrong PINs — try again in {pinCountdown}s
+        </div>
+      )}
+
+      {/* Numpad */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
+        {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
+          <button
+            key={k}
+            disabled={!k || pinIsLocked}
+            onClick={() => { if (k) handlePinKey(k); }}
+            style={{
+              height: 48,
+              border: "none", borderRadius: 10,
+              background: k === "⌫" ? "rgba(248,113,113,0.08)" : k ? "rgba(255,255,255,0.06)" : "transparent",
+              color: k === "⌫" ? "#f87171" : theme.text.primary,
+              fontFamily: theme.font.mono,
+              fontSize: k === "⌫" ? 18 : 20,
+              cursor: k && !pinIsLocked ? "pointer" : "default",
+              opacity: pinIsLocked ? 0.3 : 1,
+              transition: "background 0.1s, transform 0.08s",
+            }}
+          >
+            {k}
+          </button>
+        ))}
+      </div>
     </div>
   </div>
 )}
+
     </div>
   );
 }

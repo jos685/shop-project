@@ -67,7 +67,7 @@ export default function PosLogin() {
     <div className="est-page">
     <div className="est-root">
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Inter:wght@400;500;600&display=swap');
+        
 
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -77,7 +77,7 @@ export default function PosLogin() {
           align-items: center;
           justify-content: center;
           padding: 32px 20px;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
         }
 
         .est-root {
@@ -168,7 +168,7 @@ export default function PosLogin() {
           color: #fff;
           font-size: 13px;
           font-weight: 700;
-          font-family: 'Nunito', sans-serif;
+          font-family: 'Plus Jakarta Sans', sans-serif;
           margin-bottom: 2px;
         }
 
@@ -184,7 +184,7 @@ export default function PosLogin() {
           color: rgba(255,255,255,0.45);
           letter-spacing: 0.06em;
           text-transform: uppercase;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
           position: relative; z-index: 1;
         }
 
@@ -204,7 +204,7 @@ export default function PosLogin() {
         }
 
         .est-greeting-text {
-          font-family: 'Nunito', sans-serif;
+          font-family: 'Plus Jakarta Sans', sans-serif;
           font-weight: 900;
           font-size: 28px;
           color: #1c1917;
@@ -230,7 +230,7 @@ export default function PosLogin() {
           font-size: 13px;
           font-weight: 600;
           color: #44403c;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
         }
 
         .est-input {
@@ -240,7 +240,7 @@ export default function PosLogin() {
           border-style: solid;
           border-width: 1.5px;
           font-size: 15px;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
           transition: border-color 0.18s, box-shadow 0.18s;
           outline: none;
         }
@@ -262,7 +262,7 @@ export default function PosLogin() {
         .est-prefix-badge {
           padding: 13px 12px 13px 16px;
           font-size: 15px;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
           font-weight: 600;
           color: ${dk ? "#8b8699" : "#78716c"};
           background: ${dk ? "#161320" : "#f5f5f4"};
@@ -278,7 +278,7 @@ export default function PosLogin() {
           border: none;
           outline: none;
           font-size: 15px;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
           background: transparent;
           color: ${dk ? "#f1f0f5" : "#1c1917"};
           min-width: 0;
@@ -331,7 +331,7 @@ export default function PosLogin() {
           padding: 15px;
           border: none;
           border-radius: 14px;
-          font-family: 'Nunito', sans-serif;
+          font-family: 'Plus Jakarta Sans', sans-serif;
           font-weight: 800;
           font-size: 16px;
           cursor: pointer;
@@ -363,7 +363,7 @@ export default function PosLogin() {
         .est-form-footer-text {
           font-size: 12px;
           color: #a8a29e;
-          font-family: 'Inter', sans-serif;
+          font-family: 'Inter', system-ui, sans-serif;
         }
 
         .est-form-anim {
