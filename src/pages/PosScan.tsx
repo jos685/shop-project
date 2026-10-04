@@ -1781,12 +1781,21 @@ const exactSkuMatch = useMemo(() => {
             No products match "{searchQuery}"
           </div>
         )}
-        <div style={{
+                <div style={{
           maxHeight: isMobile ? "52vh" : 520,
           overflowY: "auto",
           overflowX: "hidden",
           paddingRight: 2,          // keeps scrollbar off the cards
           WebkitOverflowScrolling: "touch",
+
+          // Reserve space at the end of the list so the last product can
+          // scroll clear of the floating SaleDock. Without this the final
+          // card sits flush against the container edge and gets hidden
+          // behind the dock. Only applies while the dock is visible.
+          paddingBottom:
+            step === "scan" && cart.length > 0 && !payOpen && !addingProduct
+              ? 80
+              : 12,
         }}>
           <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
             {filteredProducts.map(alloc => {
@@ -2329,7 +2338,7 @@ const exactSkuMatch = useMemo(() => {
 />
 
 {/* ══════════════════ SALE DOCK ══════════════════ */}
-{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && (
+{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && (
   <SaleDock
     count={cart.length}
     total={grandTotal}

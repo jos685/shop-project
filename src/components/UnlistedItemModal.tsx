@@ -26,6 +26,8 @@ interface Props {
 
 const UNITS = ["pc", "kg", "g", "L", "ml", "plate", "cup", "service", "pack", "box"];
 
+const SUGGESTIONS_PER_PAGE = 5;
+
 export default function UnlistedItemModal({
   open, onClose, customItems, theme, isMobile, onSaveCustomItem, onAdd,
   initialItem = null,
@@ -35,6 +37,7 @@ export default function UnlistedItemModal({
   const [qty, setQty]             = useState("");
   const [price, setPrice]         = useState("");
   const [showSug, setShowSug]     = useState(false);
+  const [sugPage, setSugPage]     = useState(1);
   const [error, setError]         = useState("");
   const [saving, setSaving]       = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
@@ -51,17 +54,29 @@ export default function UnlistedItemModal({
       setName(""); setUnit("pc"); setQty(""); setPrice("");
     }
 
-    setShowSug(false); setError(""); setSaving(false);
+    setShowSug(false); setError(""); setSaving(false); setSugPage(1);
     setTimeout(() => nameRef.current?.focus(), 100);
   }, [open, initialItem]);
 
-  const suggestions = useMemo(() => {
+  // Reset pagination whenever the search term changes so we never land
+  // on an out-of-range page after a filter narrows the list.
+  useEffect(() => { setSugPage(1); }, [name]);
+
+  // All matching items, before pagination
+  const allSuggestions = useMemo(() => {
     const q = name.trim().toLowerCase();
-    const list = q
+    return q
       ? customItems.filter(c => c.name.toLowerCase().includes(q))
       : customItems;
-    return list.slice(0, 6);
   }, [name, customItems]);
+
+  // Paginate
+  const totalSugPages = Math.max(1, Math.ceil(allSuggestions.length / SUGGESTIONS_PER_PAGE));
+  const safeSugPage   = Math.min(sugPage, totalSugPages);
+  const suggestions   = allSuggestions.slice(
+    (safeSugPage - 1) * SUGGESTIONS_PER_PAGE,
+    safeSugPage * SUGGESTIONS_PER_PAGE,
+  );
 
   const exactMatch = useMemo(() => {
     const q = name.trim().toLowerCase();
@@ -85,8 +100,6 @@ export default function UnlistedItemModal({
     const sellPrice = Number(price) || 0;
     if (sellPrice <= 0) return setError("Enter a sell price greater than 0.");
 
-    // When editing an existing unlisted row, just emit the update — don't
-    // try to create another shop_custom_items entry.
     if (initialItem) {
       onAdd({
         customItemId: initialItem.customItemId,
@@ -100,7 +113,6 @@ export default function UnlistedItemModal({
 
     let customItemId = exactMatch?.id ?? null;
 
-    // If the name doesn't exactly match a saved item, save it for next time
     if (!customItemId) {
       setSaving(true);
       const created = await onSaveCustomItem(trimmed, unit, sellPrice);
@@ -112,6 +124,8 @@ export default function UnlistedItemModal({
   };
 
   if (!open) return null;
+
+  const dropdownOpen = showSug && !exactMatch && customItems.length > 0;
 
   return (
     <div
@@ -134,10 +148,10 @@ export default function UnlistedItemModal({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
             <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18 }}>
-            {initialItem ? "Edit unlisted item" : "Sell item not in stock"}
+              {initialItem ? "Edit unlisted item" : "Sell item not in stock"}
             </div>
             <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-            {initialItem ? "Update the details of this row" : "Nothing is deducted from inventory"}
+              {initialItem ? "Update the details of this row" : "Nothing is deducted from inventory"}
             </div>
           </div>
           <button onClick={onClose}
@@ -151,25 +165,80 @@ export default function UnlistedItemModal({
           <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
             Product Name <span style={{ color: theme.accent.red }}>*</span>
           </label>
-          <input
-            ref={nameRef}
-            className="ki"
-            value={name}
-            onChange={e => { setName(e.target.value); setShowSug(true); setError(""); }}
-            onFocus={() => setShowSug(true)}
-            onBlur={() => setTimeout(() => setShowSug(false), 150)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && suggestions.length > 0 && showSug) {
-                e.preventDefault(); pick(suggestions[0]);
-              } else if (e.key === "Enter") {
-                e.preventDefault(); submit();
-              }
-            }}
-            placeholder="e.g. Bread, Phone repair, Airtime"
-            maxLength={60}
-            spellCheck={false}
-            autoComplete="off"
-          />
+
+          {/* Input wrapper — anchors the chevron toggle */}
+          <div style={{ position: "relative" }}>
+            <input
+              ref={nameRef}
+              className="ki"
+              value={name}
+              onChange={e => {
+                const v = e.target.value;
+                setName(v);
+                // Only auto-open while the user is actively typing.
+                // Empty field + focus does NOT open the dropdown.
+                setShowSug(v.trim().length > 0 && customItems.length > 0);
+                setError("");
+              }}
+              onFocus={() => {
+                // Reopen only if the field already has text
+                if (name.trim().length > 0 && customItems.length > 0) setShowSug(true);
+              }}
+              onBlur={() => setTimeout(() => setShowSug(false), 150)}
+              onKeyDown={e => {
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setShowSug(false);
+                  return;
+                }
+                if (e.key === "Enter" && dropdownOpen && name.trim().length > 0 && suggestions.length > 0) {
+                  e.preventDefault(); pick(suggestions[0]);
+                } else if (e.key === "Enter") {
+                  e.preventDefault(); submit();
+                }
+              }}
+              placeholder="e.g. Bread, Phone repair, Airtime"
+              maxLength={60}
+              spellCheck={false}
+              autoComplete="off"
+              style={{ paddingRight: 38 }}
+            />
+
+            {/* Chevron toggle — opens the list manually */}
+            <button
+              type="button"
+              // preventDefault on mousedown so the input never loses focus
+              // when the user taps the chevron.
+              onMouseDown={e => e.preventDefault()}
+              onClick={() => {
+                if (customItems.length === 0) return;
+                setShowSug(v => !v);
+              }}
+              aria-label="Toggle saved items"
+              style={{
+                position: "absolute",
+                right: 6, top: "50%", transform: "translateY(-50%)",
+                width: 28, height: 28, borderRadius: 8,
+                border: "none", background: "transparent",
+                color: theme.text.muted,
+                cursor: customItems.length === 0 ? "not-allowed" : "pointer",
+                opacity: customItems.length === 0 ? 0.35 : 1,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              <svg
+                width="11" height="11" viewBox="0 0 24 24" fill="none"
+                stroke="currentColor" strokeWidth="2.5"
+                strokeLinecap="round" strokeLinejoin="round"
+                style={{
+                  transform: showSug ? "rotate(180deg)" : "none",
+                  transition: "transform 0.15s",
+                }}
+              >
+                <polyline points="6 9 12 15 18 9" />
+              </svg>
+            </button>
+          </div>
 
           {exactMatch && (
             <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#34d399", marginTop: 4 }}>
@@ -177,25 +246,113 @@ export default function UnlistedItemModal({
             </div>
           )}
 
-          {showSug && suggestions.length > 0 && !exactMatch && (
+          {dropdownOpen && (
             <div style={{
               position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 5,
               background: theme.bg.card, border: `1px solid ${theme.border.default}`,
-              borderRadius: 12, overflow: "hidden", boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
-              maxHeight: 220, overflowY: "auto",
+              borderRadius: 12, boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+              display: "flex", flexDirection: "column",
+              maxHeight: 280, overflow: "hidden",
             }}>
-              {suggestions.map((c, i) => (
-                <button key={c.id} onMouseDown={e => e.preventDefault()} onClick={() => pick(c)}
-                  style={{ width: "100%", padding: "10px 14px", background: "transparent", border: "none", borderBottom: i < suggestions.length - 1 ? `1px solid ${theme.border.default}` : "none", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 10 }}>
-                  <span style={{ fontSize: 14, opacity: 0.5 }}>📦</span>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                      {c.default_price ? `KSh ${c.default_price}` : "no default"} · {c.unit}
-                    </div>
+                            {allSuggestions.length === 0 ? null : (
+                <>
+                  {/* Scrollable list */}
+                  <div style={{ overflowY: "auto", flex: 1 }}>
+                    {suggestions.map((c, i) => (
+                      <button
+                        key={c.id}
+                        type="button"
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => pick(c)}
+                        style={{
+                          width: "100%",
+                          padding: "10px 14px",
+                          background: "transparent",
+                          border: "none",
+                          borderBottom: i < suggestions.length - 1 ? `1px solid ${theme.border.default}` : "none",
+                          cursor: "pointer",
+                          textAlign: "left",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 10,
+                        }}
+                      >
+                        <span style={{ fontSize: 14, opacity: 0.5 }}>📦</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {c.name}
+                          </div>
+                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                            {c.default_price ? `KSh ${c.default_price}` : "no default"} · {c.unit}
+                          </div>
+                        </div>
+                      </button>
+                    ))}
                   </div>
-                </button>
-              ))}
+
+                  {/* Pagination footer */}
+                  {totalSugPages > 1 && (
+                    <div style={{
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "space-between",
+                      padding: "6px 10px",
+                      borderTop: `1px solid ${theme.border.default}`,
+                      background: "rgba(0,0,0,0.15)",
+                      flexShrink: 0,
+                    }}>
+                      <button
+                        type="button"
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => setSugPage(p => Math.max(1, p - 1))}
+                        disabled={safeSugPage === 1}
+                        style={{
+                          padding: "4px 10px",
+                          borderRadius: 6,
+                          border: `1px solid ${theme.border.default}`,
+                          background: "transparent",
+                          color: safeSugPage === 1 ? theme.text.muted : theme.text.primary,
+                          fontFamily: theme.font.mono,
+                          fontSize: 11,
+                          cursor: safeSugPage === 1 ? "not-allowed" : "pointer",
+                          opacity: safeSugPage === 1 ? 0.4 : 1,
+                        }}
+                      >
+                        ←
+                      </button>
+
+                      <span style={{
+                        fontSize: 10,
+                        fontFamily: theme.font.mono,
+                        color: theme.text.muted,
+                        whiteSpace: "nowrap",
+                      }}>
+                        {allSuggestions.length} items · Page {safeSugPage} / {totalSugPages}
+                      </span>
+
+                      <button
+                        type="button"
+                        onMouseDown={e => e.preventDefault()}
+                        onClick={() => setSugPage(p => Math.min(totalSugPages, p + 1))}
+                        disabled={safeSugPage === totalSugPages}
+                        style={{
+                          padding: "4px 10px",
+                          borderRadius: 6,
+                          border: `1px solid ${theme.border.default}`,
+                          background: "transparent",
+                          color: safeSugPage === totalSugPages ? theme.text.muted : theme.text.primary,
+                          fontFamily: theme.font.mono,
+                          fontSize: 11,
+                          cursor: safeSugPage === totalSugPages ? "not-allowed" : "pointer",
+                          opacity: safeSugPage === totalSugPages ? 0.4 : 1,
+                        }}
+                      >
+                        →
+                      </button>
+                    </div>
+                  )}
+                </>
+              )}
             </div>
           )}
         </div>
