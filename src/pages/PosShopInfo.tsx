@@ -10,7 +10,14 @@ import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue } from "../lib/offlineQueue";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import {
+  BarChart2, ClipboardList, History, PlusCircle, PackagePlus,
+  Send, RotateCcw, Pencil,  Store, ShoppingCart,
+  AlertTriangle,
+} from "lucide-react";
 
+const LOG_PAGE_SIZE = 15;
+const TX_PAGE_SIZE  = 20;   // for recent transactions pagination
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -23,6 +30,8 @@ function useWindowWidth() {
   }, []);
   return w;
 }
+
+
 
 interface StockItem {
   id: string;
@@ -309,10 +318,18 @@ export default function PosShopInfo() {
   const isMobile = width < 640;
   const isWide   = width >= 1024; 
 
+  // ── Per-product tab: breakdown (transactions) | log (activity) ──
+    const [activeTab,   setActiveTab]   = useState<Record<string, "tx" | "log">>({});
+    const [activityLog, setActivityLog] = useState<Record<string, any[]>>({});
+    const [loadingLog,  setLoadingLog]  = useState<string | null>(null);
+    const [logPage,     setLogPage]     = useState<Record<string, number>>({});
+    const [txPage,      setTxPage]      = useState<Record<string, number>>({});
+
   // ── Expanded product card (shows recent tx + allocation) ──
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [txHistory,  setTxHistory]  = useState<Record<string, any[]>>({});
   const [txLoading,  setTxLoading]  = useState<Set<string>>(new Set());
+  
 
   // ── Image lightbox ──
  const [lightbox, setLightbox] = useState<{ url: string; name: string } | null>(null);
@@ -335,8 +352,10 @@ useEffect(() => {
   const [isOfflineData,   setIsOfflineData]   = useState(false);
   const [tab,             setTab]             = useState<ActiveTab>("stock");
   const [stockSearch, setStockSearch] = useState("");
+  const [stockPage, setStockPage] = useState(1);
+  const STOCK_PAGE_SIZE = 20;
 
-
+  useEffect(() => { setStockPage(1); }, [stockSearch]);
   // ── Invoice state ──
 const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 const [invoiceSharing, setInvoiceSharing] = useState(false);
@@ -690,11 +709,50 @@ useEffect(() => {
       setTxLoading(prev => { const n = new Set(prev); n.delete(productId); return n; });
     }
   }, [shop, txHistory, agents]);   // ← agents in deps so name lookup stays fresh
+
+  const fetchLog = useCallback(async (productId: string, force = false) => {
+    if (!shop) return;
+    if (activityLog[productId] && !force) return;
+    setLoadingLog(productId);
+    try {
+      const SHOP_VISIBLE_ACTIONS = [
+        "assigned_to_shop",
+        "shop_alloc_updated",
+        "shop_sale_recorded",
+        "stock_adjusted",
+        "removed_from_shop",
+        "shop_return_recorded",     // a customer returned a product to this shop
+        "shop_return_restocked",    // the returned unit was added back to shop stock
+        "shop_return_to_warehouse", // the returned unit was sent back to the owner
+      ];
+  
+      const { data, error } = await supabase
+        .from("product_activity_log")
+        .select("id, action, quantity, note, created_at, agent_id")
+        .eq("product_id", productId)
+        .in("action", SHOP_VISIBLE_ACTIONS)     // ⬅️ whitelist
+        .order("created_at", { ascending: false })
+        .limit(100);
+  
+      if (error) {
+        console.error("fetchLog error:", error.message);
+        setActivityLog(prev => ({ ...prev, [productId]: [] }));
+        return;
+      }
+      setActivityLog(prev => ({ ...prev, [productId]: data || [] }));
+    } finally {
+      setLoadingLog(null);
+    }
+  }, [shop, activityLog]);
   
   const toggleExpand = (productId: string) => {
     setExpandedId(prev => {
       const next = prev === productId ? null : productId;
-      if (next) loadProductTx(next);
+      if (next) {
+        loadProductTx(next);
+        // Default the tab to transactions; only fetch the log lazily
+        setActiveTab(t => ({ ...t, [next]: t[next] ?? "tx" }));
+      }
       return next;
     });
   };
@@ -1111,7 +1169,9 @@ useEffect(() => {
     gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
     gap: 12,
   }}>
-    {filteredStock.map(item => {
+    {filteredStock
+  .slice((stockPage - 1) * STOCK_PAGE_SIZE, stockPage * STOCK_PAGE_SIZE)
+  .map(item => {
       const sold = item.allocated - item.remaining;
       const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
       const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
@@ -1197,75 +1257,326 @@ useEffect(() => {
             </div>
           )}
 
-          {/* ── expanded: allocation + recent transactions ── */}
-          {isExpanded && (
-            <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.border.default}` }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                  Recent Transactions
-                </div>
+{isExpanded && (
+  <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.border.default}` }}>
+
+    {/* ── Tab bar ── */}
+    <div style={{
+      display: "flex",
+      borderBottom: `1px solid ${theme.border.default}`,
+      marginBottom: 12,
+    }}>
+      {([
+        { key: "tx"  as const, label: "Recent Transactions", Icon: BarChart2   },
+        { key: "log" as const, label: "Activity Log",        Icon: ClipboardList },
+      ]).map(({ key, label, Icon }) => {
+        const isActive = (activeTab[item.product.id] ?? "tx") === key;
+        return (
+          <button
+            key={key}
+            onClick={(e) => {
+              e.stopPropagation();                     // don't collapse the card
+              setActiveTab(t => ({ ...t, [item.product.id]: key }));
+              if (key === "log" && !activityLog[item.product.id]) {
+                fetchLog(item.product.id);
+              }
+            }}
+            style={{
+              padding: "8px 14px",
+              border: "none",
+              borderBottom: `2px solid ${isActive ? theme.accent.cyan : "transparent"}`,
+              background: "transparent",
+              color: isActive ? theme.accent.cyan : theme.text.muted,
+              fontFamily: theme.font.mono,
+              fontSize: 11,
+              cursor: "pointer",
+              fontWeight: isActive ? 700 : 400,
+              display: "flex", alignItems: "center", gap: 6,
+              marginBottom: -1,
+            }}
+          >
+            <Icon size={12} />
+            {label}
+          </button>
+        );
+      })}
+    </div>
+
+    {/* ── Recent Transactions tab ── */}
+    {(activeTab[item.product.id] ?? "tx") === "tx" && (
+      <>
+        {isLoading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+            <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+          </div>
+        ) : history && history.length > 0 ? (() => {
+          const curPage    = txPage[item.product.id] ?? 1;
+          const totalPages = Math.max(1, Math.ceil(history.length / TX_PAGE_SIZE));
+          const safePage   = Math.min(curPage, totalPages);
+          const paged      = history.slice((safePage - 1) * TX_PAGE_SIZE, safePage * TX_PAGE_SIZE);
+
+          return (
+            <>
+              {/* Header row: count + page indicator */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {isLoading ? "loading…" : history ? `${history.length} found` : ""}
+                  {history.length} transaction{history.length !== 1 ? "s" : ""}
                 </div>
+                {totalPages > 1 && (
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    Page {safePage} of {totalPages}
+                  </div>
+                )}
               </div>
 
-              {isLoading ? (
-                <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
-                  <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-                </div>
-              ) : history && history.length > 0 ? (
-                <div>
-                  {history.map((t, idx) => (
-                    <div
-                    key={t.id ?? idx}
-                      style={{
-                        display: "flex", justifyContent: "space-between", alignItems: "center",
-                        padding: "8px 0",
-                        borderBottom: idx < history.length - 1 ? `1px solid ${theme.border.default}` : "none",
-                      }}
-                    >
-                      <div style={{ minWidth: 0 }}>
-                        <div style={{ fontSize: 12, fontFamily: theme.font.mono }}>
-                          {t.quantity} × {fmt(Number(t.unit_price ?? 0))}
-                        </div>
-                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                          {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
-                          {t.agent_name ? ` · ${t.agent_name}` : ""}
-                        </div>
-                      </div>
-                      <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                        <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.green }}>
-                        {fmt(Number(t.amount ?? 0))}
-                        </div>
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                          {t.payment_method
-                            || (Number(t.mpesa_amount) > 0 ? "M-Pesa" : Number(t.cash_amount) > 0 ? "Cash" : "—")}
-                        </div>
-                      </div>
+              {/* Rows */}
+              {paged.map((t, idx) => (
+                <div
+                  key={t.id ?? idx}
+                  style={{
+                    display: "flex", justifyContent: "space-between", alignItems: "center",
+                    padding: "8px 0",
+                    borderBottom: idx < paged.length - 1 ? `1px solid ${theme.border.default}` : "none",
+                  }}
+                >
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontFamily: theme.font.mono }}>
+                      {t.quantity} × {fmt(Number(t.unit_price ?? 0))}
                     </div>
-                  ))}
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                      {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
+                      {t.agent_name ? ` · ${t.agent_name}` : ""}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.green }}>
+                      {fmt(Number(t.amount ?? 0))}
+                    </div>
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                      {t.payment_method || (Number(t.mpesa_amount) > 0 ? "M-Pesa" : Number(t.cash_amount) > 0 ? "Cash" : "—")}
+                    </div>
+                  </div>
                 </div>
-              ) : (
-                <div style={{ textAlign: "center", padding: "14px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  No recent transactions for this product
+              ))}
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.max(1, safePage - 1) })); }}
+                    disabled={safePage === 1}
+                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === 1 ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === 1 ? "not-allowed" : "pointer", opacity: safePage === 1 ? 0.4 : 1 }}
+                  >← Prev</button>
+
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(pg => pg === 1 || pg === totalPages || Math.abs(pg - safePage) <= 1)
+                    .reduce<(number | "…")[]>((acc, pg, i, arr) => {
+                      if (i > 0 && pg - (arr[i - 1] as number) > 1) acc.push("…");
+                      acc.push(pg);
+                      return acc;
+                    }, [])
+                    .map((pg, i) =>
+                      pg === "…" ? (
+                        <span key={`e-${i}`} style={{ fontSize: 11, color: theme.text.muted, padding: "0 2px" }}>…</span>
+                      ) : (
+                        <button
+                          key={pg}
+                          onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: pg as number })); }}
+                          style={{
+                            minWidth: 30, height: 30, borderRadius: 8,
+                            border: `1px solid ${safePage === pg ? theme.accent.cyan : theme.border.default}`,
+                            background: safePage === pg ? `${theme.accent.cyan}18` : "rgba(255,255,255,0.03)",
+                            color: safePage === pg ? theme.accent.cyan : theme.text.secondary,
+                            fontFamily: theme.font.mono, fontSize: 11, cursor: "pointer", padding: "0 6px",
+                          }}
+                        >{pg}</button>
+                      )
+                    )}
+
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.min(totalPages, safePage + 1) })); }}
+                    disabled={safePage === totalPages}
+                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === totalPages ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === totalPages ? "not-allowed" : "pointer", opacity: safePage === totalPages ? 0.4 : 1 }}
+                  >Next →</button>
                 </div>
               )}
+            </>
+          );
+        })() : (
+          <div style={{ textAlign: "center", padding: "14px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+            No recent transactions for this product
+          </div>
+        )}
+      </>
+    )}
 
-              {/* Allocation summary */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
-                {[
-                  { label: "Allocated", value: String(item.allocated), color: theme.text.primary },
-                  { label: "Sold",      value: String(sold),           color: theme.accent.green },
-                  { label: "Remaining", value: String(item.remaining), color: sc },
-                ].map(({ label, value, color }) => (
-                  <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                    <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
+    {/* ── Activity Log tab ── */}
+    {(activeTab[item.product.id] ?? "tx") === "log" && (
+      <>
+        {loadingLog === item.product.id ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+            <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+          </div>
+        ) : !activityLog[item.product.id]?.length ? (
+          <div style={{ textAlign: "center", padding: "20px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+            <ClipboardList size={26} style={{ opacity: 0.25, marginBottom: 6 }} />
+            <div>No activity recorded yet for this product.</div>
+          </div>
+        ) : (() => {
+          const log         = activityLog[item.product.id];
+          const curPage     = logPage[item.product.id] ?? 1;
+          const totalPages  = Math.max(1, Math.ceil(log.length / LOG_PAGE_SIZE));
+          const safePage    = Math.min(curPage, totalPages);
+          const pagedLog    = log.slice((safePage - 1) * LOG_PAGE_SIZE, safePage * LOG_PAGE_SIZE);
+
+          const meta: Record<string, { Icon: React.ElementType; color: string; label: string }> = {
+            product_created:           { Icon: PlusCircle,    color: theme.accent.cyan,  label: "Product Created"      },
+            stock_added:               { Icon: PackagePlus,   color: "#a78bfa",           label: "Restocked"            },
+            allocation_updated:        { Icon: Pencil,        color: theme.accent.gold,  label: "Allocation Updated"   },
+            assigned_to_shop:          { Icon: Store,         color: "#f59e0b",           label: "Assigned to Shop"     },
+            shop_sale_recorded:        { Icon: ShoppingCart,  color: theme.accent.green, label: "Shop Sale"            },
+            shop_alloc_updated:        { Icon: Pencil,        color: theme.accent.gold,  label: "Shop Stock Updated"   },
+            stock_adjusted:            { Icon: AlertTriangle, color: "#f97316",           label: "Stock Adjusted"       },
+            removed_from_shop:         { Icon: RotateCcw,     color: theme.accent.red,   label: "Removed from Shop"    },
+          
+            // ⬇️ new — returns
+            shop_return_recorded:      { Icon: RotateCcw,     color: "#fb923c",           label: "Customer Return"      },
+            shop_return_restocked:     { Icon: PackagePlus,   color: "#22d3ee",           label: "Return Restocked"     },
+            shop_return_to_warehouse:  { Icon: Send,          color: "#a78bfa",           label: "Returned to Owner"    },
+          };
+
+          return (
+            <>
+              {/* Header row */}
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 6 }}>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  {log.length} event{log.length !== 1 ? "s" : ""} total
+                </div>
+                {totalPages > 1 && (
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    Page {safePage} of {totalPages}
                   </div>
-                ))}
+                )}
               </div>
-            </div>
-          )}
+
+              {/* Timeline */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+                {pagedLog.map((entry: any, idx: number) => {
+                  const isLast = idx === pagedLog.length - 1;
+                  const m = meta[entry.action] || { Icon: History, color: theme.text.muted, label: entry.action };
+                  const d = new Date(entry.created_at);
+                  const dateStr = d.toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" });
+                  const timeStr = d.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+
+                  return (
+                    <div key={entry.id} style={{ display: "flex", gap: 12, position: "relative" }}>
+                      {/* Timeline dot + line */}
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "center", flexShrink: 0 }}>
+                        <div style={{
+                          width: 30, height: 30, borderRadius: "50%",
+                          background: `${m.color}18`, border: `1px solid ${m.color}40`,
+                          display: "flex", alignItems: "center", justifyContent: "center",
+                          flexShrink: 0, zIndex: 1,
+                        }}>
+                          <m.Icon size={13} color={m.color} />
+                        </div>
+                        {!isLast && (
+                          <div style={{ width: 1, flex: 1, background: theme.border.default, minHeight: 16, margin: "4px 0" }} />
+                        )}
+                      </div>
+
+                      {/* Content */}
+                      <div style={{ flex: 1, minWidth: 0, paddingBottom: isLast ? 0 : 14, paddingTop: 4 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
+                          <div style={{ fontSize: 12, fontWeight: 600, color: m.color }}>{m.label}</div>
+                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, flexShrink: 0, textAlign: "right" }}>
+                            <div>{dateStr}</div>
+                            <div>{timeStr}</div>
+                          </div>
+                        </div>
+                        <div style={{ fontSize: 12, color: theme.text.secondary, lineHeight: 1.5, wordBreak: "break-word" }}>
+                          {entry.note}
+                        </div>
+                        {entry.quantity && (
+                          <div style={{
+                            marginTop: 4, display: "inline-block",
+                            background: entry.quantity > 0 ? "rgba(52,211,153,0.08)" : "rgba(248,113,113,0.08)",
+                            border: `1px solid ${entry.quantity > 0 ? "rgba(52,211,153,0.2)" : "rgba(248,113,113,0.2)"}`,
+                            borderRadius: 6, padding: "2px 8px",
+                            fontSize: 10, fontFamily: theme.font.mono,
+                            color: entry.quantity > 0 ? theme.accent.green : theme.accent.red,
+                          }}>
+                            {entry.quantity > 0 ? "+" : ""}{entry.quantity} units
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Pagination */}
+              {totalPages > 1 && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 16, flexWrap: "wrap" }}>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setLogPage(p => ({ ...p, [item.product.id]: Math.max(1, safePage - 1) })); }}
+                    disabled={safePage === 1}
+                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === 1 ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === 1 ? "not-allowed" : "pointer", opacity: safePage === 1 ? 0.4 : 1 }}
+                  >← Prev</button>
+
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(pg => pg === 1 || pg === totalPages || Math.abs(pg - safePage) <= 1)
+                    .reduce<(number | "…")[]>((acc, pg, i, arr) => {
+                      if (i > 0 && pg - (arr[i - 1] as number) > 1) acc.push("…");
+                      acc.push(pg);
+                      return acc;
+                    }, [])
+                    .map((pg, i) =>
+                      pg === "…" ? (
+                        <span key={`e-${i}`} style={{ fontSize: 11, color: theme.text.muted, padding: "0 2px" }}>…</span>
+                      ) : (
+                        <button
+                          key={pg}
+                          onClick={(e) => { e.stopPropagation(); setLogPage(p => ({ ...p, [item.product.id]: pg as number })); }}
+                          style={{
+                            minWidth: 30, height: 30, borderRadius: 8,
+                            border: `1px solid ${safePage === pg ? theme.accent.cyan : theme.border.default}`,
+                            background: safePage === pg ? `${theme.accent.cyan}18` : "rgba(255,255,255,0.03)",
+                            color: safePage === pg ? theme.accent.cyan : theme.text.secondary,
+                            fontFamily: theme.font.mono, fontSize: 11, cursor: "pointer", padding: "0 6px",
+                          }}
+                        >{pg}</button>
+                      )
+                    )}
+
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setLogPage(p => ({ ...p, [item.product.id]: Math.min(totalPages, safePage + 1) })); }}
+                    disabled={safePage === totalPages}
+                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === totalPages ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === totalPages ? "not-allowed" : "pointer", opacity: safePage === totalPages ? 0.4 : 1 }}
+                  >Next →</button>
+                </div>
+              )}
+            </>
+          );
+        })()}
+      </>
+    )}
+
+    {/* ── Allocation summary (always visible under both tabs) ── */}
+    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginTop: 12 }}>
+      {[
+        { label: "Allocated", value: String(item.allocated), color: theme.text.primary },
+        { label: "Sold",      value: String(sold),           color: theme.accent.green },
+        { label: "Remaining", value: String(item.remaining), color: sc },
+      ].map(({ label, value, color }) => (
+        <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
+        </div>
+      ))}
+    </div>
+  </div>
+)}
         </div>
       );
     })}

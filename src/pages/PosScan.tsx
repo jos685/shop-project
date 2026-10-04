@@ -32,6 +32,95 @@ const STEP_LABELS: Record<Step, string> = {
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
+// Synthetic buying price for unlisted items — 80% of the sale price,
+// implying a 20% profit margin. No UI, no user input.
+const impliedBasePrice = (sellPrice: number) => Math.round(sellPrice * 0.8);
+
+// ── Editable numeric cell ──────────────────────────────────────────────
+// Lets the user type freely (including clearing the field), and only
+// commits to the parent when the value parses to a valid number within
+// [min, max]. Blur or Enter snaps the display back to the committed value
+// so the cell never shows a stale half-typed entry.
+function EditableNumber({
+  value,
+  min,
+  max,
+  onCommit,
+  theme,
+  width = 52,
+  textAlign = "center",
+  ariaLabel,
+}: {
+  value: number;
+  min: number;
+  max?: number;
+  onCommit: (v: number) => void;
+  theme: any;
+  width?: number;
+  textAlign?: "left" | "center" | "right";
+  ariaLabel?: string;
+}) {
+  const [draft, setDraft] = useState<string>(String(value));
+  const [focused, setFocused] = useState(false);
+
+  // Keep the field in sync if the parent value changes while we're not editing
+  useEffect(() => {
+    if (!focused) setDraft(String(value));
+  }, [value, focused]);
+
+  const commitIfValid = (raw: string) => {
+    const n = Number(raw);
+    if (raw.trim() === "" || Number.isNaN(n)) return;
+    let v = n;
+    if (v < min) v = min;
+    if (max !== undefined && v > max) v = max;
+    if (v !== value) onCommit(v);
+  };
+
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      pattern="[0-9]*"
+      value={draft}
+      aria-label={ariaLabel}
+      onFocus={e => { setFocused(true); e.currentTarget.select(); }}
+      onChange={e => {
+        // Strip anything non-numeric but allow empty string while typing
+        const cleaned = e.target.value.replace(/[^0-9]/g, "");
+        setDraft(cleaned);
+        commitIfValid(cleaned);
+      }}
+      onBlur={() => {
+        setFocused(false);
+        commitIfValid(draft);
+        // Snap display back to the committed value (in case it clamped)
+        const n = Number(draft);
+        const clamped =
+          draft.trim() === "" || Number.isNaN(n)
+            ? value
+            : Math.min(Math.max(n, min), max ?? Number.MAX_SAFE_INTEGER);
+        setDraft(String(clamped));
+      }}
+      onKeyDown={e => {
+        if (e.key === "Enter") {
+          commitIfValid(draft);
+          (e.currentTarget as HTMLInputElement).blur();
+        }
+      }}
+      style={{
+        width: "100%", maxWidth: width,
+        padding: "5px 4px", boxSizing: "border-box",
+        background: theme.bg.input,
+        border: `1px solid ${theme.border.default}`,
+        borderRadius: 7, color: theme.text.primary,
+        fontFamily: theme.font.mono, fontSize: 12,
+        textAlign, outline: "none",
+      }}
+    />
+  );
+}
+
 
 function isSubsequence(q: string, t: string): boolean {
   let i = 0;
@@ -969,7 +1058,8 @@ const exactSkuMatch = useMemo(() => {
               unit:        item.unit,
               quantity:    item.quantity,
               sellPrice:   item.sellPrice,
-              basePrice:   item.sellPrice,   // no markup
+              basePrice:   impliedBasePrice(item.sellPrice),  // ← was item.sellPrice
+              commissionRate: commissionConfig.enabled ? commissionConfig.rate : 0, 
             }
           : {
               isUnlisted:  false,
@@ -1087,6 +1177,7 @@ const exactSkuMatch = useMemo(() => {
           is_unlisted:    true,
           quantity:       item.quantity,
           unit_price:     item.sellPrice,
+          base_price:      impliedBasePrice(item.sellPrice),
           subtotal:       item.sellPrice * item.quantity,
         }
       : {
@@ -1209,8 +1300,12 @@ const exactSkuMatch = useMemo(() => {
     const txRows = cart.map(item => {
       // ── Unlisted branch ──
       if (item.kind === "unlisted") {
-        const itemTotal = item.sellPrice * item.quantity;
-        const ratio = grandTotal > 0 ? itemTotal / grandTotal : 0;
+        const itemTotal  = item.sellPrice * item.quantity;
+        const ratio      = grandTotal > 0 ? itemTotal / grandTotal : 0;
+        const basePrice  = impliedBasePrice(item.sellPrice);     // ← new
+        const markup     = Math.max(0, item.sellPrice - basePrice);
+        const commEarned = Math.round(markup * item.quantity * commRate / 100);
+      
         return {
           shop_id:           shop?.id,
           owner_id:          shop?.owner_id,
@@ -1228,9 +1323,9 @@ const exactSkuMatch = useMemo(() => {
           mpesa_ref:         (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
           status:            "ok",
           unit_price:        item.sellPrice,
-          base_price:        item.sellPrice,   // no markup for unlisted
-          commission_rate:   0,
-          commission_earned: 0,
+          base_price:        basePrice,                           // ← was item.sellPrice
+          commission_rate:   commRate,                            // ← was 0
+          commission_earned: commEarned,                          // ← was 0
         };
       }
     
@@ -2504,42 +2599,25 @@ const exactSkuMatch = useMemo(() => {
         </div>
 
         {/* Qty */}
-        <input
-          type="number" inputMode="numeric" min={1} max={remaining}
-          value={item.quantity}
-          onChange={e => {
-            const v = parseInt(e.target.value, 10);
-            if (isNaN(v) || v < 1) return;
-            handleUpdateCartQty(item.key, Math.min(v, remaining));
-          }}
-          style={{
-            width: "100%", padding: "5px 4px", boxSizing: "border-box",
-            background: theme.bg.input,
-            border: `1px solid ${theme.border.default}`,
-            borderRadius: 7, color: theme.text.primary,
-            fontFamily: theme.font.mono, fontSize: 12,
-            textAlign: "center", outline: "none",
-          }}
-        />
+        <EditableNumber
+            value={item.quantity}
+            min={1}
+            max={remaining}
+            onCommit={v => handleUpdateCartQty(item.key, v)}
+            theme={theme}
+            width={52}
+            ariaLabel="Quantity"
+          />
 
-        {/* Price */}
-        <input
-          type="number" inputMode="numeric" min={minPrice}
-          value={item.sellPrice}
-          onChange={e => {
-            const v = Number(e.target.value);
-            if (isNaN(v) || v < 0) return;
-            handleUpdateCartPrice(item.key, v);
-          }}
-          style={{
-            width: "100%", padding: "5px 4px", boxSizing: "border-box",
-            background: theme.bg.input,
-            border: `1px solid ${theme.border.default}`,
-            borderRadius: 7, color: theme.text.primary,
-            fontFamily: theme.font.mono, fontSize: 12,
-            textAlign: "center", outline: "none",
-          }}
-        />
+              {/* Price */}
+          <EditableNumber
+            value={item.sellPrice}
+            min={minPrice}
+            onCommit={v => handleUpdateCartPrice(item.key, v)}
+            theme={theme}
+            width={76}
+            ariaLabel="Price"
+          />
 
         {/* Line total */}
         <div style={{

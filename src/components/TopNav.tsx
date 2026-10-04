@@ -203,11 +203,11 @@ export default function TopNav() {
         .gt("updated_at", lastSeen),
       supabase.rpc("get_shop_requests", { p_shop_id: shop.id }),
       supabase
-        .from("shop_transactions")
-        .select("id, product_name, amount, updated_at, status")
-        .eq("shop_id", shop.id)
-        .eq("status", "review")
-        .gt("updated_at", lastSeen),
+      .from("shop_transactions")
+      .select("id, product_name, amount, created_at, status")
+      .eq("shop_id", shop.id)
+      .eq("status", "review")
+      .gt("created_at", lastSeen),
     ]);
 
     // Resolve product names for allocations
@@ -287,7 +287,7 @@ export default function TopNav() {
         type:      "tx_flagged",
         title:     "Transaction Flagged",
         body:      `${t.product_name ?? "A transaction"} (${fmtAmt(t.amount)}) was flagged for review`,
-        timestamp: t.updated_at,
+        timestamp: t.creaated_at,
       });
     });
 
@@ -320,6 +320,7 @@ export default function TopNav() {
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_allocations", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_allocations", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_requests",    filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
+      .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
       .on("postgres_changes", { event: "UPDATE", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` }, () => fetchNotifications())
       .subscribe();
     return () => { supabase.removeChannel(ch); };
