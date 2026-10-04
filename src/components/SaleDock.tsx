@@ -11,21 +11,29 @@ export default function SaleDock({
   theme: any;
   bottomOffset?: number;
 }) {
+  const isDark = theme.isDark;
+
   return (
     <div
-      style={{
-        position: "fixed", left: 0, right: 0,
-        bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
-        zIndex: 9000,
-        background: theme.bg.card,           // opaque — make sure theme.bg.card is a hex, not rgba
-        borderTop: `1px solid ${theme.border.default}`,
-        boxShadow: "0 -8px 24px rgba(0,0,0,0.4)",
-        padding: "8px 10px",
-        display: "flex", alignItems: "center", gap: 8,
-        maxWidth: 720,
-        marginLeft: "auto", marginRight: "auto",
-        width: "100%",
-      }}
+    style={{
+      position: "fixed", left: 0, right: 0,
+      bottom: `calc(env(safe-area-inset-bottom, 0px) + ${bottomOffset}px)`,
+      zIndex: 9000,
+
+      background: isDark ? "rgba(13, 17, 23, 0.28)" : "rgba(255, 255, 255, 0.30)",
+         backdropFilter: "blur(4px) saturate(1.05)",
+      WebkitBackdropFilter: "blur(6px) saturate(1.1)",
+
+      borderTop: `1px solid ${isDark ? "rgba(255,255,255,0.12)" : "rgba(0,0,0,0.08)"}`,
+      boxShadow: isDark
+        ? "0 -8px 24px rgba(0,0,0,0.35)"
+        : "0 -8px 24px rgba(0,0,0,0.08)",
+      padding: "8px 10px",
+      display: "flex", alignItems: "center", gap: 8,
+      maxWidth: 720,
+      marginLeft: "auto", marginRight: "auto",
+      width: "100%",
+    }}
     >
       <button
         onClick={onExpand}
@@ -54,7 +62,7 @@ export default function SaleDock({
           flexShrink: 0, padding: "12px 16px",
           borderRadius: 12, border: "none",
           background: disabled
-            ? "rgba(255,255,255,0.06)"
+            ? (isDark ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.06)")
             : `linear-gradient(135deg, ${theme.accent.cyan}, #0891b2)`,
           color: disabled ? theme.text.muted : "#fff",
           fontFamily: theme.font.display, fontWeight: 800, fontSize: 14,

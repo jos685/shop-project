@@ -22,6 +22,7 @@ interface LocalTransaction {
   product_name: string | null;
   product_sku: string | null;
   product_id: string | null;
+  custom_item_id: string | null; 
   product_image_url: string | null;
   seller_name: string | null;
   seller_code: string | null;
@@ -544,6 +545,22 @@ export default function PosTransactionsPage() {
       }
     }
 
+    // Preload names for unlisted items — resolved via custom_item_id on the row.
+    const newCustomIds = [...new Set(
+      txData
+        .map((t: any) => t.custom_item_id)
+        .filter((id: string | null): id is string => !!id && !existingProductMap[id])
+    )];
+    if (newCustomIds.length > 0) {
+      const { data: customData } = await supabase
+        .from("shop_custom_items")
+        .select("id, name")
+        .in("id", newCustomIds);
+      for (const c of customData ?? []) {
+        existingProductMap[c.id] = { name: c.name, sku: "", image_url: null };
+      }
+    }
+
     if (newAgentIds.length > 0) {
       const { data: agentData } = await supabase
         .from("shop_agents")
@@ -555,31 +572,39 @@ export default function PosTransactionsPage() {
       }
     }
 
-    return txData.map((t: any) => ({
-      id:             t.id,
-      amount:         t.amount,
-      quantity:       t.quantity,
-      payment_method: t.payment_method,
-      cash_amount:    t.cash_amount,
-      mpesa_amount:   t.mpesa_amount,
-      mpesa_ref:      t.mpesa_ref ?? null,
-      created_at:     t.created_at,
-      product_name:      t.status === "credit_partial" ? "Credit Sale (Partial Payment)" : t.status === "credit" ? "Credit Sale (Unpaid)" : (existingProductMap[t.product_id]?.name ?? "—"),
-      product_sku:       existingProductMap[t.product_id]?.sku       ?? "",
-      product_image_url: existingProductMap[t.product_id]?.image_url ?? null,
-      product_id:        t.product_id ?? null,
-      seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
-      seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
-      seller_agent_id: t.seller_agent_id ?? null,
-      customer_phone: t.customer_phone ?? null,
-      unit_price:        t.unit_price ?? null,
-      receipt_sent:      t.receipt_sent ?? null,
-      receipt_phone:     t.receipt_phone ?? null,
-      status:            t.status ?? null,
-      commission_rate:   t.commission_rate ?? null,
-      commission_earned: t.commission_earned ?? null,
-      credit_sale_id:    t.credit_sale_id ?? null,
-    }));
+    return txData.map((t: any) => {
+      const lookupId = t.product_id ?? t.custom_item_id ?? null;
+      const resolved = lookupId ? existingProductMap[lookupId] : undefined;
+      return {
+        id:             t.id,
+        amount:         t.amount,
+        quantity:       t.quantity,
+        payment_method: t.payment_method,
+        cash_amount:    t.cash_amount,
+        mpesa_amount:   t.mpesa_amount,
+        mpesa_ref:      t.mpesa_ref ?? null,
+        created_at:     t.created_at,
+        product_name:
+          t.status === "credit_partial" ? "Credit Sale (Partial Payment)"
+          : t.status === "credit"       ? "Credit Sale (Unpaid)"
+          : resolved?.name              ?? "—",
+        product_sku:       resolved?.sku       ?? "",
+        product_image_url: resolved?.image_url ?? null,
+        product_id:        t.product_id        ?? null,
+        custom_item_id:    t.custom_item_id    ?? null,
+        seller_name:    existingSellerMap[t.seller_agent_id]?.name ?? "Unknown",
+        seller_code:    existingSellerMap[t.seller_agent_id]?.code ?? "",
+        seller_agent_id: t.seller_agent_id ?? null,
+        customer_phone: t.customer_phone ?? null,
+        unit_price:        t.unit_price ?? null,
+        receipt_sent:      t.receipt_sent ?? null,
+        receipt_phone:     t.receipt_phone ?? null,
+        status:            t.status ?? null,
+        commission_rate:   t.commission_rate ?? null,
+        commission_earned: t.commission_earned ?? null,
+        credit_sale_id:    t.credit_sale_id ?? null,
+      };
+    });
   }, [shop]);
 
   const fetchTransactions = useCallback(async (silent = false) => {

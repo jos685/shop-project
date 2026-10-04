@@ -13,11 +13,12 @@ const darkTheme = {
     hover:   "rgba(255,255,255,0.04)",
     modal:   "#0d1117",
   },
-  text: {
-    primary:   "#f9fafb",
-    secondary: "#9ca3af",
-    muted:     "#4b5563",
-  },
+  // ── darkTheme ──
+text: {
+  primary:   "#f9fafb",
+  secondary: "#cbd5e1",   // was #9ca3af  → slate-300, clearly readable
+  muted:     "#e2e8f0",   // was #4b5563  → slate-200, near-white as you asked
+},
   accent: {
     primary:      "#06b6d4",
     primaryLight: "#67e8f9",
@@ -59,11 +60,12 @@ const lightTheme = {
     hover:   "rgba(0,0,0,0.03)",
     modal:   "#ffffff",
   },
-  text: {
-    primary:   "#0f172a",
-    secondary: "#475569",
-    muted:     "#94a3b8",
-  },
+ // ── lightTheme ──
+text: {
+  primary:   "#0f172a",
+  secondary: "#334155",   // wasrgb(19, 19, 19)  → slate-700, darker
+  muted:     "#64748b",   // was #94a3b8  → slate-500, readable on white
+},
   accent: {
     primary:      "#0284c7",
     primaryLight: "#0ea5e9",

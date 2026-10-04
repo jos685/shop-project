@@ -32,7 +32,7 @@ export default function UnlistedItemModal({
 }: Props) {
   const [name, setName]           = useState("");
   const [unit, setUnit]           = useState("pc");
-  const [qty, setQty]             = useState("1");
+  const [qty, setQty]             = useState("");
   const [price, setPrice]         = useState("");
   const [showSug, setShowSug]     = useState(false);
   const [error, setError]         = useState("");
@@ -48,7 +48,7 @@ export default function UnlistedItemModal({
       setQty(String(initialItem.quantity));
       setPrice(String(initialItem.sellPrice));
     } else {
-      setName(""); setUnit("pc"); setQty("1"); setPrice("");
+      setName(""); setUnit("pc"); setQty(""); setPrice("");
     }
 
     setShowSug(false); setError(""); setSaving(false);
@@ -80,7 +80,8 @@ export default function UnlistedItemModal({
     setError("");
     const trimmed = name.trim();
     if (trimmed.length < 2) return setError("Enter a product name (at least 2 characters).");
-    const quantity = Math.max(1, parseInt(qty) || 1);
+    const quantity = parseInt(qty, 10) || 0;
+    if (quantity < 1) return setError("Enter a quantity of at least 1.");
     const sellPrice = Number(price) || 0;
     if (sellPrice <= 0) return setError("Enter a sell price greater than 0.");
 
@@ -208,7 +209,7 @@ export default function UnlistedItemModal({
             <input className="ki" type="text" inputMode="numeric" value={qty}
               onChange={e => setQty(e.target.value.replace(/[^0-9]/g, ""))}
               onBlur={() => { if (!qty) setQty("1"); }}
-              placeholder="1" />
+              placeholder="0" />
           </div>
           <div>
             <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
@@ -233,9 +234,9 @@ export default function UnlistedItemModal({
 
         {/* Subtotal preview */}
         {(() => {
-          const q = Math.max(1, parseInt(qty) || 1);
+          const q = parseInt(qty, 10) || 0;
           const p = Number(price) || 0;
-          if (p <= 0) return null;
+          if (p <= 0 || q <= 0) return null;
           return (
             <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
@@ -258,10 +259,24 @@ export default function UnlistedItemModal({
             style={{ flex: 1, padding: "14px", border: `1px solid ${theme.border.default}`, borderRadius: 13, background: "transparent", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14, cursor: "pointer" }}>
             Cancel
           </button>
-          <button className="abtn" onClick={submit} disabled={saving}
-            style={{ flex: 2, background: "linear-gradient(135deg,#a855f7,#7e22ce)", color: "#fff", fontSize: 15 }}>
-            {saving ? "Saving…" : initialItem ? "Update item →" : "Add to cart →"}
-          </button>
+          {(() => {
+            const qtyNum = parseInt(qty, 10) || 0;
+            const canSubmit = name.trim().length >= 2 && qtyNum > 0 && Number(price) > 0;
+            return (
+              <button className="abtn" onClick={submit} disabled={saving || !canSubmit}
+                style={{
+                  flex: 2,
+                  background: canSubmit
+                    ? "linear-gradient(135deg,#a855f7,#7e22ce)"
+                    : "rgba(168,85,247,0.35)",
+                  color: "#fff", fontSize: 15,
+                  cursor: canSubmit && !saving ? "pointer" : "not-allowed",
+                  opacity: canSubmit && !saving ? 1 : 0.6,
+                }}>
+                {saving ? "Saving…" : initialItem ? "Update item →" : "Add to cart →"}
+              </button>
+            );
+          })()}
         </div>
       </div>
     </div>

@@ -7,7 +7,7 @@ import QrScanner from "../components/QrScanner";
 import { supabase, productImageUrl } from "../lib/supabase";
 import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
-import { sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode, validatePhone } from "../lib/sanitize";
+import { sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
 import { createPortal } from "react-dom";
 // import FloatingCart from "../components/FloatingCart";
 import UnlistedItemModal from "../components/UnlistedItemModal";
@@ -15,14 +15,20 @@ import UnlistedItemModal from "../components/UnlistedItemModal";
 import SaleDock from "../components/SaleDock";
 import AddToast from "../components/AddToast";
 import type { CartItem, ListedCartItem, CustomItem } from "../types/pos";
-import { cartItemName, cartItemImage, cartItemBasePrice } from "../types/pos";
+import { cartItemName, cartItemImage } from "../types/pos";
 import CenterModal from "../components/CenterModal";
 
 
-
-type Step         = "scan" | "checkout" | "verify" | "success";
+type Step         = "scan" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
 type VerifyMethod = "pin" | "badge";
+
+const STEPS: Step[] = ["scan", "verify", "success"];
+const STEP_LABELS: Record<Step, string> = {
+  scan:    "Products",
+  verify:  "Authorise",
+  success: "Done",
+};
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -91,11 +97,6 @@ interface LocalAgent {
   id: string; pin: string; active: boolean; agent_id: string;
   name: string; agent_code: string; avatar: string;
 }
-
-
-const STEPS: Step[] = ["scan", "checkout", "verify", "success"];
-const STEP_LABELS   = { scan: "Products", checkout: "Cart", verify: "Authorise", success: "Done" };
-
 
 
 // Reusable product image with click-to-zoom lightbox
@@ -231,7 +232,7 @@ export default function PosScan() {
   const width     = useWindowWidth();
   const isMobile  = width < 640;
   const isDesktop = width >= 1024;
-  const NAV_H = isMobile ? 64 : 128;
+  const NAV_H = isMobile ? 92 : 128;
 
   const [reopenPayAfterEdit, setReopenPayAfterEdit] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
@@ -250,10 +251,6 @@ export default function PosScan() {
   // ── flow state ────────────────────────────────────────────────────────
   const [step,         setStep]         = useState<Step>("scan");
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("pin");
-
-  useEffect(() => {
-    ctaGuardRef.current = Date.now();
-  }, [step]);
 
   useEffect(() => {
     if (step === "success") {
@@ -294,21 +291,17 @@ const editUnlistedItem = (key: string) => {
   // checkout
   const [customerName,    setCustomerName]    = useState("");
   const [customerPhone,   setCustomerPhone]   = useState("");
-  const [fieldErrors,     setFieldErrors]     = useState<Record<string, string>>({});
+  
 
   // saved customer contacts
   interface SavedCustomer { id?: string; name: string; phone: string; }
   const customersKey = shop ? `pos_customers_${shop.id}` : null;
-  const usageKey     = shop ? `pos_customer_usage_${shop.id}` : null;
   const [savedCustomers,   setSavedCustomers]   = useState<SavedCustomer[]>([]);
-  const [customerQuery,    setCustomerQuery]    = useState("");
-  const [showCustDropdown, setShowCustDropdown] = useState(false);
-  const [usageMap, setUsageMap] = useState<Record<string, number>>({});
   const [initialPayment, setInitialPayment] = useState("");
   const [initialCashAmount, setInitialCashAmount] = useState("");
   const [initialMpesaAmount, setInitialMpesaAmount] = useState("");
   const [initialPayMethod, setInitialPayMethod] = useState<"cash" | "mpesa">("cash");
-  const [payMethod,     setPayMethod]     = useState<PayMethod>("cash");
+  const [payMethod,     setPayMethod]     = useState<PayMethod | null>(null);
   const [cashAmount,    setCashAmount]    = useState("");
   const [mpesaAmount,   setMpesaAmount]   = useState("");
   const [mpesaRef,      setMpesaRef]      = useState("");
@@ -329,7 +322,7 @@ const editUnlistedItem = (key: string) => {
   const pinLockRef     = useRef<ReturnType<typeof setInterval> | null>(null);
   const submittingRef  = useRef(false);
 
-  const ctaGuardRef = useRef(0);
+
 
   const startPinLock = useCallback((until: number) => {
     if (pinLockRef.current) clearInterval(pinLockRef.current);
@@ -575,14 +568,6 @@ const editUnlistedItem = (key: string) => {
   
 
   useEffect(() => {
-    if (!usageKey) return;
-    try {
-      const raw = localStorage.getItem(usageKey);
-      if (raw) setUsageMap(JSON.parse(raw));
-    } catch {}
-  }, [usageKey]);
-
-  useEffect(() => {
     if (!shop || !isOnline) return;
     supabase
       .from("shop_customers")
@@ -598,15 +583,7 @@ const editUnlistedItem = (key: string) => {
       });
   }, [shop, isOnline, customersKey]);
 
-  const touchUsage = useCallback((phone: string) => {
-    if (!phone.trim()) return;
-    setUsageMap(prev => {
-      const next = { ...prev, [phone.trim()]: Date.now() };
-      if (usageKey) { try { localStorage.setItem(usageKey, JSON.stringify(next)); } catch {} }
-      return next;
-    });
-  }, [usageKey]);
-
+  
   const saveCustomItem = useCallback(async (
     name: string, unit: string, price: number
   ): Promise<CustomItem | null> => {
@@ -752,13 +729,6 @@ const refreshProducts = useCallback(async () => {
   }
 }, [shop, isOnline, cacheKey]);
 
-  const filteredCustomers = (customerQuery.trim()
-    ? savedCustomers.filter(c =>
-        c.name.toLowerCase().includes(customerQuery.toLowerCase()) ||
-        c.phone.includes(customerQuery)
-      )
-    : [...savedCustomers]
-  ).sort((a, b) => (usageMap[b.phone] ?? 0) - (usageMap[a.phone] ?? 0) || a.name.localeCompare(b.name));
 
   // ── product lookup ────────────────────────────────────────────────────
   const fetchAllocationBySku = useCallback(async (sku: string): Promise<LocalAlloc | null> => {
@@ -958,38 +928,25 @@ const exactSkuMatch = useMemo(() => {
     setCart(prev => prev.map(i => i.key === key ? { ...i, quantity: Math.max(1, qty) } : i));
   };
 
+  const handleUpdateCartPrice = (key: string, price: number) => {
+    setCart(prev => prev.map(i => {
+      if (i.key !== key) return i;
+      // Listed items cannot sell below base price
+      if (i.kind === "listed" && price < i.allocation.product.price) return i;
+      return { ...i, sellPrice: Math.max(0, price) };
+    }));
+  };
+
   // ── checkout ──────────────────────────────────────────────────────────
   const grandTotal = cart.reduce((s, i) => s + i.sellPrice * i.quantity, 0);
-
-  function validateField(name: string, value: string, method = payMethod): string {
-    if (name === "customerName") {
-      const v = value.trim();
-      if (method === "credit" && !v) return "Name is required for credit sales";
-      if (v && v.length < 2) return "Name must be at least 2 characters";
-      if (v.length > 60) return "Name must be 60 characters or fewer";
-      return "";
-    }
-    if (name === "customerPhone") {
-      const v = value.trim();
-      // Phone is now optional for credit sales — only validate the format when provided.
-      if (v) {
-        const err = validatePhone(v);
-        if (err) return err;
-      }
-      return "";
-    }
-    if (name === "mpesaRef") {
-      const v = value.trim();
-      if (v && (v.length < 8 || v.length > 12)) return "M-Pesa ref should be 8–12 characters";
-      return "";
-    }
-    return "";
-  }
-
 
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
     if (cart.length === 0) return;
+    if (!payMethod) {
+      setError("Choose a payment method before completing the sale.");
+      return;
+    }
     if (submittingRef.current) return;
     submittingRef.current = true;
 
@@ -1081,6 +1038,7 @@ const exactSkuMatch = useMemo(() => {
       setSelectedAgent(verifiedAgent);
       setSavedBatchRef("OFFLINE");
       setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
+      setPayOpen(false);
       setStep("success");
       submittingRef.current = false;
       return;
@@ -1210,7 +1168,6 @@ const exactSkuMatch = useMemo(() => {
       // Save customer contact for future lookups (credit sales always have name + phone)
       if (customerName.trim() && customerPhone.trim()) {
         saveCustomer(customerName.trim(), customerPhone.trim());
-        touchUsage(customerPhone.trim());
       }
 
       // Fire credit receipt asynchronously — best effort
@@ -1331,7 +1288,6 @@ const exactSkuMatch = useMemo(() => {
     // Auto-save customer contact if name + phone were provided
     if (customerName.trim() && customerPhone.trim()) {
       saveCustomer(customerName.trim(), customerPhone.trim());
-      touchUsage(customerPhone.trim());
     }
 
     // Fire receipt asynchronously — sale is already saved, this is best-effort
@@ -1438,7 +1394,8 @@ const exactSkuMatch = useMemo(() => {
     // selectedAgent, so we re-bind the listener each render to see fresh values.
     useEffect(() => {
       const pinPadOpen =
-        step === "verify" && verifyMethod === "pin" && !!selectedAgent && !processing;
+        (step === "verify" && verifyMethod === "pin" && !!selectedAgent && !processing) ||
+        (payOpen && !!selectedAgent && !processing);
       if (!pinPadOpen) return;
   
       const onKey = (e: KeyboardEvent) => {
@@ -1478,11 +1435,11 @@ const exactSkuMatch = useMemo(() => {
       setStep("scan"); setMode("manual"); setSearchQuery("");
       setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
       setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
-      setCustomerName(""); setCustomerPhone(""); setCustomerQuery(""); setShowCustDropdown(false);
+      setCustomerName(""); setCustomerPhone("");
       setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
-      setPayMethod("cash");
+      setPayMethod(null);
       setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
-      setError(""); setScanFeedback(""); setProcessing(false); setFieldErrors({});
+      setError(""); setScanFeedback(""); setProcessing(false);
       setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
       setUnlistedOpen(false);                       // ← ADD THIS
       if (cartKey) localStorage.removeItem(cartKey);
@@ -1490,11 +1447,14 @@ const exactSkuMatch = useMemo(() => {
       if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
     };
 
-  const goBack = () => {
-    setError("");
-    if (step === "checkout") { setStep("scan"); }
-    if (step === "verify")   { setStep("checkout"); setBadgeActive(false); }
-  };
+    const goBack = () => {
+      setError("");
+      if (step === "verify") {
+        setStep("scan");
+        setSearchQuery("");
+        setBadgeActive(false);
+      }
+    };
 
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
@@ -1596,7 +1556,6 @@ const exactSkuMatch = useMemo(() => {
               {!isMobile && (
               <div style={{ color: theme.text.muted, fontSize: 10, fontFamily: theme.font.mono, marginTop: 1 }}>
                 {step === "scan"     ? "Scan or pick products to add to cart"                                         : ""}
-                {step === "checkout" ? `${cart.length} item${cart.length !== 1 ? "s" : ""} · ${fmt(grandTotal)}`     : ""}
                 {step === "verify"   ? "Verify identity to complete the sale"                                         : ""}
                 {step === "success"  ? (wasQueued ? "Queued — will sync when online" : "Transaction saved successfully") : ""}
               </div>
@@ -1614,65 +1573,64 @@ const exactSkuMatch = useMemo(() => {
 
         {/* Step progress */}
         {step !== "success" && (
-              <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
-                {(["scan", "checkout", "verify"] as Step[]).map((s, i) => {
-                  const done    = STEPS.indexOf(step) > i;
-                  const current = step === s;
-                  // scan = always reachable; checkout/verify only when cart has items
-                  const canJump = s === "scan" ? true : cart.length > 0;
-                  const clickable = canJump && !current;
-                  return (
-                    <div key={s} style={{ display: "flex", alignItems: "center", flex: i < 2 ? 1 : "none" }}>
-                      <button
-                        onClick={() => {
-                          if (!clickable) return;
-                          setStep(s);
-                          setError("");
-                          if (s !== "verify") setBadgeActive(false);
-                        }}
-                        disabled={!clickable}
-                        style={{
-                          background: "none", border: "none", padding: 0, gap: 5,
-                          display: "flex", alignItems: "center",
-                          cursor: clickable ? "pointer" : "default",
-                          opacity: canJump ? 1 : 0.5,
-                          transition: "opacity 0.15s",
-                        }}
-                        title={clickable ? `Go to ${STEP_LABELS[s]}` : s === "scan" ? "" : "Add items to cart first"}
-                      >
-                        <div style={{
-                          width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: done ? 13 : 11,
-                          background: done ? theme.accent.cyan : current ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.05)",
-                          border: `1.5px solid ${done || current ? theme.accent.cyan : "rgba(255,255,255,0.1)"}`,
-                          color: done ? "#000" : current ? theme.accent.cyan : theme.text.muted,
-                          fontFamily: theme.font.mono, fontWeight: 700,
-                        }}>
-                          {done ? "✓" : i + 1}
-                        </div>
-                        <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: current ? theme.accent.cyan : theme.text.muted, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
-                          {STEP_LABELS[s]}
-                        </div>
-                      </button>
-                      {i < 2 && <div style={{ flex: 1, height: 1, background: done ? theme.accent.cyan : "rgba(255,255,255,0.08)", margin: "0 8px" }} />}
+          <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+            {(["scan", "verify"] as Step[]).map((s, i) => {
+              const done    = STEPS.indexOf(step) > i;
+              const current = step === s;
+              const canJump = s === "scan" ? true : cart.length > 0;
+              const clickable = canJump && !current;
+              return (
+                <div key={s} style={{ display: "flex", alignItems: "center", flex: i < 1 ? 1 : "none" }}>
+                  <button
+                    onClick={() => {
+                      if (!clickable) return;
+                      setStep(s);
+                      setError("");
+                      if (s !== "verify") setBadgeActive(false);
+                    }}
+                    disabled={!clickable}
+                    style={{
+                      background: "none", border: "none", padding: 0, gap: 5,
+                      display: "flex", alignItems: "center",
+                      cursor: clickable ? "pointer" : "default",
+                      opacity: canJump ? 1 : 0.5,
+                      transition: "opacity 0.15s",
+                    }}
+                    title={clickable ? `Go to ${STEP_LABELS[s]}` : s === "scan" ? "" : "Add items to cart first"}
+                  >
+                    <div style={{
+                      width: 26, height: 26, borderRadius: "50%", flexShrink: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: done ? 13 : 11,
+                      background: done ? theme.accent.cyan : current ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.05)",
+                      border: `1.5px solid ${done || current ? theme.accent.cyan : "rgba(255,255,255,0.1)"}`,
+                      color: done ? "#000" : current ? theme.accent.cyan : theme.text.muted,
+                      fontFamily: theme.font.mono, fontWeight: 700,
+                    }}>
+                      {done ? "✓" : i + 1}
                     </div>
-                  );
-                })}
-              </div>
-            )}
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: current ? theme.accent.cyan : theme.text.muted, letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+                      {STEP_LABELS[s]}
+                    </div>
+                  </button>
+                  {i < 1 && <div style={{ flex: 1, height: 1, background: done ? theme.accent.cyan : "rgba(255,255,255,0.08)", margin: "0 8px" }} />}
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div style={{
           padding: isMobile
           ? `14px 14px ${
               step === "scan" && cart.length > 0 && !payOpen && !addingProduct
-                ? "calc(env(safe-area-inset-bottom, 0px) + 100px)"
+                ? "calc(env(safe-area-inset-bottom, 0px) + 140px)"
                 : "90px"
             }`
           : `24px 40px ${
               step === "scan" && cart.length > 0 && !payOpen && !addingProduct
-                ? "calc(env(safe-area-inset-bottom, 0px) + 100px)"
+                ? "calc(env(safe-area-inset-bottom, 0px) + 140px)"
                 : "90px"
             }`,
           maxWidth: isDesktop ? 1400 : 720,
@@ -1823,8 +1781,15 @@ const exactSkuMatch = useMemo(() => {
             No products match "{searchQuery}"
           </div>
         )}
-        <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
-          {filteredProducts.map(alloc => {
+        <div style={{
+          maxHeight: isMobile ? "52vh" : 520,
+          overflowY: "auto",
+          overflowX: "hidden",
+          paddingRight: 2,          // keeps scrollbar off the cards
+          WebkitOverflowScrolling: "touch",
+        }}>
+          <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+            {filteredProducts.map(alloc => {
             const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
             const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
             const inCart = cart.find(
@@ -1858,6 +1823,7 @@ const exactSkuMatch = useMemo(() => {
             );
           })}
         </div>
+        </div>
       </div>
     )}
   </div>
@@ -1868,400 +1834,7 @@ const exactSkuMatch = useMemo(() => {
           </div>
         )}
 
-        {/* ══════════════════ STEP 2: CHECKOUT ══════════════════ */}
-        {step === "checkout" && (
-          <div className="section" style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 20, alignItems: "flex-start" }}>
-
-            {/* LEFT COLUMN — Cart */}
-            <div style={{ flex: isMobile ? "unset" : "0 0 44%", display: "flex", flexDirection: "column", gap: 14, position: isMobile ? "static" : "sticky", top: 80, width: isMobile ? "100%" : "auto" }}>
-              {/* Cart items */}
-              <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, overflow: "hidden" }}>
-                <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}`, fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                  Cart — {cart.length} item{cart.length !== 1 ? "s" : ""}
-                </div>
-                {cart.map((item, idx) => {
-  const itemTotal = item.sellPrice * item.quantity;
-  const isListed  = item.kind === "listed";
-  const name      = cartItemName(item);
-  const basePrice = cartItemBasePrice(item);
-  const remaining = isListed ? item.allocation.remaining : Infinity;
-  const image     = cartItemImage(item);
-
-  return (
-    <div key={item.key} className="cart-row"
-      style={{ padding: "13px 16px", borderBottom: idx < cart.length - 1 ? `1px solid ${theme.border.default}` : "none", display: "flex", alignItems: "center", gap: 12 }}>
-      <ProductImage imageUrl={image} productName={name} size={36} />
-
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
-          {name}
-          {!isListed && (
-            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", background: "rgba(168,85,247,0.12)", border: "1px solid rgba(168,85,247,0.3)", borderRadius: 5, padding: "1px 5px", flexShrink: 0 }}>
-              UNLISTED
-            </span>
-          )}
-        </div>
-        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-          {fmt(item.sellPrice)} each
-          {isListed && ` · ${remaining} left`}
-          {isListed && item.sellPrice > basePrice && (
-            <span style={{ color: "#34d399", marginLeft: 5 }}>
-              +{fmt(item.sellPrice - basePrice)} markup
-            </span>
-          )}
-        </div>
-      </div>
-
-      {/* Qty stepper */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <button
-          onClick={() => {
-            if (item.quantity <= 1) handleRemoveFromCart(item.key);
-            else handleUpdateCartQty(item.key, item.quantity - 1);
-          }}
-          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: item.quantity <= 1 ? theme.accent.red : theme.text.primary, cursor: "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          {item.quantity <= 1 ? "✕" : "−"}
-        </button>
-
-        <input type="text" inputMode="numeric" value={item.quantity}
-          onChange={e => {
-            const digits = e.target.value.replace(/[^0-9]/g, "");
-            if (digits === "") { handleUpdateCartQty(item.key, 1); return; }
-            const num = Math.min(parseInt(digits, 10), isListed ? remaining : 9999);
-            handleUpdateCartQty(item.key, num);
-          }}
-          onFocus={e => e.target.select()}
-          style={{ width: 44, height: 28, textAlign: "center", fontFamily: theme.font.mono, fontSize: 14, fontWeight: 600, background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, color: theme.text.primary, outline: "none" }} />
-
-        <button
-          onClick={() => { if (!isListed || item.quantity < remaining) handleUpdateCartQty(item.key, item.quantity + 1); }}
-          disabled={isListed && item.quantity >= remaining}
-          style={{ width: 28, height: 28, border: "1px solid rgba(255,255,255,0.1)", borderRadius: 7, background: "rgba(255,255,255,0.04)", color: theme.accent.cyan, cursor: isListed && item.quantity >= remaining ? "not-allowed" : "pointer", fontSize: 15, display: "flex", alignItems: "center", justifyContent: "center", opacity: isListed && item.quantity >= remaining ? 0.35 : 1 }}>
-          +
-        </button>
-      </div>
-
-      <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, minWidth: 72, textAlign: "right" }}>
-        {fmt(itemTotal)}
-      </div>
-    </div>
-  );
-})}
-                <div style={{ padding: "13px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", justifyContent: "space-between", alignItems: "center", background: "rgba(255,255,255,0.02)" }}>
-                  <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>Grand Total</span>
-                  <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold }}>{fmt(grandTotal)}</span>
-                </div>
-
-                {/* Commission strip */}
-                {commissionConfig.enabled && commissionConfig.rate > 0 && (() => {
-                  const totalComm = payMethod === "credit" ? 0 : cart.reduce((s, item) => {
-                    if (item.kind !== "listed") return s; // no commission on unlisted
-                    const markup = Math.max(0, item.sellPrice - item.allocation.product.price);
-                    return s + Math.round(markup * item.quantity * commissionConfig.rate / 100);
-                  }, 0);
-                  if (payMethod === "credit") {
-                    return (
-                      <div style={{ padding: "10px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 10, background: "rgba(248,113,113,0.05)" }}>
-                        <span style={{ fontSize: 14 }}>💸</span>
-                        <span style={{ flex: 1, fontSize: 11, fontFamily: theme.font.mono, color: "rgba(248,113,113,0.8)" }}>No commission on Pay Later sales</span>
-                        <span style={{ fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700, color: "rgba(248,113,113,0.6)" }}>KSh 0</span>
-                      </div>
-                    );
-                  }
-                  if (totalComm > 0) {
-                    return (
-                      <div style={{ padding: "10px 16px", borderTop: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 10, background: "rgba(52,211,153,0.05)" }}>
-                        <span style={{ fontSize: 14 }}>💰</span>
-                        <span style={{ flex: 1, fontSize: 11, fontFamily: theme.font.mono, color: "#34d399" }}>Your commission ({commissionConfig.rate}% on markup)</span>
-                        <span style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: "#34d399" }}>+{fmt(totalComm)}</span>
-                      </div>
-                    );
-                  }
-                  return null;
-                })()}
-              </div>
-
-              {/* Add more */}
-              <button onClick={() => { setStep("scan"); setError(""); }}
-                style={{ background: "transparent", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 12, padding: "12px 16px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                + Add more products
-              </button>
-            </div>
-
-            {/* RIGHT COLUMN — Payment + customer info */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-              {/* Payment method */}
-              <div>
-  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Payment Method</label>
-  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
-    {([
-      { key: "cash",   icon: "💵", label: "Cash",      col: "#34d399"         },
-      { key: "mpesa",  icon: null, label: "M-Pesa",    col: "#00a651"         },
-      { key: "split",  icon: "⚡", label: "Split",     col: theme.accent.gold  },
-      { key: "credit", icon: "📝", label: "Pay Later", col: theme.accent.red   },
-    ] as const).map(({ key, icon, label, col }) => {
-      const sel = payMethod === key;
-      return (
-        <button key={key}
-          onClick={() => { setPayMethod(key); setCashAmount(""); setMpesaAmount(""); setMpesaRef(""); }}
-          style={{
-            padding: "10px 4px",
-            border: `1px solid ${sel ? col + "80" : theme.border.default}`,
-            borderRadius: 11,
-            background: sel ? col + "18" : "transparent",
-            cursor: "pointer",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-            transition: "all 0.15s",
-          }}>
-          {key === "mpesa" ? (
-            <div style={{
-              width: 22, height: 22, borderRadius: 5,
-              background: "#00a651",
-              color: "#fff",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontFamily: theme.font.display, fontWeight: 800, fontSize: 13,
-              letterSpacing: "-0.03em",
-              boxShadow: sel ? "0 0 0 2px rgba(0,166,81,0.35)" : "none",
-            }}>M</div>
-          ) : (
-            <span style={{ fontSize: 20, lineHeight: "22px" }}>{icon}</span>
-          )}
-          <span style={{ fontSize: 10, fontFamily: theme.font.mono, fontWeight: 600, color: sel ? col : theme.text.muted }}>
-            {label}
-          </span>
-        </button>
-      );
-    })}
-  </div>
-</div>
-
-              {/* Credit notice + initial payment with split fields */}
-              {payMethod === "credit" && (
-                <>
-                  <div style={{ background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12, padding: "11px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.red, lineHeight: 1.6 }}>
-                    📝 Stock will be deducted now. Payment will be tracked separately under the Credit tab in Shop.
-                    {commissionConfig.enabled && commissionConfig.rate > 0 && (
-                      <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px solid rgba(248,113,113,0.2)", color: "rgba(248,113,113,0.75)", fontSize: 11 }}>
-                        💸 No commission is earned on Pay Later sales.
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                      Initial Payment <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional — 0 by default)</span>
-                    </label>
-                    <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.gold }}>💰 Initial Payment — Total due: {fmt(grandTotal)}</div>
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                        <div>
-                          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
-                          <input className="ki" type="text" inputMode="numeric" value={initialCashAmount}
-                            onChange={e => { 
-                              const v = sanitizeAmount(e.target.value);
-                              const cashVal = Number(v) || 0;
-                              const mpesaVal = Number(initialMpesaAmount) || 0;
-                              const total = cashVal + mpesaVal;
-                              const cap = Math.round(grandTotal);
-                              if (total > cap) {
-                                // If total exceeds grand total, adjust this field to keep within limit
-                                const maxForThis = Math.max(0, cap - mpesaVal);
-                                setInitialCashAmount(String(maxForThis));
-                                setInitialPayment(String(maxForThis + mpesaVal));
-                              } else {
-                                setInitialCashAmount(v);
-                                setInitialPayment(String(total));
-                              }
-                            }}
-                            placeholder="0" />
-                        </div>
-                        <div>
-                          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                          <input className="ki" type="text" inputMode="numeric" value={initialMpesaAmount}
-                            onChange={e => {
-                              const v = sanitizeAmount(e.target.value);
-                              const mpesaVal = Number(v) || 0;
-                              const cashVal = Number(initialCashAmount) || 0;
-                              const total = cashVal + mpesaVal;
-                              const cap = Math.round(grandTotal);
-                              if (total > cap) {
-                                // If total exceeds grand total, adjust this field to keep within limit
-                                const maxForThis = Math.max(0, cap - cashVal);
-                                setInitialMpesaAmount(String(maxForThis));
-                                setInitialPayment(String(cashVal + maxForThis));
-                              } else {
-                                setInitialMpesaAmount(v);
-                                setInitialPayment(String(total));
-                              }
-                            }}
-                            placeholder="0" />
-                        </div>
-                      </div>
-                      {Number(initialPayment) > 0 && (
-                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.green, marginTop: 6, textAlign: "center", paddingTop: 6, borderTop: "1px solid rgba(234,179,8,0.15)" }}>
-                          Balance after payment: {fmt(Math.max(0, grandTotal - Math.min(Number(initialPayment), grandTotal)))}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </>
-              )}
-
-              {payMethod === "split" && (
-                <div style={{ background: "rgba(234,179,8,0.05)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 12, padding: 14, display: "flex", flexDirection: "column", gap: 10 }}>
-                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚡ Split — Total: {fmt(grandTotal)}</div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    <div>
-                      <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
-                      <input className="ki" type="text" inputMode="numeric" value={cashAmount}
-                        onChange={e => { const v = sanitizeAmount(e.target.value); setCashAmount(v); setMpesaAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0))))); }}
-                        placeholder="0" />
-                    </div>
-                    <div>
-                      <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                      <input className="ki" type="text" inputMode="numeric" value={mpesaAmount}
-                        onChange={e => { const v = sanitizeAmount(e.target.value); setMpesaAmount(v); setCashAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0))))); }}
-                        placeholder="0" />
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {(payMethod === "mpesa" || payMethod === "split") && (
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>M-Pesa Ref <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span></label>
-                  <input className="ki" value={mpesaRef}
-                    onChange={e => {
-                      setMpesaRef(sanitizeCode(e.target.value, 12));
-                      if (fieldErrors.mpesaRef) setFieldErrors(prev => ({ ...prev, mpesaRef: "" }));
-                    }}
-                    onBlur={() => {
-                      const err = validateField("mpesaRef", mpesaRef);
-                      if (err) setFieldErrors(prev => ({ ...prev, mpesaRef: err }));
-                    }}
-                    placeholder="e.g. QHX7K3LM2P" maxLength={12} spellCheck={false} />
-                  {fieldErrors.mpesaRef && (
-                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.mpesaRef}</div>
-                  )}
-                </div>
-              )}
-
-              {/* ── Customer section ── */}
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-
-                {/* Saved customers button */}
-                {savedCustomers.length > 0 && (
-                  <div style={{ position: "relative" }}>
-                    <button
-                      onClick={() => setShowCustDropdown(v => !v)}
-                      style={{ width: "100%", padding: "10px 14px", background: showCustDropdown ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.03)", border: `1px solid ${showCustDropdown ? "rgba(6,182,212,0.4)" : theme.border.default}`, borderRadius: 12, cursor: "pointer", display: "flex", alignItems: "center", gap: 10, color: theme.text.primary, transition: "all 0.15s" }}>
-                      <span style={{ fontSize: 16 }}>👤</span>
-                      <span style={{ flex: 1, textAlign: "left", fontFamily: theme.font.mono, fontSize: 12, color: theme.text.secondary }}>
-                        Pick from saved customers
-                      </span>
-                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{savedCustomers.length} saved · {showCustDropdown ? "▲" : "▼"}</span>
-                    </button>
-
-                    {showCustDropdown && (
-                      <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, right: 0, zIndex: 60, background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, boxShadow: "0 12px 32px rgba(0,0,0,0.5)", overflow: "hidden" }}>
-                        {/* Search within saved */}
-                        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${theme.border.default}` }}>
-                          <div style={{ position: "relative" }}>
-                            <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 12, opacity: 0.4 }}>🔍</span>
-                            <input
-                              className="ki"
-                              type="text"
-                              value={customerQuery}
-                              onChange={e => setCustomerQuery(e.target.value)}
-                              placeholder="Filter by name or phone…"
-                              style={{ paddingLeft: 30, paddingRight: 70, paddingTop: 8, paddingBottom: 8, fontSize: 12 }}
-                              autoFocus
-                            />
-                            <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, pointerEvents: "none" }}>
-                              {customerQuery.trim() ? `${filteredCustomers.length} of ${savedCustomers.length}` : `${savedCustomers.length}`}
-                            </span>
-                          </div>
-                        </div>
-                        <div style={{ maxHeight: 240, overflowY: "auto" }}>
-                          {filteredCustomers.length === 0 ? (
-                            <div style={{ padding: "16px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
-                              No customers match "{customerQuery}"
-                            </div>
-                          ) : (
-                            filteredCustomers.map((c, i) => (
-                              <button key={c.id ?? c.phone}
-                                onClick={() => {
-                                  setCustomerName(c.name);
-                                  setCustomerPhone(c.phone);
-                                  touchUsage(c.phone);
-                                  setCustomerQuery("");
-                                  setShowCustDropdown(false);
-                                }}
-                                style={{ width: "100%", padding: "11px 16px", background: "transparent", border: "none", borderBottom: i < filteredCustomers.length - 1 ? `1px solid ${theme.border.default}` : "none", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 12 }}>
-                                <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(6,182,212,0.12)", border: "1px solid rgba(6,182,212,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 15, color: theme.accent.cyan, flexShrink: 0 }}>
-                                  {c.name.charAt(0).toUpperCase()}
-                                </div>
-                                <div style={{ flex: 1, minWidth: 0 }}>
-                                  <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.name}</div>
-                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{c.phone}</div>
-                                </div>
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-
-                {/* Customer Name */}
-                {/* Customer Name — credit sales only */}
-              {payMethod === "credit" && (
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                    Customer Name <span style={{ color: theme.accent.red }}>*</span>
-                  </label>
-                  <input className="ki" type="text" value={customerName}
-                    onChange={e => {
-                      setCustomerName(sanitizeText(e.target.value, 60));
-                      if (fieldErrors.customerName) setFieldErrors(prev => ({ ...prev, customerName: "" }));
-                    }}
-                    onBlur={() => {
-                      const err = validateField("customerName", customerName);
-                      if (err) setFieldErrors(prev => ({ ...prev, customerName: err }));
-                    }}
-                    placeholder="e.g. John Kamau" maxLength={60} />
-                  {fieldErrors.customerName && (
-                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.customerName}</div>
-                  )}
-                </div>
-              )}
-
-                {/* Customer Phone — always visible */}
-                <div>
-                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-                  Customer Phone <span style={{ color: theme.text.muted, textTransform: "none", letterSpacing: 0 }}>(optional)</span>
-                  </label>
-                  <input className="ki" type="tel" value={customerPhone}
-                    onChange={e => {
-                      setCustomerPhone(sanitizePhone(e.target.value));
-                      if (fieldErrors.customerPhone) setFieldErrors(prev => ({ ...prev, customerPhone: "" }));
-                    }}
-                    onBlur={() => {
-                      const err = validateField("customerPhone", customerPhone);
-                      if (err) setFieldErrors(prev => ({ ...prev, customerPhone: err }));
-                    }}
-                    placeholder="07XXXXXXXXX or 254XXXXXXXXX" maxLength={13} />
-                  {fieldErrors.customerPhone && (
-                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>⚠ {fieldErrors.customerPhone}</div>
-                  )}
-                </div>
-              </div>
-
-              {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
-
-            </div>
-          </div>
-        )}
+       
 
         {/* ══════════════════ STEP 3: VERIFY ══════════════════ */}
         {step === "verify" && (
@@ -2525,147 +2098,9 @@ const exactSkuMatch = useMemo(() => {
             </button>
           </div>
         )}
+      
       </div>
-
-      {/* ══════════════════ FULL-SCREEN PIN MODAL ══════════════════ */}
-      {step === "verify" && verifyMethod === "pin" && selectedAgent && (() => {
-        const btnH   = isMobile ? 54 : 58;
-        const padH   = isMobile ? "12px 16px 10px" : "14px 20px 12px";
-        const numGap = isMobile ? 6 : 8;
-        return (
-          <div style={{ position: "fixed", inset: 0, zIndex: 110, background: theme.bg.base, display: "flex", flexDirection: "column", alignItems: "center", overflow: "hidden" }}>
-            {processing ? (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20 }}>
-                <div style={{ position: "relative", width: 64, height: 64 }}>
-                  <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
-                  <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
-                </div>
-                <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.muted }}>
-                  {payMethod === "credit" ? "Recording credit sale..." : `Processing ${cart.length} item${cart.length !== 1 ? "s" : ""}...`}
-                </div>
-                <div style={{ width: 220, height: 3, borderRadius: 99, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
-                  <div style={{ height: "100%", borderRadius: 99, background: `linear-gradient(90deg,${theme.accent.cyan},#0891b2)`, animation: "progress-bar 1.4s ease-in-out infinite" }} />
-                </div>
-              </div>
-            ) : (
-              <div style={{ width: "100%", maxWidth: 400, display: "flex", flexDirection: "column" }}>
-
-                {/* ── Top bar ── */}
-                <div style={{ padding: padH, borderBottom: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", gap: 12 }}>
-                  <button onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
-                    style={{ width: 34, height: 34, borderRadius: "50%", border: `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.04)", color: theme.text.muted, fontSize: 16, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    ←
-                  </button>
-                  <div style={{ width: 38, height: 38, borderRadius: "50%", background: "rgba(6,182,212,0.15)", border: "2px solid rgba(6,182,212,0.45)", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: theme.accent.cyan, flexShrink: 0 }}>
-                    {selectedAgent.avatar || selectedAgent.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: isMobile ? 14 : 15, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedAgent.name}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Enter 4-digit PIN to authorise</div>
-                  </div>
-                </div>
-
-                {/* ── Body: total + dots + numpad — compact, no gaps ── */}
-                <div style={{ padding: isMobile ? "20px 14px 24px" : "24px 20px 28px", display: "flex", flexDirection: "column", alignItems: "center", gap: 20 }}>
-
-                  {/* Sale total */}
-                  <div style={{ textAlign: "center" }}>
-                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.1em", marginBottom: 3 }}>Sale Total</div>
-                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 26 : 30, color: theme.accent.gold, lineHeight: 1 }}>{fmt(grandTotal)}</div>
-                  </div>
-
-                  {/* Lockout / warning banners */}
-                  {(pinIsLocked || (!pinIsLocked && pinFails >= 3)) && (
-                    <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6 }}>
-                      {pinIsLocked && (
-                        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.07)", border: "1px solid rgba(239,68,68,0.22)", borderRadius: 10, padding: "10px 14px" }}>
-                          <span style={{ fontSize: 18 }}>🔒</span>
-                          <div>
-                            <div style={{ fontSize: 12, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
-                            <div style={{ fontSize: 11, color: "#f87171", fontFamily: theme.font.mono }}>Try again in {pinCountdown}s</div>
-                          </div>
-                        </div>
-                      )}
-                      {!pinIsLocked && pinFails >= 3 && (
-                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.06)", border: "1px solid rgba(234,179,8,0.18)", borderRadius: 8, padding: "7px 12px", textAlign: "center", width: "100%" }}>
-                          ⚠ {PIN_MAX_FAILS - pinFails} attempt{PIN_MAX_FAILS - pinFails !== 1 ? "s" : ""} left before lockout
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* PIN dots */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                    <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 18, justifyContent: "center", opacity: pinIsLocked ? 0.3 : 1 }}>
-                      {[0, 1, 2, 3].map(i => (
-                        <div key={i} style={{
-                          width: isMobile ? 16 : 18, height: isMobile ? 16 : 18, borderRadius: "50%",
-                          background: i < pin.length ? theme.accent.cyan : "transparent",
-                          border: `2.5px solid ${i < pin.length ? theme.accent.cyan : "rgba(255,255,255,0.22)"}`,
-                          transition: "all 0.15s cubic-bezier(0.34,1.56,0.64,1)",
-                          boxShadow: i < pin.length ? `0 0 14px ${theme.accent.cyan}65` : "none",
-                          transform: i < pin.length ? "scale(1.15)" : "scale(1)",
-                        }} />
-                      ))}
-                    </div>
-                    {pinError && !pinIsLocked && (
-                      <div style={{ color: "#f87171", fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 8, padding: "6px 14px", textAlign: "center" }}>
-                        ⚠ {pinError}
-                      </div>
-                    )}
-                    {error && !pinError && (
-                      <div style={{ color: "#f87171", fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.18)", borderRadius: 8, padding: "6px 14px", textAlign: "center" }}>
-                        ⚠ {error}
-                      </div>
-                    )}
-
-                     {!isMobile && (
-                      <div style={{
-                        marginTop: 4,
-                        fontSize: 10,
-                        fontFamily: theme.font.mono,
-                        color: theme.text.muted,
-                        opacity: 0.75,
-                        letterSpacing: "0.02em",
-                        textAlign: "center",
-                      }}>
-                        ⌨️ Type digits · ⌫ Backspace · Esc to cancel
-                      </div>
-                    )}  
-                  </div>
-
-                  {/* Numpad */}
-                  <div style={{ width: "100%" }}>
-                  <div style={{ background: "rgba(255,255,255,0.025)", border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: isMobile ? "10px 8px" : "12px 10px", display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: numGap }}>
-                  {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
-                      <button key={k}
-                        className={k === "⌫" ? "num-del" : k ? "num-btn" : ""}
-                        disabled={!k || pinIsLocked}
-                        onClick={() => { if (k) handlePinKey(k); }}
-                        style={{
-                          height: btnH,
-                          border: "none",
-                          borderRadius: 12,
-                          background: k === "⌫" ? "rgba(248,113,113,0.08)" : k ? "rgba(255,255,255,0.06)" : "transparent",
-                          color: k === "⌫" ? "#f87171" : theme.text.primary,
-                          fontFamily: theme.font.mono,
-                          fontSize: k === "⌫" ? 20 : isMobile ? 24 : 26,
-                          fontWeight: 400,
-                          cursor: k && !pinIsLocked ? "pointer" : "default",
-                          opacity: pinIsLocked ? 0.3 : 1,
-                          transition: "background 0.1s, transform 0.08s",
-                        }}>
-                        {k}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                </div>
-              </div>
-            )}
-          </div>
-        );
-      })()}
+    
 
       {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
       {addingProduct && (
@@ -2912,7 +2347,7 @@ const exactSkuMatch = useMemo(() => {
     text={toast.text}
     theme={theme}
     bottomOffset={NAV_H}
-    onEdit={toast.lastKey ? () => editItem(toast.lastKey!) : undefined}
+    onEdit={toast.lastKey ? () => { setToast(null); setPayOpen(true); } : undefined}
   onUndo={() => undoItem(toast.lastKey!)}
   />
 )}
@@ -3004,71 +2439,130 @@ const exactSkuMatch = useMemo(() => {
               </button>
             )}
           </div>
-          {cart.map(item => {
-            const isListed = item.kind === "listed";
-            const remaining = isListed ? item.allocation.remaining : Infinity;
-            return (
-              <div
-                key={item.key}
-                style={{
-                  display: "flex", alignItems: "center", gap: 8,
-                  padding: "8px 0", borderBottom: `1px solid ${theme.border.default}`,
-                }}
-              >
-                <ProductImage imageUrl={cartItemImage(item)} productName={cartItemName(item)} size={32} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {cartItemName(item)}
-                  </div>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                    {fmt(item.sellPrice)} each
-                  </div>
-                </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-                  <button
-                    onClick={() => {
-                      if (item.quantity <= 1) handleRemoveFromCart(item.key);
-                      else handleUpdateCartQty(item.key, item.quantity - 1);
-                    }}
-                    style={{ width: 24, height: 24, border: `1px solid ${theme.border.default}`, borderRadius: 6, background: "transparent", color: theme.text.primary, cursor: "pointer", fontSize: 13, lineHeight: 1 }}
-                  >
-                    {item.quantity <= 1 ? "✕" : "−"}
-                  </button>
-                  <span style={{ fontFamily: theme.font.mono, fontSize: 13, minWidth: 20, textAlign: "center" }}>{item.quantity}</span>
-                  <button
-                    onClick={() => { if (!isListed || item.quantity < remaining) handleUpdateCartQty(item.key, item.quantity + 1); }}
-                    disabled={isListed && item.quantity >= remaining}
-                    style={{ width: 24, height: 24, border: `1px solid ${theme.border.default}`, borderRadius: 6, background: "transparent", color: theme.accent.cyan, cursor: "pointer", fontSize: 13, lineHeight: 1, opacity: isListed && item.quantity >= remaining ? 0.35 : 1 }}
-                  >
-                    +
-                  </button>
-                </div>
-                <div style={{ fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, color: theme.accent.gold, minWidth: 58, textAlign: "right", flexShrink: 0 }}>
-                  {fmt(item.sellPrice * item.quantity)}
-                </div>
-                {item.kind === "listed" && (
-                  <button
-                    onClick={() => editItem(item.key)}
-                    aria-label="Edit price"
-                    style={{
-                      flexShrink: 0, width: 26, height: 26, borderRadius: 7,
-                      border: `1px solid ${theme.border.default}`,
-                      background: "transparent", color: theme.accent.cyan,
-                      cursor: "pointer", fontSize: 13,
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                    }}
-                  >
-                    ✎
-                  </button>
-                )}
-              </div>
-            );
-          })}
+          
+                <div style={{
+  maxHeight: 260,
+  overflowY: "auto",
+  overflowX: "hidden",
+  paddingRight: 4,
+  WebkitOverflowScrolling: "touch",
+}}>
+  {/* Column headers */}
+  <div style={{
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+    gap: 6, alignItems: "center",
+    fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+    textTransform: "uppercase", letterSpacing: "0.06em",
+    padding: "0 0 6px",
+    position: "sticky", top: 0,
+    background: theme.bg.card,
+    zIndex: 1,
+  }}>
+    <span>Product</span>
+    <span style={{ textAlign: "center" }}>Qty</span>
+    <span style={{ textAlign: "center" }}>Price</span>
+    <span style={{ textAlign: "right" }}>Total</span>
+    <span />
+  </div>
 
+  {cart.map(item => {
+    const isListed  = item.kind === "listed";
+    const remaining = isListed ? item.allocation.remaining : 9999;
+    const minPrice  = isListed ? item.allocation.product.price : 0;
+    return (
+      <div key={item.key} style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+        gap: 6, alignItems: "center",
+        padding: "7px 0",
+        borderBottom: `1px solid ${theme.border.default}`,
+      }}>
+        {/* Product — the minmax(0,1fr) col truncates cleanly */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+          <ProductImage imageUrl={cartItemImage(item)} productName={cartItemName(item)} size={28} />
+          <div style={{ minWidth: 0 }}>
+            <div style={{
+              fontSize: 12, fontWeight: 600,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {cartItemName(item)}
+            </div>
+            {!isListed && (
+              <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc" }}>unlisted</span>
+            )}
+          </div>
+        </div>
+
+        {/* Qty */}
+        <input
+          type="number" inputMode="numeric" min={1} max={remaining}
+          value={item.quantity}
+          onChange={e => {
+            const v = parseInt(e.target.value, 10);
+            if (isNaN(v) || v < 1) return;
+            handleUpdateCartQty(item.key, Math.min(v, remaining));
+          }}
+          style={{
+            width: "100%", padding: "5px 4px", boxSizing: "border-box",
+            background: theme.bg.input,
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: 7, color: theme.text.primary,
+            fontFamily: theme.font.mono, fontSize: 12,
+            textAlign: "center", outline: "none",
+          }}
+        />
+
+        {/* Price */}
+        <input
+          type="number" inputMode="numeric" min={minPrice}
+          value={item.sellPrice}
+          onChange={e => {
+            const v = Number(e.target.value);
+            if (isNaN(v) || v < 0) return;
+            handleUpdateCartPrice(item.key, v);
+          }}
+          style={{
+            width: "100%", padding: "5px 4px", boxSizing: "border-box",
+            background: theme.bg.input,
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: 7, color: theme.text.primary,
+            fontFamily: theme.font.mono, fontSize: 12,
+            textAlign: "center", outline: "none",
+          }}
+        />
+
+        {/* Line total */}
+        <div style={{
+          fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+          color: theme.accent.gold, textAlign: "right",
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          {fmt(item.sellPrice * item.quantity)}
+        </div>
+
+        {/* Remove */}
+        <button
+          onClick={() => handleRemoveFromCart(item.key)}
+          aria-label="Remove item"
+          style={{
+            width: 22, height: 22, padding: 0, lineHeight: 1,
+            border: "none", background: "transparent",
+            color: "#f87171", cursor: "pointer", fontSize: 14,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >
+          ✕
+        </button>
+      </div>
+    );
+  })}
+</div>
           {/* Add more link */}
           <button
             onClick={() => {
               setPayOpen(false);
+              setSearchQuery("");
               setError("");
             }}
             style={{
@@ -3266,6 +2760,14 @@ const exactSkuMatch = useMemo(() => {
           <button
           key={sa.id}
           onClick={() => {
+            if (cart.length === 0) {
+              setError("Add at least one product to the cart first.");
+              return;
+            }
+            if (!payMethod) {
+              setError("Choose a payment method before selecting an agent.");
+              return;
+            }
             if (payMethod === "credit" && !customerName.trim()) {
               setError("Enter the customer's name before selecting an agent for a credit sale.");
               setPinShake(true);
