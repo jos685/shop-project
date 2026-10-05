@@ -16,8 +16,10 @@ import {
   AlertTriangle,
 } from "lucide-react";
 
-const LOG_PAGE_SIZE = 15;
-const TX_PAGE_SIZE  = 20;   // for recent transactions pagination
+const LOG_PAGE_SIZE = 12; // for activity log pagination
+const TX_PAGE_SIZE  = 12;   // for recent transactions pagination
+
+
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -671,16 +673,14 @@ useEffect(() => {
     try {
       // shop_transactions is flat — one row per product line.
       // No join table needed; every field we want is right here.
-      const { data: rows, error } = await supabase
-        .from("shop_transactions")
-        .select("id, quantity, unit_price, amount, payment_method, cash_amount, mpesa_amount, seller_agent_id, created_at, status")
-        .eq("shop_id", shop.id)
-        .eq("product_id", productId)
-        .order("created_at", { ascending: false })
-        .limit(20);
-  
+      const { data: rows, error } = await supabase.rpc("get_shop_product_transactions", {
+        p_shop_id:    shop.id,
+        p_product_id: productId,
+        p_limit:      500,
+      });
+
       if (error) throw error;
-  
+       
       // Resolve seller name locally from the already-loaded shopAgents list.
       // shopAgents[].agent.id === shop_transactions.seller_agent_id
       const agentNameById = new Map<string, string>();
@@ -721,21 +721,20 @@ useEffect(() => {
         "shop_sale_recorded",
         "stock_adjusted",
         "removed_from_shop",
-        "shop_return_recorded",     // a customer returned a product to this shop
-        "shop_return_restocked",    // the returned unit was added back to shop stock
-        "shop_return_to_warehouse", // the returned unit was sent back to the owner
+        "shop_return_recorded",
+        "shop_return_restocked",
+        "shop_return_to_warehouse",
       ];
   
-      const { data, error } = await supabase
-        .from("product_activity_log")
-        .select("id, action, quantity, note, created_at, agent_id")
-        .eq("product_id", productId)
-        .in("action", SHOP_VISIBLE_ACTIONS)     // ⬅️ whitelist
-        .order("created_at", { ascending: false })
-        .limit(100);
+      const { data, error } = await supabase.rpc("get_shop_activity_log", {
+        p_shop_id:    shop.id,
+        p_product_id: productId,
+        p_actions:    SHOP_VISIBLE_ACTIONS,
+        p_limit:      1000,
+      });
   
       if (error) {
-        console.error("fetchLog error:", error.message);
+        console.error("get_shop_activity_log error:", error.message);
         setActivityLog(prev => ({ ...prev, [productId]: [] }));
         return;
       }

@@ -10,6 +10,8 @@ import { getQueue, type QueuedSale } from "../lib/offlineQueue";
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
+
+
 interface LocalTransaction {
   id: string;
   amount: number;
@@ -73,6 +75,7 @@ interface ReturnItem {
   status: string | null;
   credit_sale_id: string | null;
   outstanding: number | null; // outstanding credit balance at time of return modal open
+  amount_paid_for_sale: number | null; // ← NEW: what customer actually paid
   return_qty: number;
 }
 
@@ -185,6 +188,7 @@ export default function PosTransactionsPage() {
   const [returnProcessing,   setReturnProcessing]   = useState(false);
   const [returnError,        setReturnError]        = useState("");
   const [returnSuccess,    setReturnSuccess]    = useState(false);
+  const [returnMethod, setReturnMethod] = useState<"cash" | "mpesa" | "split" | null>(null);
 
   // Reload queued sales whenever the queue changes
   useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
@@ -274,6 +278,7 @@ export default function PosTransactionsPage() {
           status:           tx.status,
           credit_sale_id:   tx.credit_sale_id ?? null,
           outstanding:      null,
+          amount_paid_for_sale: null,
           return_qty:       0,
         };
       })
@@ -281,27 +286,39 @@ export default function PosTransactionsPage() {
 
     // Fetch outstanding balance for any credit items
     const creditSaleIds = [...new Set(items.map(i => i.credit_sale_id).filter(Boolean))] as string[];
-    if (creditSaleIds.length > 0) {
-      const { data: creditRows } = await supabase
-        .from("shop_credit_sales")
-        .select("id, amount, amount_paid")
-        .in("id", creditSaleIds);
-      const balanceMap: Record<string, number> = {};
-      for (const cs of creditRows ?? []) {
-        balanceMap[cs.id] = Math.max(0, (cs.amount ?? 0) - (cs.amount_paid ?? 0));
-      }
-      items = items.map(item =>
-        item.credit_sale_id && balanceMap[item.credit_sale_id] !== undefined
-          ? { ...item, outstanding: balanceMap[item.credit_sale_id] }
-          : item
-      );
-    }
+if (creditSaleIds.length > 0) {
+  const { data: creditRows } = await supabase
+    .from("shop_credit_sales")
+    .select("id, amount, amount_paid")
+    .in("id", creditSaleIds);
+
+  // amount_paid is the source of truth for what the customer actually handed over.
+  // We do NOT trust `amount` here because some flows store the remaining balance in it.
+  const paidMap: Record<string, number> = {};
+  for (const cs of creditRows ?? []) {
+    paidMap[cs.id] = Math.max(0, Number(cs.amount_paid) || 0);
+  }
+
+  items = items.map(item => {
+    if (!item.credit_sale_id) return item;
+    const paid = paidMap[item.credit_sale_id];
+    if (paid === undefined) return item;
+
+    // Sale value = unit_price × original qty. This is the total customer was charged
+    // for this line, regardless of how the credit row was written.
+    const saleValue = Math.round(item.unit_price * item.original_qty);
+    const outstanding = Math.max(0, saleValue - paid);
+
+    return { ...item, amount_paid_for_sale: paid, outstanding };
+  });
+}
 
     setReturnModal({ group, items });
     setReturnReason("");
     setReturnCashRefund(""); setReturnMpesaRefund("");
     setReturnError("");
     setReturnSuccess(false);
+    setReturnMethod(null); 
   }
 
   function updateReturnQty(txn_id: string, qty: number) {
@@ -319,87 +336,77 @@ export default function PosTransactionsPage() {
   }
 
   async function handleReturn() {
-    //console.log("🔁 handleReturn called");
     if (!returnModal || !shop) return;
     if (!returnReason.trim()) { setReturnError("Please provide a reason for the return."); return; }
     const toReturn = returnModal.items.filter(i => i.return_qty > 0);
     if (toReturn.length === 0) { setReturnError("Select at least one item to return (qty > 0)."); return; }
-   
-        // ── Figure out how much CASH actually leaves the till ───────────────
-    // Credit returns only refund cash for the portion that exceeds what the
-    // customer still owes. Unpaid credit returns produce ZERO cash refund.
-    const expectedRefund = (() => {
-      const tracker: Record<string, number> = {};
-      for (const it of toReturn) {
-        if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
-          tracker[it.credit_sale_id] = it.outstanding ?? 0;
-        }
+    if (!returnMethod) {
+      setReturnError("Choose a refund method above: Cash, M-Pesa, or Split.");
+      return;
+    }
+  
+    // ── ① Build the per-item refund breakdown (this is the moved block) ──
+    type RefundBreakdown = {
+      item: ReturnItem;
+      returnValue: number;
+      debtReduction: number;
+      cashRefund: number;
+    };
+    const breakdown: RefundBreakdown[] = [];
+    let expectedRefund = 0;
+  
+    for (const it of toReturn) {
+      const returnValue = Math.round(it.unit_price * it.return_qty);
+      const isCredit = it.status === "credit" || it.status === "credit_partial";
+      if (isCredit && it.credit_sale_id) {
+        const paid        = it.amount_paid_for_sale ?? 0;
+        const outstanding = it.outstanding ?? 0;
+        const debtReduction = Math.min(returnValue, outstanding);
+        const cashRefund    = Math.min(returnValue - debtReduction, paid);
+        breakdown.push({ item: it, returnValue, debtReduction, cashRefund });
+        expectedRefund += cashRefund;
+      } else {
+        breakdown.push({ item: it, returnValue, debtReduction: 0, cashRefund: returnValue });
+        expectedRefund += returnValue;
       }
-      let sum = 0;
-      for (const it of toReturn) {
-        const isCredit = it.status === "credit" || it.status === "credit_partial";
-        const returnValue = Math.round(it.unit_price * it.return_qty);
-        if (isCredit && it.credit_sale_id) {
-          const cur = tracker[it.credit_sale_id] ?? 0;
-          sum += Math.max(0, returnValue - cur);
-          tracker[it.credit_sale_id] = Math.max(0, cur - returnValue);
-        } else {
-          sum += returnValue;
-        }
-      }
-      return sum;
-    })();
-
+    }
+  
+    // ── ② Validate entered amounts ──
     const refundCashTotal  = Math.round(Number(returnCashRefund)  || 0);
     const refundMpesaTotal = Math.round(Number(returnMpesaRefund) || 0);
 
-    // Only demand cash/mpesa figures if money is genuinely owed back
-    if (expectedRefund > 0 && refundCashTotal === 0 && refundMpesaTotal === 0) {
-      setReturnError(`Enter a Cash or M-Pesa refund amount (expected ${expectedRefund.toLocaleString()}).`);
+    if (returnMethod === "cash"  && refundCashTotal  !== expectedRefund) {
+      setReturnError(`Cash amount must equal ${fmt(expectedRefund)}.`);
+      return;
+    }
+    if (returnMethod === "mpesa" && refundMpesaTotal !== expectedRefund) {
+      setReturnError(`M-Pesa amount must equal ${fmt(expectedRefund)}.`);
+      return;
+    }
+    if (returnMethod === "split" && refundCashTotal + refundMpesaTotal !== expectedRefund) {
+      setReturnError(`Split total must equal ${fmt(expectedRefund)}.`);
       return;
     }
   
     setReturnProcessing(true);
     setReturnError("");
     try {
-      const firstItem  = returnModal.group.items[0];
-      const totalRefundAmt = expectedRefund;   // ← now the real cash total, not goods value
-
-      // When there is no cash refund (unpaid-credit return), don't tag it as "cash"
-      const autoMethod = refundCashTotal > 0 && refundMpesaTotal > 0 ? "split"
-                       : refundMpesaTotal > 0 ? "mpesa"
-                       : refundCashTotal  > 0 ? "cash"
-                       : null;             // ← null = pure debt reduction
-
-      // Second pass to build rows — same tracker so multiple items share one balance
-      const tracker: Record<string, number> = {};
-      for (const it of toReturn) {
-        if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
-          tracker[it.credit_sale_id] = it.outstanding ?? 0;
-        }
-      }
-
+      const firstItem = returnModal.group.items[0];
+      const autoMethod =
+        refundCashTotal > 0 && refundMpesaTotal > 0 ? "split" :
+        refundMpesaTotal > 0                        ? "mpesa" :
+        refundCashTotal  > 0                        ? "cash"  :
+                                                      null;
+  
       let allocCash = 0, allocMpesa = 0;
-      const rows = toReturn.map((item, idx) => {
-        const isCredit = item.status === "credit" || item.status === "credit_partial";
-        const returnValue = Math.round(item.unit_price * item.return_qty);
-
-        let amountRefunded: number;
-        if (isCredit && item.credit_sale_id) {
-          const cur = tracker[item.credit_sale_id] ?? 0;
-          amountRefunded = Math.max(0, returnValue - cur);
-          tracker[item.credit_sale_id] = Math.max(0, cur - returnValue);
-        } else {
-          amountRefunded = returnValue;
-        }
-
-        const isLast = idx === toReturn.length - 1;
+      const rows = breakdown.map((b, idx) => {
+        const isLast = idx === breakdown.length - 1;
         let itemCash: number, itemMpesa: number;
         if (isLast) {
           itemCash  = refundCashTotal  - allocCash;
           itemMpesa = refundMpesaTotal - allocMpesa;
         } else {
-          const ratio = totalRefundAmt > 0 ? amountRefunded / totalRefundAmt : 0;
+          const ratio = expectedRefund > 0 ? b.cashRefund / expectedRefund : 0;
           itemCash  = Math.round(refundCashTotal  * ratio);
           itemMpesa = Math.round(refundMpesaTotal * ratio);
           allocCash  += itemCash;
@@ -408,26 +415,30 @@ export default function PosTransactionsPage() {
         return {
           owner_id:                shop.owner_id,
           source:                  "shop",
-          original_transaction_id: item.txn_id,
+          original_transaction_id: b.item.txn_id,
           shop_id:                 shop.id,
           agent_id:                firstItem.seller_agent_id ?? null,
-          product_id:              item.product_id,
-          product_name:            item.product_name,
-          quantity_returned:       item.return_qty,
-          unit_price:              item.unit_price,
-          amount_refunded:         amountRefunded,     // ← 0 for unpaid credit
+          product_id:              b.item.product_id,
+          product_name:            b.item.product_name,
+          quantity_returned:       b.item.return_qty,
+          unit_price:              b.item.unit_price,
+          amount_refunded:         b.cashRefund,
           reason:                  returnReason.trim(),
           actor_name:              firstItem.seller_name ?? null,
           actor_code:              firstItem.seller_code ?? null,
-          refund_method:           autoMethod,         // ← null if pure debt reduction
+          refund_method:           autoMethod,
           refund_payment_method:   autoMethod,
           refund_cash_amount:      itemCash,
           refund_mpesa_amount:     itemMpesa,
         };
       });
+
+      
+   
       const { error } = await supabase.rpc("insert_transaction_returns", { p_rows: rows });
+    
       if (error) { setReturnError(error.message); setReturnProcessing(false); return; }
-  
+
       // ─── UPDATE SHOP ALLOCATION STOCK USING RPC (bypasses RLS) ────
             for (const item of toReturn) {
               if (!item.product_id) {
@@ -802,6 +813,7 @@ export default function PosTransactionsPage() {
             if (!map[r.original_transaction_id]) map[r.original_transaction_id] = [];
             map[r.original_transaction_id].push(r as TransactionReturn);
           }
+   
           setReturnsMap(map);
         });
     };
@@ -940,11 +952,11 @@ export default function PosTransactionsPage() {
       return returned >= t.quantity && t.quantity > 0;
     };
 
-  const totalRefunded = displayed.reduce((s, t) => s + effectiveRefund(t), 0);
-  const cashRefunded = Math.round(displayed.reduce((s, t) => {
+  const totalRefunded = transactions.reduce((s, t) => s + effectiveRefund(t), 0);
+  const cashRefunded = Math.round(transactions.reduce((s, t) => {
     for (const r of (returnsMap[t.id] ?? [])) {
       const method = r.refund_method ?? t.payment_method;
-      if (method === "cash") {
+      if (r.refund_method === "cash") {
         s += r.amount_refunded;
       } else if (method === "split") {
         const ca = r.refund_cash_amount ?? 0;
@@ -958,10 +970,10 @@ export default function PosTransactionsPage() {
     }
     return s;
   }, 0));
-  const mpesaRefunded = Math.round(displayed.reduce((s, t) => {
+  const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
     for (const r of (returnsMap[t.id] ?? [])) {
       const method = r.refund_method ?? t.payment_method;
-      if (method === "mpesa") {
+      if (r.refund_method === "mpesa") {
         s += r.amount_refunded;
       } else if (method === "split") {
         const ca = r.refund_cash_amount ?? 0;
@@ -983,6 +995,7 @@ export default function PosTransactionsPage() {
     return returnedQty > 0 ? Math.round((returnedQty / t.quantity) * t.commission_earned) : 0;
   };
   const totalCommissionClawed = displayed.reduce((s, t) => s + calcClawback(t), 0);
+
 
   // Helper: collapse multi-item queued sale to a readable label
   const queuedLabel = (q: QueuedSale) =>
@@ -2244,9 +2257,9 @@ export default function PosTransactionsPage() {
                   <div style={{ padding: "12px 16px", background: "rgba(52,211,153,0.07)", border: "1px solid rgba(52,211,153,0.25)", borderRadius: 12 }}>
                     <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                       <div>
-                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700 }}>💵 Cash Refund to Customer</div>
+                        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700 }}> Money Refund to Customer</div>
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "rgba(52,211,153,0.6)", marginTop: 2 }}>
-                          {totalBalanceReduction > 0 ? "Excess after clearing outstanding balance" : "Agent hands this cash back to customer"}
+                          Returned to customer via {returnMethod === "split" ? "Cash + M-Pesa" : returnMethod === "mpesa" ? "M-Pesa" : "Cash"}
                         </div>
                       </div>
                       <span style={{ fontSize: 16, fontFamily: theme.font.mono, fontWeight: 800, color: "#34d399" }}>{fmt(totalCashRefund)}</span>
@@ -2266,91 +2279,160 @@ export default function PosTransactionsPage() {
             );
           })()}
 
-          {/* Refund amounts — always-visible dual fields, method auto-detected from what is entered */}
-          {(() => {
-            // Expected CASH refund: only the excess beyond what the customer still owes
-            const tracker: Record<string, number> = {};
-            for (const it of returnModal.items) {
-              if (it.credit_sale_id && tracker[it.credit_sale_id] === undefined) {
-                tracker[it.credit_sale_id] = it.outstanding ?? 0;
-              }
-            }
-            let totalRefund = 0;
-            for (const it of returnModal.items) {
-              if (it.return_qty <= 0) continue;
-              const isCredit = it.status === "credit" || it.status === "credit_partial";
-              const returnValue = Math.round(it.return_qty * it.unit_price);
-              if (isCredit && it.credit_sale_id) {
-                const cur = tracker[it.credit_sale_id] ?? 0;
-                totalRefund += Math.max(0, returnValue - cur);
-                tracker[it.credit_sale_id] = Math.max(0, cur - returnValue);
-              } else {
-                totalRefund += returnValue;
-              }
-            }
-            if (totalRefund <= 0) {
-              // No cash to refund — show a clear explanatory banner instead
-              return returnModal.items.some(i => i.return_qty > 0) ? (
-                <div style={{ padding: "12px 16px", background: "rgba(192,132,252,0.08)",
-                  border: "1px solid rgba(192,132,252,0.25)", borderRadius: 12,
-                  fontSize: 12, fontFamily: theme.font.mono, color: "#c084fc" }}>
-                  🧾 No cash refund — this is an unpaid credit return. The customer's debt will simply be reduced.
-                </div>
-              ) : null;
-            }
-            const c   = Math.round(Number(returnCashRefund)  || 0);
-            const m   = Math.round(Number(returnMpesaRefund) || 0);
-            const tot = c + m;
-            const diff     = tot > 0 ? tot - totalRefund : null;
-            const balanced = diff !== null && diff === 0;
-            const balColor = diff === null ? theme.text.muted : balanced ? "#34d399" : diff > 0 ? "#f87171" : "#fbbf24";
+         {/* How much cash/mpesa will actually leave the till for this return */}
+{(() => {
+  // Compute the expected CASH refund using the same rules as handleReturn
+  let expectedRefund = 0;
+  for (const it of returnModal.items) {
+    if (it.return_qty <= 0) continue;
+    const returnValue = Math.round(it.return_qty * it.unit_price);
+    const isCredit = it.status === "credit" || it.status === "credit_partial";
+    if (isCredit && it.credit_sale_id) {
+      const paid        = it.amount_paid_for_sale ?? 0;
+      const outstanding = it.outstanding ?? 0;
+      const debtReduction = Math.min(returnValue, outstanding);
+      expectedRefund += Math.min(returnValue - debtReduction, paid);
+    } else {
+      expectedRefund += returnValue;
+    }
+  }
+  const anySelected = returnModal.items.some(i => i.return_qty > 0);
+  if (!anySelected) return null;
+
+  // ── Unpaid credit → nothing to refund in cash ──────────────────────
+  if (expectedRefund <= 0) {
+    return (
+      <div style={{
+        padding: "12px 16px", background: "rgba(192,132,252,0.08)",
+        border: "1px solid rgba(192,132,252,0.25)", borderRadius: 12,
+        fontSize: 12, fontFamily: theme.font.mono, color: "#c084fc",
+      }}>
+        🧾 No cash refund — this is an unpaid credit return.
+        The customer's outstanding balance will simply be reduced.
+      </div>
+    );
+  }
+
+  const c   = Math.round(Number(returnCashRefund)  || 0);
+  const m   = Math.round(Number(returnMpesaRefund) || 0);
+  const tot = c + m;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+
+      {/* Method selector */}
+      <div>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                      textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+          Refund Method · Expected {fmt(expectedRefund)}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {([
+            { key: "cash",  icon: "💵", label: "Cash",   color: "#34d399" },
+            { key: "mpesa", icon: "📱", label: "M-Pesa", color: theme.accent.cyan },
+            { key: "split", icon: "⚡", label: "Split",  color: "#fbbf24" },
+          ] as const).map(({ key, icon, label, color }) => {
+            const active = returnMethod === key;
             return (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em" }}>
-                  Refund amounts · Expected cash: {fmt(totalRefund)}
-                </label>
-             
-
-                {/* Cash field */}
-                <div>
-                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 4, textTransform: "uppercase" }}>💵 Cash</label>
-                  <input type="text" inputMode="numeric" value={returnCashRefund}
-                    onChange={e => { setReturnCashRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
-                    placeholder="0"
-                    style={{ width: "100%", boxSizing: "border-box" as const, background: theme.bg.input, border: "1px solid rgba(52,211,153,0.4)", borderRadius: 10, padding: "11px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none" }} />
-                  {m > 0 && c === 0 && (
-                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399", opacity: 0.6, marginTop: 3 }}>
-                      💡 Type {fmt(Math.max(0, totalRefund - m))} to balance
-                    </div>
-                  )}
-                </div>
-
-                {/* M-Pesa field */}
-                <div>
-                  <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 4, textTransform: "uppercase" }}>📱 M-Pesa</label>
-                  <input type="text" inputMode="numeric" value={returnMpesaRefund}
-                    onChange={e => { setReturnMpesaRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
-                    placeholder="0"
-                    style={{ width: "100%", boxSizing: "border-box" as const, background: theme.bg.input, border: `1px solid rgba(6,182,212,0.4)`, borderRadius: 10, padding: "11px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none" }} />
-                  {c > 0 && m === 0 && (
-                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#06b6d4", opacity: 0.6, marginTop: 3 }}>
-                      💡 Type {fmt(Math.max(0, totalRefund - c))} to balance
-                    </div>
-                  )}
-                </div>
-
-                {/* Running total */}
-                {tot > 0 && (
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 12px", background: balanced ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.03)", border: `1px solid ${balanced ? "rgba(52,211,153,0.25)" : theme.border.default}`, borderRadius: 9 }}>
-                    <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: balColor }}>
-                      {balanced ? "✓ Balanced" : diff !== null && diff > 0 ? `⚠ KSh ${diff.toLocaleString()} over` : diff !== null ? `⚠ KSh ${Math.abs(diff).toLocaleString()} under` : ""}
-                    </span>
-                    <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: balColor }}>{fmt(tot)}</span>
-                  </div>
-                )}
-              </div>
+              <button key={key}
+                onClick={() => {
+                  setReturnMethod(key);
+                  setReturnError("");
+                  if (key === "cash") {
+                    setReturnCashRefund(String(expectedRefund));
+                    setReturnMpesaRefund("");
+                  } else if (key === "mpesa") {
+                    setReturnMpesaRefund(String(expectedRefund));
+                    setReturnCashRefund("");
+                  } else {
+                    // Split — leave whatever was typed, but reset if both were auto-filled
+                    setReturnCashRefund("");
+                    setReturnMpesaRefund("");
+                  }
+                }}
+                style={{
+                  flex: 1, padding: "10px 0", borderRadius: 10,
+                  background: active ? `${color}22` : "transparent",
+                  border: `1px solid ${active ? color : theme.border.default}`,
+                  color: active ? color : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 500,
+                  cursor: "pointer",
+                }}>
+                {icon} {label}
+              </button>
             );
-          })()}
+          })}
+        </div>
+      </div>
+
+      {/* Cash input */}
+      {(returnMethod === "cash" || returnMethod === "split") && (
+        <div>
+          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#34d399",
+                          display: "block", marginBottom: 4, textTransform: "uppercase" }}>
+            💵 Cash refund
+          </label>
+          <input type="text" inputMode="numeric" value={returnCashRefund}
+            onChange={e => { setReturnCashRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
+            placeholder="0"
+            style={{
+              width: "100%", boxSizing: "border-box",
+              background: theme.bg.input, border: "1px solid rgba(52,211,153,0.4)",
+              borderRadius: 10, padding: "11px 14px", color: theme.text.primary,
+              fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none",
+            }} />
+        </div>
+      )}
+
+      {/* M-Pesa input */}
+      {(returnMethod === "mpesa" || returnMethod === "split") && (
+        <div>
+          <label style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.accent.cyan,
+                          display: "block", marginBottom: 4, textTransform: "uppercase" }}>
+            📱 M-Pesa refund
+          </label>
+          <input type="text" inputMode="numeric" value={returnMpesaRefund}
+            onChange={e => { setReturnMpesaRefund(e.target.value.replace(/[^0-9]/g, "")); setReturnError(""); }}
+            placeholder="0"
+            style={{
+              width: "100%", boxSizing: "border-box",
+              background: theme.bg.input, border: `1px solid rgba(6,182,212,0.4)`,
+              borderRadius: 10, padding: "11px 14px", color: theme.text.primary,
+              fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700, outline: "none",
+            }} />
+          {returnMethod === "split" && (
+            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>
+              💡 Remaining to allocate: {fmt(Math.max(0, expectedRefund - tot))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Running total / balance */}
+      {tot > 0 && (() => {
+        const diff = tot - expectedRefund;
+        const balanced = diff === 0;
+        const col = balanced ? "#34d399" : diff > 0 ? "#f87171" : "#fbbf24";
+        return (
+          <div style={{
+            display: "flex", justifyContent: "space-between", alignItems: "center",
+            padding: "9px 12px",
+            background: balanced ? "rgba(52,211,153,0.06)" : "rgba(255,255,255,0.03)",
+            border: `1px solid ${balanced ? "rgba(52,211,153,0.25)" : theme.border.default}`,
+            borderRadius: 9,
+          }}>
+            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: col }}>
+              {balanced ? "✓ Balanced" : diff > 0 ? `⚠ ${fmt(diff)} over` : `⚠ ${fmt(-diff)} under`}
+            </span>
+            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: col }}>
+              {fmt(tot)} / {fmt(expectedRefund)}
+            </span>
+          </div>
+        );
+      })()}
+    </div>
+  );
+})()}
 
           {/* Reason */}
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
