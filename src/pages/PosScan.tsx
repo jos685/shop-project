@@ -2515,7 +2515,7 @@ const exactSkuMatch = useMemo(() => {
       </div>
 
       {/* ── Scrollable body ── */}
-      <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "12px 18px 18px" }}>
+      <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "10px 14px 14px" }}>
 
                 {/* ── Cart items — editable ── */}
                 <div style={{ marginBottom: 14 }}>
@@ -2545,7 +2545,7 @@ const exactSkuMatch = useMemo(() => {
           </div>
           
                 <div style={{
-  maxHeight: 260,
+  maxHeight: "min(260px, 40vh)",
   overflowY: "auto",
   overflowX: "hidden",
   paddingRight: 4,

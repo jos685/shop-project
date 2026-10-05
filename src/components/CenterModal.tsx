@@ -56,28 +56,25 @@ export default function CenterModal({
       onClick={onClose}
       style={{
         position: "fixed",
-        // ⬇️ NOT inset: 0 — we start below the nav on purpose
         top:    topOffset,
         left:   0,
         right:  0,
         bottom: 0,
         zIndex: 60,
-
+  
         background: "rgba(0,0,0,0.65)",
         backdropFilter: "blur(5px)",
         WebkitBackdropFilter: "blur(5px)",
-
+  
         display: "flex",
-        alignItems: "flex-start",
+        alignItems: "center",        // ← center, not flex-start
         justifyContent: "center",
-
-        paddingTop:    0,           // no extra top pad — the panel starts here
+  
+        paddingTop:    NAV_GAP,
         paddingBottom: BOTTOM_GAP,
         paddingLeft:   SIDE_GAP,
         paddingRight:  SIDE_GAP,
-
-        overflowY: "auto",
-        WebkitOverflowScrolling: "touch",
+  
         animation: "fadeIn 0.15s ease both",
       }}
     >
@@ -90,20 +87,12 @@ export default function CenterModal({
           boxShadow: "0 24px 60px rgba(0,0,0,0.6)",
           width: "100%",
           maxWidth: `min(${maxWidth}px, calc(100vw - ${SIDE_GAP * 2}px))`,
-
-          // ⬇️ panel is capped to the visible area BELOW the nav, so it
-          //     can never grow past its own container
           maxHeight: panelMaxHeight,
-
+  
           display: "flex",
           flexDirection: "column",
           overflow: "hidden",
-
-          // ⬇️ this margin keeps it visually centred when short, and
-          //     pinned to the top of the container (i.e. just below the
-          //     nav) when tall — never pushing into the nav
-          margin: "auto 0",
-
+  
           animation: "zoomIn 0.2s ease both",
         }}
       >
