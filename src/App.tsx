@@ -33,12 +33,7 @@ function PosApp() {
   const { shop } = useShopAuth();
   const [showTour, setShowTour] = useState(false);
 
-  // Auto-show tour on first login for this shop
-  useEffect(() => {
-    if (!shop) return;
-    const seen = localStorage.getItem(`pos_tour_shown_${shop.id}`);
-    if (!seen) setShowTour(true);
-  }, [shop?.id]);
+ 
 
   // Allow any page to trigger the tour via a custom event
   useEffect(() => {

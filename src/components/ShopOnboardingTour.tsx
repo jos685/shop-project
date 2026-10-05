@@ -275,7 +275,7 @@ interface Props {
   onDone: () => void;
 }
 
-export default function ShopOnboardingTour({ shopId, shopName, onDone }: Props) {
+export default function ShopOnboardingTour({ shopName, onDone }: Props) {
   const navigate = useNavigate();
   const [step,          setStep]          = useState(0);
   const [rect,          setRect]          = useState<DOMRect | null>(null);
@@ -289,8 +289,6 @@ export default function ShopOnboardingTour({ shopId, shopName, onDone }: Props) 
   const isCentered = isWelcome || isComplete;
 
   const markDone = () => {
-    localStorage.setItem(`pos_tour_shown_${shopId}`, "1");
-    navigate("/pos");
     onDone();
   };
 

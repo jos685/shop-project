@@ -928,6 +928,18 @@ export default function PosTransactionsPage() {
   const effectiveRefund = (t: LocalTransaction) =>
     (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
 
+
+    // Compute how much of a single transaction was actually returned (cash value)
+    const txReturnedValue = (t: LocalTransaction) =>
+      (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
+  
+    // Is the whole transaction returned? (all returnable qty fully returned)
+    const isFullyReturned = (t: LocalTransaction) => {
+      if (!t.product_id || t.unit_price == null) return false;
+      const returned = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
+      return returned >= t.quantity && t.quantity > 0;
+    };
+
   const totalRefunded = displayed.reduce((s, t) => s + effectiveRefund(t), 0);
   const cashRefunded = Math.round(displayed.reduce((s, t) => {
     for (const r of (returnsMap[t.id] ?? [])) {
@@ -1041,6 +1053,63 @@ export default function PosTransactionsPage() {
   for (const key of sortedDateKeys) {
     unifiedByDate[key].sort((a, b) => new Date(b.data.created_at).getTime() - new Date(a.data.created_at).getTime());
   }
+
+    // Renders a transaction's amount with a clear "returned" treatment.
+  //  - Fully returned: strikethrough original + red "−KSh X" (net zero)
+  //  - Partially returned: shows NET (original − returned) in gold
+  //  - No returns: original amount in gold
+  const renderTxAmount = (t: LocalTransaction, size = 14): React.ReactNode => {
+    const returnedValue = txReturnedValue(t);
+    const full = isFullyReturned(t);
+
+    if (full && t.amount > 0) {
+      return (
+        <div style={{ textAlign: "right" }}>
+          <div style={{
+            fontFamily: theme.font.mono, fontWeight: 700, fontSize: size,
+            color: "rgba(248,113,113,0.55)", textDecoration: "line-through",
+          }}>
+            {fmt(t.amount)}
+          </div>
+          <div style={{
+            fontFamily: theme.font.mono, fontWeight: 700, fontSize: size,
+            color: "#f87171", marginTop: 2,
+          }}>
+            −{fmt(returnedValue || t.amount)}
+          </div>
+        </div>
+      );
+    }
+
+    if (returnedValue > 0) {
+      const net = Math.max(0, t.amount - returnedValue);
+      return (
+        <div style={{ textAlign: "right" }}>
+          <div style={{
+            fontFamily: theme.font.mono, fontWeight: 700, fontSize: size,
+            color: "rgba(255,255,255,0.35)", textDecoration: "line-through",
+          }}>
+            {fmt(t.amount)}
+          </div>
+          <div style={{
+            fontFamily: theme.font.mono, fontWeight: 700, fontSize: size,
+            color: theme.accent.gold, marginTop: 2,
+          }}>
+            {fmt(net)}
+          </div>
+        </div>
+      );
+    }
+
+    return (
+      <div style={{
+        fontFamily: theme.font.mono, fontWeight: 700, fontSize: size,
+        color: theme.accent.gold,
+      }}>
+        {fmt(t.amount)}
+      </div>
+    );
+  };
 
   // Receipt badge config
   const receiptBadge = (tx: LocalTransaction) => {
@@ -1186,183 +1255,202 @@ export default function PosTransactionsPage() {
     )}
   </div>
 ) : (
-  /* ══════════ DESKTOP — inline pills + seller dropdown ══════════ */
-  <>
-    {/* Type filter pills */}
-    <div style={{ display: "flex", gap: 7 }}>
-      {(["all", "sales", "expenses", "returns"] as const).map(t => {
-        const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
-        const active = typeFilter === t;
-        return (
-          <button key={t} className="filter-pill" onClick={() => setTypeFilter(t)}
-            style={{
-              padding: "7px 14px", borderRadius: 50,
-              border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
-              background: active ? "rgba(251,191,36,0.12)" : "transparent",
-              color: active ? theme.accent.gold : theme.text.muted,
-              fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
-              cursor: "pointer",
-            }}>
-            {labels[t]}
-          </button>
-        );
-      })}
-    </div>
+   /* ══════════ DESKTOP — two compact rows, horizontal flow ══════════ */
+   <>
+   {/* ── Row 1: Type + Date + Seller (all in one flex-wrap row) ── */}
+   <div style={{
+     display: "flex", gap: 8, alignItems: "center",
+     flexWrap: "wrap",
+     padding: "10px 12px",
+     background: "rgba(255,255,255,0.02)",
+     border: `1px solid ${theme.border.default}`,
+     borderRadius: 14,
+   }}>
 
-    {/* Date filter pills + Seller dropdown */}
-    <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
-      {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
-        <button key={f} className="filter-pill"
-          onClick={() => {
-            setFilter(f);
-            if (f === "custom") setShowCustomPicker(true);
-            else setShowCustomPicker(false);
-          }}
-          style={{
-            padding: "7px 14px", borderRadius: 50,
-            border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
-            background: filter === f ? "rgba(6,182,212,0.15)" : "transparent",
-            color: filter === f ? theme.accent.cyan : theme.text.muted,
-            fontFamily: theme.font.mono, fontSize: 11, fontWeight: filter === f ? 600 : 400,
-            whiteSpace: "nowrap",
-          }}>
-          {FILTER_LABELS[f]}
-        </button>
-      ))}
+     {/* GROUP LABEL — Type */}
+     <div style={{ display: "flex", alignItems: "center", gap: 6, paddingRight: 8, borderRight: `1px solid ${theme.border.default}` }}>
+       <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
+         Type
+       </span>
+     </div>
+     {(["all", "sales", "expenses", "returns"] as const).map(t => {
+       const labels: Record<string, string> = { all: "All", sales: "Sales", expenses: "Expenses", returns: "Returns" };
+       const active = typeFilter === t;
+       return (
+         <button key={t} className="filter-pill" onClick={() => setTypeFilter(t)}
+           style={{
+             padding: "6px 13px", borderRadius: 50,
+             border: `1px solid ${active ? theme.accent.gold : theme.border.default}`,
+             background: active ? "rgba(251,191,36,0.12)" : "transparent",
+             color: active ? theme.accent.gold : theme.text.muted,
+             fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 700 : 400,
+             cursor: "pointer", whiteSpace: "nowrap",
+           }}>
+           {labels[t]}
+         </button>
+       );
+     })}
 
-      {/* Seller dropdown */}
-      {sellerOptions.length > 0 && (
-        <select
-          value={sellerFilter}
-          onChange={e => setSellerFilter(e.target.value)}
-          style={{
-            marginLeft: "auto",
-            padding: "7px 12px", borderRadius: 50,
-            border: `1px solid ${sellerFilter !== "all" ? "#c084fc" : theme.border.default}`,
-            background: sellerFilter !== "all" ? "rgba(192,132,252,0.12)" : theme.bg.card,
-            color: sellerFilter !== "all" ? "#c084fc" : theme.text.primary,
-            fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
-            cursor: "pointer", outline: "none",
-          }}>
-          <option value="all">👤 All sellers</option>
-          {sellerOptions.map(s => (
-            <option key={s.id} value={s.id}>👤 {s.name}</option>
-          ))}
-        </select>
-      )}
-    </div>
+     {/* spacer */}
+     <div style={{ flex: 1, minWidth: 4 }} />
 
-    {/* Custom date picker */}
-    {filter === "custom" && showCustomPicker && (
-      <div style={{
-        background: theme.bg.card, border: `1px solid ${theme.border.default}`,
-        borderRadius: 14, padding: "14px 16px",
-        display: "flex", flexDirection: "column", gap: 12,
-        animation: "slideDown 0.18s ease",
-      }}>
-        <div style={{ display: "flex", gap: 6 }}>
-          {(["day", "month", "year"] as CustomMode[]).map(m => (
-            <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
-              style={{
-                flex: 1, padding: "7px 0", borderRadius: 8,
-                border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
-                background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
-                color: customMode === m ? theme.accent.cyan : theme.text.muted,
-                fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
-                cursor: "pointer", textTransform: "capitalize",
-              }}>
-              {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
-            </button>
-          ))}
-        </div>
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {customMode === "day" && (
-            <input type="date" value={customValue} max={new Date().toISOString().slice(0, 10)}
-              onChange={e => setCustomValue(e.target.value)}
-              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
-          )}
-          {customMode === "month" && (
-            <input type="month" value={customValue} max={new Date().toISOString().slice(0, 7)}
-              onChange={e => setCustomValue(e.target.value)}
-              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
-          )}
-          {customMode === "year" && (
-            <select value={customValue} onChange={e => setCustomValue(e.target.value)}
-              style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
-              <option value="">Select year…</option>
-              {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
-                <option key={y} value={String(y)}>{y}</option>
-              ))}
-            </select>
-          )}
-          <button
-            onClick={() => { if (customValue) setShowCustomPicker(false); }}
-            disabled={!customValue}
-            style={{
-              padding: "10px 18px", borderRadius: 10,
-              background: customValue ? "linear-gradient(135deg,#0891b2,#06b6d4)" : "rgba(255,255,255,0.06)",
-              border: "none", color: customValue ? "#fff" : theme.text.muted,
-              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-              cursor: customValue ? "pointer" : "not-allowed", whiteSpace: "nowrap",
-            }}>
-            Apply ↵
-          </button>
-        </div>
-        {customValue && !showCustomPicker && (
-          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-            Showing: {customMode === "day" ? new Date(customValue + "T00:00:00").toLocaleDateString("en-KE", { weekday: "short", day: "numeric", month: "long", year: "numeric" }) : customMode === "month" ? new Date(customValue + "-01").toLocaleDateString("en-KE", { month: "long", year: "numeric" }) : customValue}
-          </div>
-        )}
-      </div>
-    )}
+     {/* GROUP LABEL — Date */}
+     <div style={{ display: "flex", alignItems: "center", gap: 6, paddingLeft: 8, paddingRight: 8, borderLeft: `1px solid ${theme.border.default}`, borderRight: `1px solid ${theme.border.default}` }}>
+       <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700 }}>
+         Date
+       </span>
+     </div>
+     {(Object.keys(FILTER_LABELS) as DateFilter[]).map(f => (
+       <button key={f} className="filter-pill"
+         onClick={() => {
+           setFilter(f);
+           if (f === "custom") setShowCustomPicker(true);
+           else setShowCustomPicker(false);
+         }}
+         style={{
+           padding: "6px 13px", borderRadius: 50,
+           border: `1px solid ${filter === f ? theme.accent.cyan : theme.border.default}`,
+           background: filter === f ? "rgba(6,182,212,0.15)" : "transparent",
+           color: filter === f ? theme.accent.cyan : theme.text.muted,
+           fontFamily: theme.font.mono, fontSize: 11, fontWeight: filter === f ? 700 : 400,
+           whiteSpace: "nowrap",
+         }}>
+         {FILTER_LABELS[f]}
+       </button>
+     ))}
 
-    {/* Active custom filter chip */}
-    {filter === "custom" && customValue && !showCustomPicker && (
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 50 }}>
-          <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, fontWeight: 600 }}>
-            {dateLabelForChip()}
-          </span>
-          <button onClick={() => setShowCustomPicker(true)}
-            style={{ background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: theme.font.mono }}>
-            ✎
-          </button>
-        </div>
-      </div>
-    )}
+     {/* Seller dropdown — pinned to the right of the row */}
+     {sellerOptions.length > 0 && (
+       <>
+         <div style={{ flex: 1, minWidth: 4 }} />
+         <select
+           value={sellerFilter}
+           onChange={e => setSellerFilter(e.target.value)}
+           style={{
+             padding: "6px 12px", borderRadius: 50,
+             border: `1px solid ${sellerFilter !== "all" ? "#c084fc" : theme.border.default}`,
+             background: sellerFilter !== "all" ? "rgba(192,132,252,0.12)" : theme.bg.card,
+             color: sellerFilter !== "all" ? "#c084fc" : theme.text.primary,
+             fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+             cursor: "pointer", outline: "none", whiteSpace: "nowrap",
+           }}>
+           <option value="all">👤 All sellers</option>
+           {sellerOptions.map(s => (
+             <option key={s.id} value={s.id}>👤 {s.name}</option>
+           ))}
+         </select>
+       </>
+     )}
+   </div>
 
-    {/* Payment method pills */}
-    <div style={{ display: "flex", gap: 7, flexWrap: "wrap" }}>
-      {([
-        { key: "all",   icon: "",   label: "Methods"  },
-        { key: "cash",  icon: "💵", label: "Cash"     },
-        { key: "mpesa", icon: "📱", label: "M-Pesa"   },
-        { key: "split", icon: "⚡", label: "Split"    },
-      ] as const).map(({ key, icon, label }) => {
-        const active = methodFilter === key;
-        const colors: Record<string, string> = {
-          all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan,
-          split: "#fbbf24", credit: "#f87171",
-        };
-        const col = colors[key];
-        return (
-          <button key={key} className="filter-pill"
-            onClick={() => setMethodFilter(key)}
-            style={{
-              padding: "7px 14px", borderRadius: 50, whiteSpace: "nowrap",
-              border: `1px solid ${active ? col : theme.border.default}`,
-              background: active ? `${col}22` : "transparent",
-              color: active ? col : theme.text.muted,
-              fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 600 : 400,
-              display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
-            }}>
-            {icon && <span style={{ fontSize: 13 }}>{icon}</span>}
-            {label}
-          </button>
-        );
-      })}
-    </div>
-  </>
+   {/* ── Row 2: Payment methods (inline, left-aligned) ── */}
+   <div style={{ display: "flex", gap: 7, flexWrap: "wrap", alignItems: "center" }}>
+     <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 700, paddingRight: 6 }}>
+       Payment
+     </span>
+     {([
+       { key: "all",   icon: "",   label: "Methods"  },
+       { key: "cash",  icon: "💵", label: "Cash"     },
+       { key: "mpesa", icon: "📱", label: "M-Pesa"   },
+       { key: "split", icon: "⚡", label: "Split"    },
+     ] as const).map(({ key, icon, label }) => {
+       const active = methodFilter === key;
+       const colors: Record<string, string> = {
+         all: theme.accent.cyan, cash: "#34d399", mpesa: theme.accent.cyan, split: "#fbbf24",
+       };
+       const col = colors[key];
+       return (
+         <button key={key} className="filter-pill"
+           onClick={() => setMethodFilter(key)}
+           style={{
+             padding: "6px 13px", borderRadius: 50, whiteSpace: "nowrap",
+             border: `1px solid ${active ? col : theme.border.default}`,
+             background: active ? `${col}22` : "transparent",
+             color: active ? col : theme.text.muted,
+             fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 700 : 400,
+             display: "flex", alignItems: "center", gap: 5, cursor: "pointer",
+           }}>
+           {icon && <span style={{ fontSize: 12 }}>{icon}</span>}
+           {label}
+         </button>
+       );
+     })}
+   </div>
+
+   {/* ── Custom date picker — slides in below when active ── */}
+   {filter === "custom" && showCustomPicker && (
+     <div style={{
+       background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+       borderRadius: 14, padding: "14px 16px",
+       display: "flex", flexDirection: "column", gap: 12,
+       animation: "slideDown 0.18s ease",
+     }}>
+       <div style={{ display: "flex", gap: 6, maxWidth: 420 }}>
+         {(["day", "month", "year"] as CustomMode[]).map(m => (
+           <button key={m} onClick={() => { setCustomMode(m); setCustomValue(""); }}
+             style={{
+               flex: 1, padding: "7px 0", borderRadius: 8,
+               border: `1px solid ${customMode === m ? theme.accent.cyan : theme.border.default}`,
+               background: customMode === m ? "rgba(6,182,212,0.12)" : "transparent",
+               color: customMode === m ? theme.accent.cyan : theme.text.muted,
+               fontFamily: theme.font.mono, fontSize: 11, fontWeight: customMode === m ? 700 : 400,
+               cursor: "pointer",
+             }}>
+             {m === "day" ? "📆 Day" : m === "month" ? "📅 Month" : "🗓 Year"}
+           </button>
+         ))}
+       </div>
+       <div style={{ display: "flex", gap: 8, alignItems: "center", maxWidth: 520 }}>
+         {customMode === "day" && (
+           <input type="date" value={customValue} max={new Date().toISOString().slice(0, 10)}
+             onChange={e => setCustomValue(e.target.value)}
+             style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+         )}
+         {customMode === "month" && (
+           <input type="month" value={customValue} max={new Date().toISOString().slice(0, 7)}
+             onChange={e => setCustomValue(e.target.value)}
+             style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+         )}
+         {customMode === "year" && (
+           <select value={customValue} onChange={e => setCustomValue(e.target.value)}
+             style={{ flex: 1, padding: "10px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 10, color: customValue ? theme.text.primary : theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}>
+             <option value="">Select year…</option>
+             {Array.from({ length: new Date().getFullYear() - 2022 + 1 }, (_, i) => 2023 + i).reverse().map(y => (
+               <option key={y} value={String(y)}>{y}</option>
+             ))}
+           </select>
+         )}
+         <button
+           onClick={() => { if (customValue) setShowCustomPicker(false); }}
+           disabled={!customValue}
+           style={{
+             padding: "10px 18px", borderRadius: 10,
+             background: customValue ? "linear-gradient(135deg,#0891b2,#06b6d4)" : "rgba(255,255,255,0.06)",
+             border: "none", color: customValue ? "#fff" : theme.text.muted,
+             fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+             cursor: customValue ? "pointer" : "not-allowed", whiteSpace: "nowrap",
+           }}>
+           Apply ↵
+         </button>
+       </div>
+     </div>
+   )}
+
+   {/* Active custom chip (when picker is closed) */}
+   {filter === "custom" && customValue && !showCustomPicker && (
+     <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+       <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 50 }}>
+         <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.cyan, fontWeight: 600 }}>
+           {dateLabelForChip()}
+         </span>
+         <button onClick={() => setShowCustomPicker(true)}
+           style={{ background: "none", border: "none", color: theme.text.muted, cursor: "pointer", fontSize: 11, padding: 0, fontFamily: theme.font.mono }}>
+           ✎
+         </button>
+       </div>
+     </div>
+   )}
+ </>
 )}
 
         {/* Summary strip — auto-fit so 3 cards stay in one row on normal phones
@@ -1643,7 +1731,27 @@ export default function PosTransactionsPage() {
                               </div>
                             </div>
                             <div style={{ textAlign: "right", flexShrink: 0 }}>
-                              <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</div>
+                            {(() => {
+                              const groupReturned = group.items.reduce((s, t) => s + txReturnedValue(t), 0);
+                              const groupFull = group.items.length > 0 && group.items.every(t => isFullyReturned(t));
+                              if (groupFull && group.total > 0) {
+                                return (
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "rgba(248,113,113,0.55)", textDecoration: "line-through" }}>{fmt(group.total)}</div>
+                                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171", marginTop: 2 }}>−{fmt(groupReturned || group.total)}</div>
+                                  </div>
+                                );
+                              }
+                              if (groupReturned > 0) {
+                                return (
+                                  <div style={{ textAlign: "right" }}>
+                                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 12, color: "rgba(255,255,255,0.35)", textDecoration: "line-through" }}>{fmt(group.total)}</div>
+                                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold, marginTop: 2 }}>{fmt(Math.max(0, group.total - groupReturned))}</div>
+                                  </div>
+                                );
+                              }
+                              return <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</div>;
+                            })()}
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{badge.label}</div>
                               <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                             </div>
@@ -1669,12 +1777,32 @@ export default function PosTransactionsPage() {
                                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}/unit</div>
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
                                   </div>
-                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.gold, flexShrink: 0 }}>{fmt(tx.amount)}</div>
+                                  <div style={{ flexShrink: 0 }}>{renderTxAmount(tx, 13)}</div>
                                 </div>
                               ))}
                               <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, marginTop: 2 }}>
                                 <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Sale Total · {badge.label}</span>
-                                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>
+                                {(() => {
+                                const groupReturned = group.items.reduce((s, t) => s + txReturnedValue(t), 0);
+                                const groupFull = group.items.length > 0 && group.items.every(t => isFullyReturned(t));
+                                if (groupFull && group.total > 0) {
+                                  return (
+                                    <span style={{ textAlign: "right" }}>
+                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: "rgba(248,113,113,0.55)", textDecoration: "line-through", marginRight: 6 }}>{fmt(group.total)}</span>
+                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(groupReturned || group.total)}</span>
+                                    </span>
+                                  );
+                                }
+                                if (groupReturned > 0) {
+                                  return (
+                                    <span style={{ textAlign: "right" }}>
+                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 12, color: "rgba(255,255,255,0.35)", textDecoration: "line-through", marginRight: 6 }}>{fmt(group.total)}</span>
+                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(Math.max(0, group.total - groupReturned))}</span>
+                                    </span>
+                                  );
+                                }
+                                return <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>;
+                              })()}
                               </div>
                               {/* Group commission summary */}
                               {(() => {
@@ -1764,7 +1892,7 @@ export default function PosTransactionsPage() {
                             )}
                           </div>
                           <div style={{ textAlign: "right", flexShrink: 0 }}>
-                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(tx.amount)}</div>
+                          {renderTxAmount(tx, 14)}
                             <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{tx.quantity}× · {badge.label}</div>
                             <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                           </div>
@@ -1914,10 +2042,32 @@ export default function PosTransactionsPage() {
       </div>
 
       {/* ── Resend / Send Receipt Modal ──────────────────────────────────── */}
-    {resendModal && (
-      <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "flex-end", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
-        onClick={e => { if (e.target === e.currentTarget) setResendModal(null); }}>
-        <div style={{ width: "100%", background: theme.bg.card, borderRadius: "20px 20px 0 0", border: `1px solid ${theme.border.default}`, borderBottom: "none", padding: "20px 18px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+      {resendModal && (
+  <div
+    onClick={e => { if (e.target === e.currentTarget) setResendModal(null); }}
+    style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "flex",
+      alignItems: "center",        // ← was flex-end
+      justifyContent: "center",
+      padding: 16,
+      background: "rgba(0,0,0,0.7)",
+      backdropFilter: "blur(4px)",
+      WebkitBackdropFilter: "blur(4px)",
+    }}
+  >
+    <div
+      style={{
+        width: "min(420px, 100%)",
+        background: theme.bg.card,
+        borderRadius: 20,          // ← was "20px 20px 0 0"
+        border: `1px solid ${theme.border.default}`,
+        padding: "20px 18px 22px", // ← was "20px 18px 40px"
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+      }}
+    >
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>📄 Send Receipt</div>
@@ -1963,10 +2113,35 @@ export default function PosTransactionsPage() {
     )}
 
       {/* ── Return Modal ─────────────────────────────────────────────────── */}
-    {returnModal && (
-      <div style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "flex-end", background: "rgba(0,0,0,0.7)", backdropFilter: "blur(4px)" }}
-        onClick={e => { if (e.target === e.currentTarget) setReturnModal(null); }}>
-        <div style={{ width: "100%", maxHeight: "90vh", overflowY: "auto", background: theme.bg.card, borderRadius: "20px 20px 0 0", border: `1px solid ${theme.border.default}`, borderBottom: "none", padding: "20px 18px 40px", display: "flex", flexDirection: "column", gap: 16 }}>
+      {returnModal && (
+  <div
+    onClick={e => { if (e.target === e.currentTarget) setReturnModal(null); }}
+    style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      background: "rgba(0,0,0,0.7)",
+      backdropFilter: "blur(4px)",
+      WebkitBackdropFilter: "blur(4px)",
+      display: "flex",
+      alignItems: "center",        // ← was flex-end
+      justifyContent: "center",
+      padding: 16,                 // ← guarantees gaps on every edge
+    }}
+  >
+    <div
+      style={{
+        width: "min(520px, 100%)", // ← was 100%
+        maxHeight: "calc(100vh - 32px)", // ← never touches top/bottom
+        overflowY: "auto",
+        background: theme.bg.card,
+        borderRadius: 20,          // ← was "20px 20px 0 0"
+        border: `1px solid ${theme.border.default}`,
+        // borderBottom: "none",   ← delete this line
+        padding: "20px 18px 22px", // ← was "20px 18px 40px"
+        display: "flex",
+        flexDirection: "column",
+        gap: 16,
+      }}
+    >
 
           {/* Modal header */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
