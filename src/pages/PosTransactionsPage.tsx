@@ -1164,21 +1164,40 @@ if (creditSaleIds.length > 0) {
       `}</style>
 
       {/* Header */}
-      <div style={{
-        borderBottom: `1px solid ${theme.border.default}`,
-        padding: "16px 20px",
-        display: "flex", alignItems: "center", gap: 14,
-        position: "sticky", top: 58, background: theme.bg.base, zIndex: 40,
-      }}>
-        <button onClick={() => navigate("/pos")}
-          style={{ background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 38, height: 38, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", color: theme.text.primary, fontSize: 18, flexShrink: 0 }}>
-          ‹
-        </button>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, letterSpacing: "-0.02em" }}>Transactions</div>
-          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>{shop?.name} · {shop?.shop_code}</div>
-        </div>
-      </div>
+      {/* Header */}
+<div style={{
+  borderBottom: `1px solid ${theme.border.default}`,
+  padding: "16px 20px",
+  display: "flex", alignItems: "center", gap: 14,
+  position: "sticky", top: 58, background: theme.bg.base, zIndex: 40,
+}}>
+  <button onClick={() => navigate("/pos")} /* …unchanged… */>‹</button>
+
+  <div style={{ flex: 1 }}>
+    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, letterSpacing: "-0.02em" }}>Transactions</div>
+    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>{shop?.name} · {shop?.shop_code}</div>
+  </div>
+
+  {/* ── NEW: backdate entry point ── */}
+  <button
+  onClick={() => navigate("/pos/scan", { state: { backdate: true } })}   // ← was "/pos"
+  title="Record a sale that happened on a previous day"
+  style={{
+    background: "rgba(251,191,36,0.10)",
+    border: "1px solid rgba(251,191,36,0.35)",
+    borderRadius: 10,
+    height: 38,
+    padding: "0 14px",
+    display: "flex", alignItems: "center", gap: 6,
+    cursor: "pointer",
+    color: "#fbbf24",
+    fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
+    flexShrink: 0, whiteSpace: "nowrap",
+  }}
+>
+  🕐 Past Sale
+</button>
+</div>
 
       <div style={{ padding: "16px 16px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
 

@@ -138,7 +138,6 @@ export function PwaUpdatePrompt() {
     </>
   );
 }
-
 // ── 2. Install banner ─────────────────────────────────────────────────────────
 export function PwaInstallBanner() {
   const { theme } = useTheme();

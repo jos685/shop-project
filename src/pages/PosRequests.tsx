@@ -1317,6 +1317,106 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
     </div>
   );
 
+    // ── Mini PIN modal — overlays the parent modal ────────────────────────
+  // Renders the existing PinKeypad inside its own overlay so the parent
+  // modal doesn't have to expand. Auto-focuses a non-input container so
+  // window-level digit/Backspace/Escape keys route to the keypad.
+  const PinModal = ({
+    agent, pin, setPin, pinError, setPinError, pinShake, setPinShake,
+    processing, onVerify, onClose, title, subtitle,
+  }: {
+    agent: ShopAgent;
+    pin: string; setPin: (v: string) => void;
+    pinError: string; setPinError: (v: string) => void;
+    pinShake: boolean; setPinShake: (v: boolean) => void;
+    processing: boolean;
+    onVerify: (agent: ShopAgent) => void;
+    onClose: () => void;
+    title?: string;
+    subtitle?: string;
+  }) => {
+    const containerRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+      // Blur any focused input in the parent modal so keydown events
+      // don't get swallowed by it, then focus our own container.
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA")) {
+        active.blur();
+      }
+      containerRef.current?.focus();
+    }, []);
+
+    return (
+      <div
+        onClick={e => { if (e.target === e.currentTarget && !processing) onClose(); }}
+        style={{
+          position: "fixed", inset: 0, zIndex: 60,
+          background: "rgba(0,0,0,0.78)",
+          backdropFilter: "blur(6px)",
+          WebkitBackdropFilter: "blur(6px)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          padding: 16,
+        }}
+      >
+        <div
+          ref={containerRef}
+          tabIndex={-1}
+          onClick={e => e.stopPropagation()}
+          style={{
+            background: theme.bg.card,
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: 18,
+            padding: isMobile ? "18px 16px 20px" : "22px 22px 24px",
+            width: "100%", maxWidth: 360,
+            display: "flex", flexDirection: "column",
+            outline: "none",
+            boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
+            animation: "slideUp 0.2s ease",
+          }}
+        >
+          {/* Header */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 15 : 16 }}>
+                {title ?? "Confirm PIN"}
+              </div>
+              {subtitle && (
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {subtitle}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={onClose}
+              disabled={processing}
+              aria-label="Cancel"
+              style={{
+                background: "rgba(255,255,255,0.05)",
+                border: `1px solid ${theme.border.default}`,
+                borderRadius: 8, width: 30, height: 30,
+                color: theme.text.muted, fontSize: 15,
+                cursor: processing ? "not-allowed" : "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                flexShrink: 0, padding: 0, lineHeight: 1,
+                opacity: processing ? 0.5 : 1,
+              }}
+            >✕</button>
+          </div>
+
+          <PinKeypad
+            selectedAgent={agent}
+            pin={pin} setPin={setPin}
+            pinError={pinError} setPinError={setPinError}
+            pinShake={pinShake} setPinShake={setPinShake}
+            processing={processing}
+            onVerify={onVerify}
+          />
+        </div>
+      </div>
+    );
+  };
+
   const SelectedAgentRow = ({ agent, onClear }: { agent: ShopAgent; onClear: () => void }) => (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -2878,10 +2978,17 @@ ${theme.kiCss}
                 <AgentList onSelect={sa => { setPayAgent(sa); setPayPin(""); setPayPinError(""); }} />
               </div>
             ) : (
-              <div>
-                <SelectedAgentRow agent={payAgent} onClear={() => { setPayAgent(null); setPayPin(""); setPayPinError(""); }} />
-                <PinKeypad selectedAgent={payAgent} pin={payPin} setPin={setPayPin} pinError={payPinError} setPinError={setPayPinError} pinShake={payPinShake} setPinShake={setPayPinShake} processing={payProcessing} onVerify={handleRecordPayment} />
-              </div>
+              <PinModal
+                agent={payAgent}
+                pin={payPin} setPin={setPayPin}
+                pinError={payPinError} setPinError={setPayPinError}
+                pinShake={payPinShake} setPinShake={setPayPinShake}
+                processing={payProcessing}
+                onVerify={handleRecordPayment}
+                onClose={() => { setPayAgent(null); setPayPin(""); setPayPinError(""); }}
+                title="Confirm Payment"
+                subtitle={`${custName} · Collecting ${fmt(totalOwed)}`}
+              />
             )}
           </div>
         </div>
@@ -3182,10 +3289,17 @@ ${theme.kiCss}
               <AgentList onSelect={sa => { setReturnAgent(sa); setReturnPin(""); setReturnPinError(""); }} />
             </div>
           ) : (
-            <div>
-              <SelectedAgentRow agent={returnAgent} onClear={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }} />
-              <PinKeypad selectedAgent={returnAgent} pin={returnPin} setPin={setReturnPin} pinError={returnPinError} setPinError={setReturnPinError} pinShake={returnPinShake} setPinShake={setReturnPinShake} processing={returnProcessing} onVerify={handleMarkReturned} />
-            </div>
+            <PinModal
+              agent={returnAgent}
+              pin={returnPin} setPin={setReturnPin}
+              pinError={returnPinError} setPinError={setReturnPinError}
+              pinShake={returnPinShake} setPinShake={setReturnPinShake}
+              processing={returnProcessing}
+              onVerify={handleMarkReturned}
+              onClose={() => { setReturnAgent(null); setReturnPin(""); setReturnPinError(""); }}
+              title="Confirm Return"
+              subtitle={`${returnTarget.customer_name} · Refund ${fmt(refundable)}`}
+            />
           )}
         </div>
       </div>

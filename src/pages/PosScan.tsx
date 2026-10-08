@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
@@ -312,13 +312,611 @@ function ProductImage({
     </>
   );
 }
+
+
+// ── Calendar legend dot ──────────────────────────────────────────────
+function LegendDot({
+  theme, color, label, fill = false, textOnly = false, small = false,
+}: {
+  theme: any;
+  color: string;
+  label: string;
+  fill?: boolean;
+  textOnly?: boolean;
+  small?: boolean;
+}) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+      {!textOnly && (
+        <span style={{
+          width: small ? 8 : 10,
+          height: small ? 8 : 10,
+          borderRadius: "50%",
+          background: fill ? color : "transparent",
+          border: `1.5px solid ${color}`,
+          display: "inline-block",
+          boxSizing: "border-box",
+        }} />
+      )}
+      <span style={{
+        fontSize: small ? 9 : 10,
+        fontFamily: theme.font.mono,
+        color: textOnly ? color : theme.text.muted,
+        fontWeight: 600,
+        letterSpacing: "0.03em",
+      }}>
+        {label}
+      </span>
+    </div>
+  );
+}
+
+// ── Backdate picker modal — custom themed calendar ────────────────────
+function BackdatePickerModal({
+  open,
+  onClose,
+  onApply,
+  theme,
+  isMobile,
+  initialISO,
+}: {
+  open: boolean;
+  onClose: () => void;
+  onApply: (iso: string) => void;
+  theme: any;
+  isMobile: boolean;
+  initialISO: string;
+}) {
+  const today = new Date();
+  const fallback = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() - 1);
+    d.setHours(14, 0, 0, 0);
+    return d;
+  })();
+
+  const init = initialISO ? new Date(initialISO) : fallback;
+
+  const [viewYear,  setViewYear]  = useState(init.getFullYear());
+  const [viewMonth, setViewMonth] = useState(init.getMonth());
+  const [selY, setSelY] = useState(init.getFullYear());
+  const [selM, setSelM] = useState(init.getMonth());
+  const [selD, setSelD] = useState(init.getDate());
+  const [hour,   setHour]   = useState(String(init.getHours()).padStart(2, "0"));
+  const [minute, setMinute] = useState(String(init.getMinutes()).padStart(2, "0"));
+
+  const [vw, setVw] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 400
+  );
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => setVw(window.innerWidth);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const d = initialISO ? new Date(initialISO) : fallback;
+    setViewYear(d.getFullYear());
+    setViewMonth(d.getMonth());
+    setSelY(d.getFullYear()); setSelM(d.getMonth()); setSelD(d.getDate());
+    setHour(String(d.getHours()).padStart(2, "0"));
+    setMinute(String(d.getMinutes()).padStart(2, "0"));
+  }, [open, initialISO]);
+
+  if (!open) return null;
+
+  const isTiny   = vw < 380;
+  const isNarrow = vw < 480;
+
+  const MONTHS = ["January", "February", "March", "April", "May", "June",
+                  "July", "August", "September", "October", "November", "December"];
+  const DOW = ["S", "M", "T", "W", "T", "F", "S"];
+
+  const daysInMonth = new Date(viewYear, viewMonth + 1, 0).getDate();
+  const firstDow    = new Date(viewYear, viewMonth, 1).getDay();
+
+  const isFutureDay = (d: number) =>
+    new Date(viewYear, viewMonth, d, 23, 59, 59, 999) > today;
+  const isTodayCell = (d: number) =>
+    viewYear === today.getFullYear() && viewMonth === today.getMonth() && d === today.getDate();
+  const isSelected = (d: number) =>
+    viewYear === selY && viewMonth === selM && d === selD;
+
+  const canGoNextMonth = (() => {
+    const nextStart = new Date(viewYear, viewMonth + 1, 1);
+    const thisMonthStart = new Date(today.getFullYear(), today.getMonth(), 1);
+    return nextStart <= thisMonthStart;
+  })();
+
+  const goPrev = () => {
+    if (viewMonth === 0) { setViewMonth(11); setViewYear(viewYear - 1); }
+    else setViewMonth(viewMonth - 1);
+  };
+  const goNext = () => {
+    if (!canGoNextMonth) return;
+    if (viewMonth === 11) { setViewMonth(0); setViewYear(viewYear + 1); }
+    else setViewMonth(viewMonth + 1);
+  };
+
+  const setPreset = (daysAgo: number, h = 14, m = 0) => {
+    const d = new Date();
+    d.setDate(d.getDate() - daysAgo);
+    d.setHours(h, m, 0, 0);
+    setViewYear(d.getFullYear());
+    setViewMonth(d.getMonth());
+    setSelY(d.getFullYear()); setSelM(d.getMonth()); setSelD(d.getDate());
+    setHour(String(h).padStart(2, "0"));
+    setMinute(String(m).padStart(2, "0"));
+  };
+
+  const handleApply = () => {
+    const d = new Date(selY, selM, selD, Number(hour) || 0, Number(minute) || 0, 0, 0);
+    const off = d.getTimezoneOffset();
+    const iso = new Date(d.getTime() - off * 60000).toISOString().slice(0, 16);
+    onApply(iso);
+  };
+
+  const presets = [
+    { label: "Yesterday",    fn: () => setPreset(1, 14, 0) },
+    { label: "2 days ago",   fn: () => setPreset(2, 14, 0) },
+    { label: "3 days ago",   fn: () => setPreset(3, 14, 0) },
+    { label: "Last week",    fn: () => setPreset(7, 14, 0) },
+    { label: "Last morning", fn: () => setPreset(1, 9, 0) },
+  ];
+
+  const summary = `${String(selD).padStart(2, "0")} ${MONTHS[selM].slice(0, 3)} ${selY} · ${hour}:${minute}`;
+
+  // Fixed compact day-cell size, independent of screen width
+  const DAY = isTiny ? 30 : 34;
+
+  return createPortal(
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 95,
+        background: "rgba(0,0,0,0.7)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        display: "flex",
+        alignItems: isMobile ? "flex-end" : "center",
+        justifyContent: "center",
+        padding: isMobile ? 0 : 20,
+        animation: "fadeIn 0.15s ease both",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          boxSizing: "border-box",
+          background: theme.bg.card,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: isMobile ? "20px 20px 0 0" : 18,
+          borderBottom: isMobile ? "none" : `1px solid ${theme.border.default}`,
+          width: isMobile ? "100%" : "min(480px, 100%)",
+          maxWidth: "100%",
+          // Hard cap on desktop so the modal never fills the screen
+          maxHeight: isMobile ? "min(92dvh, 92vh)" : "min(620px, 88vh)",
+          overflowY: "auto",
+          overflowX: "hidden",
+          padding: isMobile
+            ? `16px 14px calc(env(safe-area-inset-bottom, 0px) + 16px)`
+            : "18px 18px 18px",
+          display: "flex", flexDirection: "column", gap: 12,
+          animation: "zoomIn 0.2s ease both",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.5)",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {/* Header */}
+        <div style={{
+          display: "flex", alignItems: "flex-start",
+          justifyContent: "space-between", gap: 10, minWidth: 0,
+        }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{
+              fontFamily: theme.font.display, fontWeight: 800,
+              fontSize: isTiny ? 15 : 16, color: theme.text.primary,
+              whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+            }}>
+              🕐 Record Past Sale
+            </div>
+            <div style={{
+              fontSize: 10, fontFamily: theme.font.mono,
+              color: theme.text.muted, marginTop: 2,
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              Pick when this sale actually happened
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              width: 30, height: 30, borderRadius: 9,
+              border: `1px solid ${theme.border.default}`,
+              background: "transparent", color: theme.text.muted,
+              cursor: "pointer", fontSize: 15, flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            ✕
+          </button>
+        </div>
+
+        {/* Quick presets */}
+        <div style={{
+          display: "flex", gap: 6, flexWrap: "wrap", rowGap: 6,
+        }}>
+          {presets.map(p => (
+            <button
+              key={p.label}
+              onClick={p.fn}
+              style={{
+                padding: "5px 10px",
+                borderRadius: 50,
+                border: `1px solid rgba(251,191,36,0.35)`,
+                background: "rgba(251,191,36,0.08)",
+                color: "#fbbf24",
+                fontFamily: theme.font.mono,
+                fontSize: 10, fontWeight: 700,
+                cursor: "pointer", whiteSpace: "nowrap",
+              }}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Calendar */}
+        <div style={{
+          background: theme.bg.input,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: 12,
+          padding: "10px 10px 12px",
+          minWidth: 0,
+        }}>
+          {/* Month nav */}
+          <div style={{
+            display: "flex", alignItems: "center",
+            justifyContent: "space-between", marginBottom: 8,
+            gap: 8, minWidth: 0,
+          }}>
+            <button
+              onClick={goPrev}
+              aria-label="Previous month"
+              style={{
+                width: 30, height: 30, borderRadius: 50,
+                border: `1px solid ${theme.border.default}`,
+                background: "transparent", color: theme.text.muted,
+                cursor: "pointer", fontSize: 15, flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ‹
+            </button>
+            <div style={{
+              display: "flex", alignItems: "baseline", gap: 6,
+              minWidth: 0, flex: 1, justifyContent: "center",
+            }}>
+              <span style={{
+                fontFamily: theme.font.display, fontWeight: 800,
+                fontSize: 14, color: theme.text.primary,
+                letterSpacing: "-0.01em",
+                whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+              }}>
+                {MONTHS[viewMonth]}
+              </span>
+              <span style={{
+                fontFamily: theme.font.mono, fontWeight: 700,
+                fontSize: 11, color: theme.text.muted,
+                letterSpacing: "0.05em",
+              }}>
+                {viewYear}
+              </span>
+            </div>
+            <button
+              onClick={goNext}
+              disabled={!canGoNextMonth}
+              aria-label="Next month"
+              style={{
+                width: 30, height: 30, borderRadius: 50,
+                border: `1px solid ${theme.border.default}`,
+                background: "transparent",
+                color: theme.text.muted,
+                opacity: canGoNextMonth ? 1 : 0.3,
+                cursor: canGoNextMonth ? "pointer" : "not-allowed",
+                fontSize: 15, flexShrink: 0,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ›
+            </button>
+          </div>
+
+          {/* Weekday header */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+            gap: 2, marginBottom: 4,
+          }}>
+            {DOW.map((d, i) => {
+              const weekend = i === 0 || i === 6;
+              return (
+                <div key={i} style={{
+                  textAlign: "center",
+                  fontSize: 9,
+                  fontFamily: theme.font.mono, fontWeight: 800,
+                  color: weekend ? "rgba(248,113,113,0.75)" : theme.text.muted,
+                  letterSpacing: "0.06em",
+                  padding: "2px 0",
+                  minWidth: 0,
+                }}>
+                  {d}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Days grid */}
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: "repeat(7, minmax(0, 1fr))",
+            gap: 2,
+          }}>
+            {Array.from({ length: firstDow }).map((_, i) => (
+              <div key={`pad-${i}`} style={{ height: DAY }} />
+            ))}
+            {Array.from({ length: daysInMonth }).map((_, i) => {
+              const day      = i + 1;
+              const disabled = isFutureDay(day);
+              const selected = isSelected(day);
+              const isToday  = isTodayCell(day);
+              const dow      = new Date(viewYear, viewMonth, day).getDay();
+              const weekend  = dow === 0 || dow === 6;
+
+              return (
+                <button
+                  key={day}
+                  onClick={() => {
+                    if (disabled) return;
+                    setSelY(viewYear); setSelM(viewMonth); setSelD(day);
+                  }}
+                  disabled={disabled}
+                  style={{
+                    boxSizing: "border-box",
+                    width: DAY, height: DAY,
+                    justifySelf: "center",
+                    alignSelf: "center",
+                    borderRadius: "50%",
+                    padding: 0,
+                    border: isToday && !selected
+                      ? `1.5px solid ${theme.accent.cyan}`
+                      : "1.5px solid transparent",
+                    background: selected ? theme.accent.cyan : "transparent",
+                    color: selected
+                      ? "#0a0a0a"
+                      : disabled
+                        ? theme.text.muted
+                        : weekend
+                          ? "rgba(248,113,113,0.85)"
+                          : theme.text.primary,
+                    opacity: disabled ? 0.28 : 1,
+                    fontFamily: theme.font.mono,
+                    fontSize: isTiny ? 11 : 12,
+                    fontWeight: selected ? 800 : isToday ? 800 : 600,
+                    cursor: disabled ? "not-allowed" : "pointer",
+                    transition: "background 0.12s, color 0.12s",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    lineHeight: 1,
+                    outline: "none",
+                    WebkitTapHighlightColor: "transparent",
+                  }}
+                >
+                  {day}
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Legend */}
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            gap: 12,
+            marginTop: 8, paddingTop: 8,
+            borderTop: `1px solid ${theme.border.default}`,
+            flexWrap: "wrap",
+          }}>
+            <LegendDot theme={theme} color={theme.accent.cyan} fill label="Selected" small />
+            <LegendDot theme={theme} color={theme.accent.cyan} label="Today" small />
+            <LegendDot theme={theme} color="rgba(248,113,113,0.85)" textOnly label="Weekend" small />
+          </div>
+        </div>
+
+        {/* Time picker */}
+        <div>
+          <div style={{
+            fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6,
+          }}>
+            Time of day
+          </div>
+          <div style={{
+            display: "grid",
+            gridTemplateColumns: isNarrow ? "1fr 1fr" : "1fr 1fr 1.4fr",
+            gap: 8, alignItems: "stretch", minWidth: 0,
+          }}>
+            {[
+              { label: "Hour", value: hour, setter: setHour,
+                options: Array.from({ length: 24 }).map((_, h) => String(h).padStart(2, "0")) },
+              { label: "Minute", value: minute, setter: setMinute,
+                options: ["00", "15", "30", "45"] },
+            ].map(({ label, value, setter, options }) => (
+              <div key={label} style={{
+                boxSizing: "border-box",
+                background: theme.bg.input,
+                border: `1px solid ${theme.border.default}`,
+                borderRadius: 10,
+                padding: "6px 10px",
+                display: "flex", flexDirection: "column", gap: 2,
+                minWidth: 0,
+              }}>
+                <span style={{
+                  fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                  textTransform: "uppercase", letterSpacing: "0.05em",
+                }}>
+                  {label}
+                </span>
+                <select
+                  value={value}
+                  onChange={e => setter(e.target.value)}
+                  style={{
+                    boxSizing: "border-box",
+                    background: "transparent", border: "none", outline: "none",
+                    color: theme.text.primary, fontFamily: theme.font.mono,
+                    fontSize: 14, fontWeight: 700,
+                    cursor: "pointer", width: "100%", minWidth: 0,
+                  }}
+                >
+                  {options.map(o => (
+                    <option key={o} value={o}
+                      style={{ background: theme.bg.card, color: theme.text.primary }}>
+                      {o}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            ))}
+
+            {!isNarrow && (
+              <div style={{
+                boxSizing: "border-box",
+                background: "rgba(6,182,212,0.06)",
+                border: `1px solid rgba(6,182,212,0.25)`,
+                borderRadius: 10,
+                padding: "6px 12px",
+                display: "flex", flexDirection: "column", justifyContent: "center", gap: 2,
+                minWidth: 0,
+              }}>
+                <span style={{
+                  fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                  textTransform: "uppercase", letterSpacing: "0.05em",
+                }}>
+                  Will record
+                </span>
+                <span style={{
+                  fontFamily: theme.font.mono,
+                  fontSize: 12, fontWeight: 700,
+                  color: theme.accent.cyan,
+                  whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                }}>
+                  {summary}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {isNarrow && (
+            <div style={{
+              marginTop: 8,
+              background: "rgba(6,182,212,0.06)",
+              border: `1px solid rgba(6,182,212,0.25)`,
+              borderRadius: 10,
+              padding: "8px 12px",
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              gap: 10, minWidth: 0,
+            }}>
+              <span style={{
+                fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                textTransform: "uppercase", letterSpacing: "0.05em",
+                flexShrink: 0,
+              }}>
+                Will record
+              </span>
+              <span style={{
+                fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                color: theme.accent.cyan,
+                minWidth: 0,
+                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+              }}>
+                {summary}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={onClose}
+            style={{
+              boxSizing: "border-box",
+              flex: 1,
+              padding: "11px 14px",
+              border: `1px solid ${theme.border.default}`,
+              background: "transparent",
+              borderRadius: 12, color: theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600,
+              cursor: "pointer",
+            }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleApply}
+            style={{
+              boxSizing: "border-box",
+              flex: 2,
+              padding: "11px 14px",
+              background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
+              border: "none", borderRadius: 12, color: "#fff",
+              fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
+              cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            }}
+          >
+            🕐 Set Backdate
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
   
 export default function PosScan() {
+  
   const { shop }  = useShopAuth();
   const { theme } = useTheme();
   const { isOnline, pendingCount, refreshPendingCount } = useNetwork();
   const navigate  = useNavigate();
   const width     = useWindowWidth();
+  const location  = useLocation();          // ← moved up, before any use of `location`
+
+  // ── Backdate mode (set by the "Past Sale" button on PosTransactionsPage) ──
+  const [backdate, setBackdate] = useState<boolean>(() => !!location.state?.backdate);
+  const [backdateOpen, setBackdateOpen] = useState(false);
+
+  const [saleDate, setSaleDate] = useState<string>(() => {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  d.setHours(14, 0, 0, 0);
+  // datetime-local wants "YYYY-MM-DDTHH:mm" in *local* time
+  const off = d.getTimezoneOffset();
+  return new Date(d.getTime() - off * 60_000).toISOString().slice(0, 16);
+});
+
+const backdateISO = backdate && saleDate ? new Date(saleDate).toISOString() : null;
+const formatBackdate = (iso: string) => {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  return d.toLocaleString("en-KE", {
+    weekday: "short", day: "numeric", month: "short",
+    year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+};
   const isMobile  = width < 640;
   const isDesktop = width >= 1024;
   const NAV_H = isMobile ? 92 : 128;
@@ -1214,6 +1812,7 @@ const exactSkuMatch = useMemo(() => {
           seller_agent_id: verifiedAgent.agent_id,
           seller_name:     verifiedAgent.name,
           status:          initStatus,
+          created_at:      backdateISO,
           // Payment details for the upfront portion (sent only when initPaid > 0)
           ...(initPaid > 0 && {
             initial_payment_method: initMpesaPaid > 0 && initCashPaid > 0 ? "split" : initCashPaid > 0 ? "cash" : "mpesa",
@@ -1271,6 +1870,7 @@ const exactSkuMatch = useMemo(() => {
             phone:           customerPhone.trim(),
             business_name:   businessName,
             agent_name:      verifiedAgent.name,
+            created_at:      backdateISO || undefined,
             customer_name:   customerName.trim() || null,
             items: cart.map(item => ({
               name:       cartItemName(item),
@@ -1359,7 +1959,12 @@ const exactSkuMatch = useMemo(() => {
       };
     });
 
-    const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: txRows });
+    // Inject the backdated timestamp into every row (only when backdate mode is on)
+const rowsWithDate = backdateISO
+? txRows.map(r => ({ ...r, created_at: backdateISO }))
+: txRows;
+
+const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: rowsWithDate });
     if (txErr) {
       console.error("shop_transactions insert error:", JSON.stringify(txErr, null, 2));
       console.error("txRows payload:", JSON.stringify(txRows, null, 2));
@@ -1393,6 +1998,7 @@ const exactSkuMatch = useMemo(() => {
           phone:          customerPhone.trim(),
           business_name:  businessName,
           agent_name:     verifiedAgent.name,
+          created_at:      backdateISO || undefined,
           items: cart.map(item => ({
             name:       cartItemName(item),
             quantity:   item.quantity,
@@ -1531,12 +2137,22 @@ const exactSkuMatch = useMemo(() => {
       setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
       setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
       setCustomerName(""); setCustomerPhone("");
+    
+      // Clear backdate state
+      setBackdate(false);
+      setSaleDate("");
+    
+      // Strip the flag from the URL so a page refresh doesn't re-enable it
+      if (backdate) {
+        navigate(location.pathname, { replace: true, state: {} });
+      }                                              // ← THIS WAS MISSING
+    
       setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
       setPayMethod(null);
       setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
       setError(""); setScanFeedback(""); setProcessing(false);
       setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
-      setUnlistedOpen(false);                       // ← ADD THIS
+      setUnlistedOpen(false);
       if (cartKey) localStorage.removeItem(cartKey);
       setPinFails(0); setPinCountdown(0);
       if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
@@ -1658,12 +2274,32 @@ const exactSkuMatch = useMemo(() => {
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            
-            <button onClick={step === "scan" ? () => navigate("/pos") : handleReset}
-              style={{ background: "none", border: `1px solid ${theme.border.default}`, borderRadius: 9, padding: "7px 13px", color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, cursor: "pointer", whiteSpace: "nowrap" }}>
-              {step === "scan" ? "← Back" : "✕ Cancel"}
-            </button>
-          </div>
+  {step === "scan" && (
+    <button
+      onClick={() => setBackdateOpen(true)}
+      title="Record a sale from a past date"
+      style={{
+        background: backdate ? "rgba(251,191,36,0.15)" : "rgba(251,191,36,0.08)",
+        border: `1px solid ${backdate ? "rgba(251,191,36,0.6)" : "rgba(251,191,36,0.35)"}`,
+        borderRadius: 9,
+        padding: "7px 12px",
+        color: "#fbbf24",
+        fontSize: 11,
+        fontFamily: theme.font.mono,
+        fontWeight: 700,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+        display: "flex", alignItems: "center", gap: 5,
+      }}
+    >
+      🕐{!isMobile && <span>Past Sale</span>}
+    </button>
+  )}
+  <button onClick={step === "scan" ? () => navigate("/pos") : handleReset}
+    style={{ background: "none", border: `1px solid ${theme.border.default}`, borderRadius: 9, padding: "7px 13px", color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, cursor: "pointer", whiteSpace: "nowrap" }}>
+    {step === "scan" ? "← Back" : "✕ Cancel"}
+  </button>
+</div>
         </div>
 
         {/* Step progress */}
@@ -1734,10 +2370,72 @@ const exactSkuMatch = useMemo(() => {
 
         {/* ══════════════════ STEP 1: SCAN ══════════════════ */}
         {step === "scan" && (
-          <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+  <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
 
-            {/* Cart restored banner */}
-            {cartRestored && (
+    {/* ── Backdate banner ── */}
+{backdate && (
+  <div style={{
+    background: "rgba(251,191,36,0.08)",
+    border: "1px solid rgba(251,191,36,0.35)",
+    borderRadius: 12,
+    padding: "12px 14px",
+    display: "flex", alignItems: "center", justifyContent: "space-between",
+    gap: 10, flexWrap: "wrap",
+  }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+      <span style={{ fontSize: 18, flexShrink: 0 }}>🕐</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{
+          fontSize: 12, fontFamily: theme.font.mono,
+          color: "#fbbf24", fontWeight: 700,
+        }}>
+          Backdate mode
+        </div>
+        <div style={{
+          fontSize: 10, fontFamily: theme.font.mono,
+          color: "rgba(251,191,36,0.75)", marginTop: 2,
+          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+        }}>
+          Recording on {formatBackdate(saleDate)}
+        </div>
+      </div>
+    </div>
+    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+      <button
+        onClick={() => setBackdateOpen(true)}
+        style={{
+          background: "rgba(251,191,36,0.15)",
+          border: "1px solid rgba(251,191,36,0.45)",
+          borderRadius: 8,
+          padding: "6px 12px",
+          color: "#fbbf24",
+          fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
+          cursor: "pointer",
+        }}
+      >
+        Change
+      </button>
+      <button
+        onClick={() => setBackdate(false)}
+        aria-label="Cancel backdate"
+        style={{
+          background: "transparent",
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: 8,
+          padding: "6px 10px",
+          color: theme.text.muted,
+          fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
+          cursor: "pointer",
+        }}
+      >
+        ✕
+      </button>
+    </div>
+  </div>
+)}
+
+    {/* Cart restored banner */}
+    {cartRestored && (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 12, padding: "10px 14px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
                   <span>🛒</span>
@@ -3013,6 +3711,21 @@ const exactSkuMatch = useMemo(() => {
     </div>
   </div>
 )}
+
+
+{/* ══════════════════ BACKDATE PICKER MODAL ══════════════════ */}
+<BackdatePickerModal
+  open={backdateOpen}
+  onClose={() => setBackdateOpen(false)}
+  onApply={(iso) => {
+    setSaleDate(iso);
+    setBackdate(true);
+    setBackdateOpen(false);
+  }}
+  theme={theme}
+  isMobile={isMobile}
+  initialISO={saleDate}
+/>
 
     </div>
   );
