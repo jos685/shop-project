@@ -27,6 +27,9 @@ export default defineConfig({
       },
       workbox: {
         disableDevLogs: true,
+        skipWaiting: true,                    // ← NEW: new SW activates instantly
+        clientsClaim: true,                   // ← NEW: claims existing tabs
+        cleanupOutdatedCaches: true,          // ← NEW: sweeps old precache entries
         navigateFallback: '/pos/index.html',
         navigateFallbackAllowlist: [/^\/pos/],
         globPatterns: ['**/*.{js,css,html,ico,svg,png,woff2}'],

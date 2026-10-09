@@ -390,29 +390,41 @@ export default function TopNav() {
         .bell-ring { animation: bellRing 0.5s ease; }
       `}</style>
 
-      {/* ── Fixed top bar ─────────────────────────────────────── */}
-      <div style={{
-        position:      "fixed",
-        top:           0,
-        left:          0,
-        right:         0,
-        height:        TOP_NAV_HEIGHT,
-        zIndex:        100,
-        background:    theme.isDark
-          ? "rgba(8,12,18,0.96)"
-          : "rgba(255,255,255,0.96)",
-        backdropFilter: "blur(14px)",
-        WebkitBackdropFilter: "blur(14px)",
-        borderBottom:  `1px solid ${theme.border.default}`,
-        display:       "flex",
-        alignItems:    "center",
-        justifyContent:"space-between",
-        padding:       isMobile ? "0 12px" : isTablet ? "0 18px" : "0 28px",
-        gap:           isMobile ? 6 : isTablet ? 8 : 10,
-        boxShadow:     theme.isDark
-          ? "0 2px 24px rgba(0,0,0,0.5)"
-          : "0 2px 16px rgba(0,0,0,0.06)",
-      }}>
+     
+{/* ── Fixed top bar ─────────────────────────────────────── */}
+<div style={{
+  position: "fixed",
+  top: 0,
+  left: 0,
+  right: 0,
+
+  // Keep the 58px content height and add iPhone safe-area space above it.
+  height: isMobile
+    ? `calc(${TOP_NAV_HEIGHT}px + env(safe-area-inset-top, 0px))`
+    : TOP_NAV_HEIGHT,
+
+  boxSizing: "border-box",
+  paddingTop: isMobile
+  ? "env(safe-area-inset-top, 0px)"
+  : 0,
+
+  zIndex: 100,
+  background: theme.isDark
+    ? "rgba(8,12,18,0.96)"
+    : "rgba(255,255,255,0.96)",
+  backdropFilter: "blur(14px)",
+  WebkitBackdropFilter: "blur(14px)",
+  borderBottom: `1px solid ${theme.border.default}`,
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "space-between",
+  paddingLeft: isMobile ? 12 : isTablet ? 18 : 28,
+  paddingRight: isMobile ? 12 : isTablet ? 18 : 28,
+  gap: isMobile ? 6 : isTablet ? 8 : 10,
+  boxShadow: theme.isDark
+    ? "0 2px 24px rgba(0,0,0,0.5)"
+    : "0 2px 16px rgba(0,0,0,0.06)",
+}}>
 
         {/* ── LEFT: logo · divider · avatar · greeting+name ─── */}
         <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 12, minWidth: 0 }}>
@@ -628,7 +640,9 @@ export default function TopNav() {
             {panelOpen && (
               <div style={{
                 position:    "fixed",
-                top:         TOP_NAV_HEIGHT + 8,
+                top: isMobile
+                      ? `calc(${TOP_NAV_HEIGHT}px + env(safe-area-inset-top, 0px) + 8px)`
+                      : TOP_NAV_HEIGHT + 8,
                 right:       isMobile ? 8 : 16,
                 width:       isMobile ? "calc(100vw - 16px)" : 340,
                 maxWidth:    400,

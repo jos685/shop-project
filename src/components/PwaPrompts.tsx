@@ -54,10 +54,13 @@ export function PwaUpdatePrompt() {
   const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
     onRegisteredSW(_swUrl, r) {
       if (!r) return;
-      const poll = setInterval(() => r.update(), 10 * 60 * 1000);
+      const poll = setInterval(() => r.update(), 60 * 1000);
       const onVisible = () => { if (document.visibilityState === "visible") r.update(); };
+      // Check on every online event
+      const onOnline = () => r.update();
+      window.addEventListener("online", onOnline);
       document.addEventListener("visibilitychange", onVisible);
-      return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVisible); };
+      return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("online", onOnline); };
     },
   });
 
