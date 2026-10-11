@@ -213,43 +213,66 @@ useEffect(() => {
       };
 
       // Establish a real Supabase Auth session so RLS policies using auth.uid() are satisfied.
-      // If the auth user doesn't exist yet, auto-provision it right now using the
-      // plain-text password we already have (before the DB trigger hashes it).
-      const shopEmail = `${shopCode.trim().toLowerCase()}@${businessCode.trim().toLowerCase()}.pos`;
-      let authErr: { message: string } | null = null;
+// If the auth user doesn't exist yet OR was provisioned with the wrong UUID,
+// repair it now (delete + recreate with id = shop_id).
+const shopEmail = `${shopCode.trim().toLowerCase()}@${businessCode.trim().toLowerCase()}.pos`;
 
-      // First attempt — sign in with the existing auth user.
-      const { error: signInErr } = await supabase.auth.signInWithPassword({
-        email:    shopEmail,
-        password: password.trim(),
-      });
+/** Ensure we have a valid Supabase Auth session whose auth.uid() === shop.id.
+ *  Returns null on success, or { message } on unrecoverable failure. */
+const ensureShopAuth = async (): Promise<{ message: string } | null> => {
+  // ── Attempt 1: sign in ──
+  const { error: signInErr } = await supabase.auth.signInWithPassword({
+    email:    shopEmail,
+    password: password.trim(),
+  });
 
-      if (signInErr) {
-        // Auth user doesn't exist or password mismatch.
-        // Call the pos-provision-auth edge function (server-side, has service key)
-        // to create/repair the auth user with the correct UUID (auth.uid() = shop_id).
-        console.warn("Shop auth sign-in failed — calling pos-provision-auth:", signInErr.message);
-        const { data: provData } = await supabase.functions.invoke("pos-provision-auth", {
-          body: {
-            business_code: businessCode.trim(),
-            shop_code:     shopCode.trim(),
-            password:      password.trim(),
-          },
-        });
+  if (!signInErr) {
+    // Sign-in worked — but is the UUID right?
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user?.id === session.id) return null;   // ✅ perfect, done
 
-        if (!provData?.success) {
-          console.warn("pos-provision-auth failed:", provData?.error);
-          authErr = { message: provData?.error ?? "Auth provisioning failed" };
-        } else {
-          // Second attempt — auth user now exists with the correct password.
-          const { error: retryErr } = await supabase.auth.signInWithPassword({
-            email:    shopEmail,
-            password: password.trim(),
-          });
-          authErr = retryErr ?? null;
-          if (authErr) console.warn("Shop auth retry failed:", authErr.message);
-        }
-      }
+    // ❌ Wrong UUID — this is the provisioning bug. Sign out so
+    //    pos-provision-auth can rebuild the user with the correct id.
+    console.warn(
+      "[ShopAuth] UUID mismatch — self-healing. Got:",
+      user?.id, "Expected:", session.id,
+    );
+    await supabase.auth.signOut();
+  } else {
+    console.warn("[ShopAuth] Sign-in failed, will provision:", signInErr.message);
+  }
+
+  // ── Provision (or repair) the auth user ──
+  // pos-provision-auth already handles the "delete wrong-email user, create
+  // new user with id = shop_id" case internally.
+  const { data: provData } = await supabase.functions.invoke("pos-provision-auth", {
+    body: {
+      business_code: businessCode.trim(),
+      shop_code:     shopCode.trim(),
+      password:      password.trim(),
+    },
+  });
+
+  if (!provData?.success) {
+    return { message: provData?.error ?? "Auth provisioning failed" };
+  }
+
+  // ── Attempt 2: sign in again ──
+  const { error: retryErr } = await supabase.auth.signInWithPassword({
+    email:    shopEmail,
+    password: password.trim(),
+  });
+  if (retryErr) return { message: retryErr.message };
+
+  // ── Final verification — did the UUID stick? ──
+  const { data: { user: finalUser } } = await supabase.auth.getUser();
+  if (!finalUser || finalUser.id !== session.id) {
+    return { message: "Auth user still has wrong UUID after provisioning" };
+  }
+  return null;
+};
+
+const authErr = await ensureShopAuth();
 
       // Persist whether the Supabase Auth sign-in succeeded so other pages can
       // show a targeted warning without having to re-attempt a network call.

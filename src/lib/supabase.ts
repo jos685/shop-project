@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
+
 const SUPABASE_URL        = import.meta.env.VITE_SUPABASE_URL         as string;
 
 /**
@@ -24,9 +25,9 @@ export function productImageUrl(raw: string | null | undefined): string | null {
   return `${SUPABASE_URL}/storage/v1/object/public/${raw}`;
 }
 const SUPABASE_ANON_KEY   = import.meta.env.VITE_SUPABASE_ANON_KEY    as string;
-const SUPABASE_SERVICE_KEY = import.meta.env.VITE_SUPABASE_SERVICE_KEY as string;
 
 export const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 
 // Bare anon client — never holds any auth session.
 // Used for shop_transactions inserts so they always go through as anon role,
@@ -35,12 +36,6 @@ export const supabaseAnon = createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 
-// Service-role client — used ONLY to auto-provision shop auth users on first login.
-export const supabaseAdmin = createClient(
-  SUPABASE_URL,
-  SUPABASE_SERVICE_KEY || SUPABASE_ANON_KEY,
-  { auth: { autoRefreshToken: false, persistSession: false } }
-);
 
 // ── Types ────────────────────────────────────────────────────
 export interface Shop {

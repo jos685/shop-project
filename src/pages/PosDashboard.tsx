@@ -259,13 +259,73 @@ export default function PosDashboard() {
     setPendingReqs((reqRes.data || []).length);
 
     // Recent txs (top 8 today)
-    const recentRaw = txData.slice(0, 8);
-    const pIds2 = [...new Set(recentRaw.map((t: any) => t.product_id).filter(Boolean))] as string[];
-    const pm2: Record<string, { name: string; image_url: string | null }> = {};
-    if (pIds2.length > 0) {
-      const { data: pd2 } = await supabase.from("products").select("id, name, image_url").in("id", pIds2);
-      for (const p of pd2 || []) pm2[p.id] = { name: p.name, image_url: productImageUrl(p.image_url) };
-    }
+     // Recent txs (top 8 today)
+const recentRaw = txData.slice(0, 8);
+
+const pIds2      = [...new Set(recentRaw.map((t: any) => t.product_id).filter(Boolean))]      as string[];
+const customIds2 = [...new Set(recentRaw.map((t: any) => t.custom_item_id).filter(Boolean))] as string[];
+
+// Credit txs whose row carries neither a product_id, a custom_item_id,
+// nor an inline product_name — the only remaining handle is credit_sale_id.
+const creditIds2 = [...new Set(
+  recentRaw
+    .filter((t: any) =>
+      (t.status === "credit" || t.status === "credit_partial") &&
+      t.credit_sale_id &&
+      !t.product_id && !t.custom_item_id && !t.product_name
+    )
+    .map((t: any) => t.credit_sale_id)
+)] as string[];
+
+const pm2: Record<string, { name: string; image_url: string | null }> = {};
+
+const [pd2Res, cd2Res, cs2Res] = await Promise.all([
+  pIds2.length > 0
+    ? supabase.from("products").select("id, name, image_url").in("id", pIds2)
+    : Promise.resolve({ data: [] as any[] }),
+
+  customIds2.length > 0
+    ? supabase.from("shop_custom_items").select("id, name").in("id", customIds2)
+    : Promise.resolve({ data: [] as any[] }),
+
+  // Wildcard select — we don't know which column carries the name on
+  // shop_credit_sales, so grab the whole row and pick the first one that exists.
+  creditIds2.length > 0
+    ? supabase.from("shop_credit_sales").select("*").in("id", creditIds2)
+    : Promise.resolve({ data: [] as any[] }),
+]);
+
+for (const p of (pd2Res.data ?? []) as any[]) {
+  pm2[p.id] = { name: p.name, image_url: productImageUrl(p.image_url) };
+}
+for (const c of (cd2Res.data ?? []) as any[]) {
+  pm2[c.id] = { name: c.name, image_url: null };
+}
+
+// Map credit_sale_id → item name so the mapping loop below can resolve it
+// Map credit_sale_id → item name so the mapping loop below can resolve it.
+// shop_credit_sales has no name column — the names live inside `items`
+// (a JSON array of { name|productName, qty|quantity, price|unitPrice, ... }).
+const creditNameById: Record<string, string> = {};
+for (const cs of (cs2Res.data ?? []) as any[]) {
+  const items = Array.isArray(cs.items) ? cs.items : [];
+  const first = items[0] ?? null;
+
+  const firstName =
+    first?.name ||
+    first?.product_name ||
+    first?.productName ||
+    first?.item_name ||
+    first?.title ||
+    null;
+
+  const name =
+    firstName
+      ? (items.length > 1 ? `${firstName} +${items.length - 1} more` : firstName)
+      : "Credit Sale";
+
+  creditNameById[cs.id] = name;
+}
 
     // Fetch returns for the recent transactions to show return badges
     const recentIds = recentRaw.map((t: any) => t.id);
@@ -282,10 +342,25 @@ export default function PosDashboard() {
     setRecentTxs(recentRaw.map((t: any) => {
       const ret = returnsMap[t.id];
       const fullReturn = ret && ret.total >= t.amount;
+    
+      // Resolve against whichever id the row carries (stock product OR custom item)
+      const lookupId = t.product_id ?? t.custom_item_id ?? null;
+      const resolved = lookupId ? pm2[lookupId] : undefined;
+    
+      const nameFromCredit = t.credit_sale_id ? creditNameById[t.credit_sale_id] : undefined;
+    
+      const productName =
+        resolved?.name ??
+        t.product_name ??
+        nameFromCredit ??
+        (t.status === "credit_partial" ? "Credit Sale (Partial Payment)"
+         : t.status === "credit"       ? "Credit Sale (Unpaid)"
+         : "—");
+    
       return {
         id: t.id, amount: t.amount,
-        product_name:      pm2[t.product_id]?.name      || t.product_name || "—",
-        product_image_url: pm2[t.product_id]?.image_url ?? null,
+        product_name:      productName,
+        product_image_url: resolved?.image_url ?? null,
         payment_method:    t.payment_method,
         created_at:        t.created_at,
         status:            t.status ?? null,

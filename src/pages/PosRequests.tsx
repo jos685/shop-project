@@ -1232,71 +1232,71 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
     });
 
     return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
-      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", textAlign: "center", marginBottom: 12 }}>
-        PIN for {selectedAgent.agent.name}
-      </div>
-
-      {pinIsLocked && (
-        <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: "11px 14px", marginBottom: 12 }}>
-          <span style={{ fontSize: 18 }}>🔒</span>
-          <div>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
-            <div style={{ fontSize: 11, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinModalCountdown}s</div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", textAlign: "center", marginBottom: 12 }}>
+          PIN for {selectedAgent.agent.name}
+        </div>
+    
+        {pinIsLocked && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.25)", borderRadius: 10, padding: "11px 14px", marginBottom: 12 }}>
+            <span style={{ fontSize: 18 }}>🔒</span>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#ef4444", fontFamily: theme.font.mono }}>Too many wrong PINs</div>
+              <div style={{ fontSize: 11, color: "#f87171", marginTop: 2, fontFamily: theme.font.mono }}>Try again in {pinModalCountdown}s</div>
+            </div>
           </div>
-        </div>
-      )}
-
-      {!pinIsLocked && pinModalFails >= 3 && (
-        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 8, padding: "8px 12px", marginBottom: 10, textAlign: "center" }}>
-          ⚠ {PIN_MAX_FAILS - pinModalFails} attempt{PIN_MAX_FAILS - pinModalFails !== 1 ? "s" : ""} left before lockout
-        </div>
-      )}
-
-      <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 14, opacity: pinIsLocked ? 0.35 : 1 }}>
-        {[0, 1, 2, 3].map(i => (
-          <div key={i} style={{ width: 44, height: 54, border: `2px solid ${i < pin.length ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.1)"}`, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "DM Mono, monospace", fontSize: 24, fontWeight: 700, background: i < pin.length ? "rgba(6,182,212,0.08)" : "transparent", transition: "all 0.15s" }}>
-            {i < pin.length ? "●" : ""}
+        )}
+    
+        {!pinIsLocked && pinModalFails >= 3 && (
+          <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", background: "rgba(234,179,8,0.07)", border: "1px solid rgba(234,179,8,0.2)", borderRadius: 8, padding: "8px 12px", marginBottom: 10, textAlign: "center" }}>
+            ⚠ {PIN_MAX_FAILS - pinModalFails} attempt{PIN_MAX_FAILS - pinModalFails !== 1 ? "s" : ""} left before lockout
           </div>
-        ))}
+        )}
+    
+        <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 10, justifyContent: "center", marginBottom: 14, opacity: pinIsLocked ? 0.35 : 1 }}>
+          {[0, 1, 2, 3].map(i => (
+            <div key={i} style={{ width: 44, height: 54, border: `2px solid ${i < pin.length ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.1)"}`, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "DM Mono, monospace", fontSize: 24, fontWeight: 700, background: i < pin.length ? "rgba(6,182,212,0.08)" : "transparent", transition: "all 0.15s" }}>
+              {i < pin.length ? "●" : ""}
+            </div>
+          ))}
+        </div>
+    
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, maxWidth: 280, margin: "0 auto", width: "100%" }}>
+          {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
+            <button key={k} disabled={!k || processing || pinIsLocked}
+              onClick={() => {
+                if (pinIsLocked) return;
+                if (k === "⌫") handleBackspace();
+                else if (k) handleDigit(k);
+              }}
+              style={{ height: 50, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 10, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: "DM Mono, monospace", fontSize: k === "⌫" ? 18 : 20, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1 }}>
+              {k}
+            </button>
+          ))}
+        </div>
+    
+        {/*
+          Single reserved slot — hint, error, and processing share one fixed
+          height so the modal never resizes while the user is typing.
+        */}
+        <div style={{ minHeight: 52, marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {processing ? (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, background: "rgba(255,255,255,0.03)", borderRadius: 10, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 13, width: "100%" }}>
+              <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+              Saving...
+            </div>
+          ) : pinError && !pinIsLocked ? (
+            <div style={{ width: "100%", color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+              ⚠ {pinError}
+            </div>
+          ) : !isMobile && !pinIsLocked ? (
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, opacity: 0.75, letterSpacing: "0.02em", textAlign: "center" }}>
+              ⌨️ Type digits · ⌫ Backspace · Esc to clear
+            </div>
+          ) : null}
+        </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, maxWidth: 280, margin: "0 auto", width: "100%" }}>
-        {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
-                    <button key={k} disabled={!k || processing || pinIsLocked}
-                    onClick={() => {
-                      if (pinIsLocked) return;
-                      if (k === "⌫") handleBackspace();
-                      else if (k) handleDigit(k);
-                    }}
-            style={{ height: 50, border: `1px solid ${k ? "rgba(255,255,255,0.1)" : "transparent"}`, borderRadius: 10, background: k ? "rgba(255,255,255,0.04)" : "transparent", color: k === "⌫" ? theme.accent.red : theme.text.primary, fontFamily: "DM Mono, monospace", fontSize: k === "⌫" ? 18 : 20, fontWeight: 600, cursor: (k && !pinIsLocked) ? "pointer" : "default", opacity: pinIsLocked ? 0.35 : 1 }}>
-            {k}
-          </button>
-        ))}
-      </div>
-      {pinError && !pinIsLocked && (
-        <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", marginTop: 10, textAlign: "center" }}>
-          ⚠ {pinError}
-        </div>
-      )}
-
-     {!isMobile && !pinIsLocked && !pinError && (
-        <div style={{
-          marginTop: 4, marginBottom: 10,
-          fontSize: 10, fontFamily: theme.font.mono,
-          color: theme.text.muted, opacity: 0.75,
-          letterSpacing: "0.02em", textAlign: "center",
-        }}>
-          ⌨️ Type digits · ⌫ Backspace · Esc to clear
-        </div>
-      )}
-      {processing && (
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: 14, marginTop: 8, background: "rgba(255,255,255,0.03)", borderRadius: 10, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 13 }}>
-          <span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.2)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-          Saving...
-        </div>
-      )}
-    </div>
-  );
+    );
  }
 
   // ── Agent selector render helper ──────────────────────────────────────
@@ -1352,11 +1352,9 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
         onClick={e => { if (e.target === e.currentTarget && !processing) onClose(); }}
         style={{
           position: "fixed", inset: 0, zIndex: 60,
-          background: "rgba(0,0,0,0.78)",
-          backdropFilter: "blur(6px)",
-          WebkitBackdropFilter: "blur(6px)",
+          background: theme.bg.overlay,
           display: "flex", alignItems: "center", justifyContent: "center",
-          padding: 16,
+          padding: "0 16px",
         }}
       >
         <div
@@ -1366,17 +1364,16 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
           style={{
             background: theme.bg.card,
             border: `1px solid ${theme.border.default}`,
-            borderRadius: 18,
-            padding: isMobile ? "18px 16px 20px" : "22px 22px 24px",
-            width: "100%", maxWidth: 360,
-            display: "flex", flexDirection: "column",
+            borderRadius: 20,
+            padding: "24px 20px 28px",
+            width: "100%", maxWidth: 460,
+            display: "flex", flexDirection: "column", gap: 16,
+            maxHeight: "90vh", overflowY: "auto",
             outline: "none",
-            boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
-            animation: "slideUp 0.2s ease",
           }}
         >
-          {/* Header */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, marginBottom: 12 }}>
+          {/* Header — unchanged */}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 15 : 16 }}>
                 {title ?? "Confirm PIN"}
@@ -1403,7 +1400,7 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
               }}
             >✕</button>
           </div>
-
+    
           <PinKeypad
             selectedAgent={agent}
             pin={pin} setPin={setPin}
@@ -2582,7 +2579,13 @@ ${theme.kiCss}
             {!expAgent ? (
               <div>
                 <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is logging this?</label>
-                <AgentList onSelect={sa => { setExpAgent(sa); setExpPin(""); setExpPinError(""); }} />
+                <AgentList onSelect={sa => {
+                  const c = Math.round(Number(expCashAmount)  || 0);
+                  const m = Math.round(Number(expMpesaAmount) || 0);
+                  if (c + m <= 0) { setExpError("Enter a Cash or M-Pesa amount first."); return; }
+                  setExpError("");
+                  setExpAgent(sa); setExpPin(""); setExpPinError("");
+                }} />
               </div>
             ) : (
               <div>
@@ -2628,7 +2631,12 @@ ${theme.kiCss}
                 <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Confirm your identity</label>
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {agents.map(sa => (
-                    <button key={sa.id} onClick={() => { setEditAgent(sa); setEditPin(""); setEditPinError(""); }}
+                    <button key={sa.id} onClick={() => {
+                      const a = parseFloat(editAmount);
+                      if (!a || a <= 0) { setEditError("Enter a valid amount first."); return; }
+                      setEditError("");
+                      setEditAgent(sa); setEditPin(""); setEditPinError("");
+                    }}
                       style={{ padding: "11px 14px", border: `1px solid ${sa.agent.id === editTarget.logged_by ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.06)"}`, borderRadius: 11, background: sa.agent.id === editTarget.logged_by ? "rgba(6,182,212,0.06)" : "rgba(255,255,255,0.02)", cursor: sa.agent.id === editTarget.logged_by ? "pointer" : "not-allowed", display: "flex", alignItems: "center", gap: 12, textAlign: "left", opacity: sa.agent.id === editTarget.logged_by ? 1 : 0.35 }}>
                       <div style={{ width: 36, height: 36, borderRadius: "50%", background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, fontSize: 14, color: theme.accent.cyan, flexShrink: 0 }}>
                         {sa.agent.avatar || sa.agent.name.charAt(0).toUpperCase()}
@@ -2975,7 +2983,13 @@ ${theme.kiCss}
             {!payAgent ? (
               <div>
                 <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is collecting?</label>
-                <AgentList onSelect={sa => { setPayAgent(sa); setPayPin(""); setPayPinError(""); }} />
+                <AgentList onSelect={sa => {
+                const c = Math.round(Number(payCashAmount)  || 0);
+                const m = Math.round(Number(payMpesaAmount) || 0);
+                if (c + m <= 0) { setPayError("Enter a Cash or M-Pesa payment amount first."); return; }
+                setPayError("");
+                setPayAgent(sa); setPayPin(""); setPayPinError("");
+              }} />
               </div>
             ) : (
               <PinModal

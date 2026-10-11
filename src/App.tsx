@@ -11,62 +11,102 @@ import PosTransactionsPage from "./pages/PosTransactionsPage";
 import PosRequests         from "./pages/PosRequests";
 import BottomNav           from "./components/BottomNav";
 import TopNav             from "./components/TopNav";
+import ShopSubscriptionGuard from "./components/ShopSubscriptionGuard";
 import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
 import { PwaUpdatePrompt, PwaInstallBanner, PwaReinstallNudge } from "./components/PwaPrompts";
 
 
-// ── Route guard ───────────────────────────────────────────────
-function Protected({ children }: { children: React.ReactNode }) {
-  const { shop, loading } = useShopAuth();
+// ── Loading splash ────────────────────────────────────────────
+function LoadingScreen() {
   const { theme } = useTheme();
-  if (loading) return (
-    <div style={{ minHeight: "100vh", background: theme.bg.base, display: "flex", alignItems: "center", justifyContent: "center" }}>
-      <div style={{ width: 32, height: 32, border: `3px solid ${theme.border.default}`, borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+  return (
+    <div style={{
+      minHeight: "100vh", background: theme.bg.base,
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      <div style={{
+        width: 32, height: 32,
+        border: `3px solid ${theme.border.default}`,
+        borderTopColor: theme.accent.cyan,
+        borderRadius: "50%",
+        animation: "spin 0.8s linear infinite",
+      }} />
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
     </div>
   );
-  return shop ? <>{children}</> : <Navigate to="/pos/login" replace />;
 }
 
 function PosApp() {
-  const { shop } = useShopAuth();
+  const { shop, loading, hasAuthSession, logout } = useShopAuth();
   const [showTour, setShowTour] = useState(false);
 
- 
-
-  // Allow any page to trigger the tour via a custom event
   useEffect(() => {
     const handler = () => setShowTour(true);
     window.addEventListener("shop:start-tour", handler);
     return () => window.removeEventListener("shop:start-tour", handler);
   }, []);
 
+  // ── Safety net: if hasAuthSession stays false for 10s while we have a
+  //    shop, we're stuck waiting on something that will never resolve.
+  //    Log the shop out so they land on the login page and can retry.
+  useEffect(() => {
+    if (!shop || hasAuthSession || loading) return;
+    const t = setTimeout(() => {
+      console.warn("Auth session never established — logging out");
+      logout();
+    }, 10_000);
+    return () => clearTimeout(t);
+  }, [shop, hasAuthSession, loading, logout]);
+
+  // 1. Auth still hydrating
+  if (loading) return <LoadingScreen />;
+
+  // 2. Not logged in — login only
+  if (!shop) {
+    return (
+      <>
+        <TopNav />
+        <Routes>
+          <Route path="/pos/login" element={<PosLogin />} />
+          <Route path="*" element={<Navigate to="/pos/login" replace />} />
+        </Routes>
+        <BottomNav />
+      </>
+    );
+  }
+
+  // 3. Logged in but no Supabase JWT yet — hold the splash.
+  //    This is the key line: without it, page components mount, fire
+  //    shop-scoped reads with the anon key, and get 0 rows back.
+  if (!hasAuthSession) return <LoadingScreen />;
+
+  // 4. Fully authed — subscription guard wraps every shop page
   return (
     <>
       <TopNav />
-      {/* Push all page content below the fixed TopNav (58 px) */}
-      <div style={{ paddingTop: shop ? 58 : 0 }}>
-        <Routes>
-          <Route path="/pos/login" element={shop ? <Navigate to="/pos" replace /> : <PosLogin />} />
-          <Route path="/pos"      element={<Protected><PosDashboard /></Protected>} />
-          <Route path="/pos/scan" element={<Protected><PosScan /></Protected>} />
-          <Route path="/pos/transactions" element={<Protected><PosTransactionsPage /></Protected>} />
-          <Route path="/pos/info"         element={<Protected><PosShopInfo /></Protected>} />
-          <Route path="/pos/requests"     element={<Protected><PosRequests /></Protected>} />
-          <Route path="*"         element={<Navigate to="/pos" replace />} />
-        </Routes>
+      <div style={{ paddingTop: 58 }}>
+        <ShopSubscriptionGuard>
+          <Routes>
+            <Route path="/pos"              element={<PosDashboard />}        />
+            <Route path="/pos/scan"         element={<PosScan />}             />
+            <Route path="/pos/transactions" element={<PosTransactionsPage />} />
+            <Route path="/pos/info"         element={<PosShopInfo />}         />
+            <Route path="/pos/requests"     element={<PosRequests />}         />
+            <Route path="/pos/login"        element={<Navigate to="/pos" replace />} />
+            <Route path="*"                 element={<Navigate to="/pos" replace />} />
+          </Routes>
+
+          {showTour && (
+            <ShopOnboardingTour
+              shopId={shop.id}
+              shopName={shop.name}
+              onDone={() => setShowTour(false)}
+            />
+          )}
+        </ShopSubscriptionGuard>
       </div>
       <BottomNav />
-
-      {/* Shop onboarding tour */}
-      {showTour && shop && (
-        <ShopOnboardingTour
-          shopId={shop.id}
-          shopName={shop.name}
-          onDone={() => setShowTour(false)}
-        />
-      )}
     </>
   );
 }
