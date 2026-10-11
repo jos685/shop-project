@@ -47,27 +47,39 @@ function cardStyle(theme: any, accentBorder: string, zIndex: number) {
 }
 
 // ── 1. Update toast ───────────────────────────────────────────────────────────
+// ── 1. Update toast ───────────────────────────────────────────────────────────
 export function PwaUpdatePrompt() {
   const { theme } = useTheme();
   const isDark = theme.isDark;
+
+  const [offlineReady, setOfflineReady] = useState(false);
+  const [reloading, setReloading] = useState(false);
+  const [countdown, setCountdown] = useState(10);
 
   const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
     onRegisteredSW(_swUrl, r) {
       if (!r) return;
       const poll = setInterval(() => r.update(), 60 * 1000);
       const onVisible = () => { if (document.visibilityState === "visible") r.update(); };
-      // Check on every online event
       const onOnline = () => r.update();
       window.addEventListener("online", onOnline);
       document.addEventListener("visibilitychange", onVisible);
-      return () => { clearInterval(poll); document.removeEventListener("visibilitychange", onVisible); window.removeEventListener("online", onOnline); };
+      return () => {
+        clearInterval(poll);
+        document.removeEventListener("visibilitychange", onVisible);
+        window.removeEventListener("online", onOnline);
+      };
+    },
+    // ── No update pending → the SW has pre-cached the app for offline use.
+    onOfflineReady() {
+      setOfflineReady(true);
+      setTimeout(() => setOfflineReady(false), 4000);
     },
   });
 
-  const [reloading,  setReloading]  = useState(false);
-  const [countdown,  setCountdown]  = useState(10);
   const handleReload = () => { setReloading(true); updateServiceWorker(true); };
 
+  // Countdown when update is available
   useEffect(() => {
     if (!needRefresh) return;
     setCountdown(10);
@@ -75,69 +87,105 @@ export function PwaUpdatePrompt() {
     return () => clearInterval(id);
   }, [needRefresh]);
 
+  // Auto-reload at zero
   useEffect(() => {
     if (!needRefresh || countdown > 0) return;
     handleReload();
   }, [countdown, needRefresh]);
 
-  if (!needRefresh) return null;
-
-  const cyan   = theme.accent.cyan;
+  const gold    = theme.accent.gold;
+  const cyan    = theme.accent.cyan;
   const textMut = theme.text.muted;
 
   return (
     <>
       <style>{SHARED_STYLES}</style>
-      <div style={cardStyle(theme, `${cyan}73`, 99999)}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+
+      {/* ── Update available ───────────────────────────────────────────── */}
+      {needRefresh && (
+        <div style={{ ...cardStyle(theme, `${gold}80`, 99999), bottom: 88 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div style={{
+              width: 36, height: 36, borderRadius: 10, flexShrink: 0,
+              background: isDark ? "rgba(234,179,8,0.12)" : "rgba(234,179,8,0.1)",
+              border: `1px solid ${gold}4D`,
+              display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
+            }}>
+              {reloading
+                ? <span style={{ display: "inline-block", animation: "pwaSpin 0.8s linear infinite" }}>🔄</span>
+                : "⬆️"}
+            </div>
+
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: gold, fontFamily: theme.font.mono, marginBottom: 1 }}>
+                Update available
+              </div>
+              <div style={{ fontSize: 11, color: textMut, fontFamily: theme.font.mono }}>
+                {reloading ? "Updating…" : `Auto-refreshing in ${countdown}s`}
+              </div>
+            </div>
+
+            <button
+              onClick={handleReload}
+              disabled={reloading}
+              style={{
+                background: reloading
+                  ? `${gold}26`
+                  : `linear-gradient(135deg,${gold},#f59e0b)`,
+                border: "none", borderRadius: 9,
+                padding: "9px 16px",
+                // Dark text reads better on a gold button
+                color: "#0f172a",
+                fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                cursor: reloading ? "not-allowed" : "pointer",
+                opacity: reloading ? 0.7 : 1,
+                flexShrink: 0, whiteSpace: "nowrap",
+              }}
+            >
+              {reloading ? "…" : `Update (${countdown}s)`}
+            </button>
+          </div>
+
+          {/* Countdown progress bar */}
+          {!reloading && (
+            <div style={{
+              position: "absolute", bottom: 0, left: 0, right: 0, height: 3,
+              background: `${gold}1F`,
+            }}>
+              <div style={{
+                height: "100%", background: gold,
+                width: `${(countdown / 10) * 100}%`,
+                transition: "width 1s linear",
+              }} />
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ── No update → app is cached offline. Silent, transient banner. ── */}
+      {offlineReady && !needRefresh && (
+        <div style={{
+          ...cardStyle(theme, `${cyan}59`, 99999),
+          bottom: 88,
+          display: "flex", alignItems: "center", gap: 12,
+          pointerEvents: "none",
+        }}>
           <div style={{
             width: 36, height: 36, borderRadius: 10, flexShrink: 0,
             background: isDark ? "rgba(6,182,212,0.12)" : "rgba(6,182,212,0.1)",
             border: `1px solid ${cyan}4D`,
             display: "flex", alignItems: "center", justifyContent: "center", fontSize: 17,
-          }}>
-            {reloading
-              ? <span style={{ display: "inline-block", animation: "pwaSpin 0.8s linear infinite" }}>🔄</span>
-              : "⬆️"}
-          </div>
+          }}>✓</div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: cyan, fontFamily: theme.font.mono, marginBottom: 1 }}>
-              Update available
+              Ready offline
             </div>
             <div style={{ fontSize: 11, color: textMut, fontFamily: theme.font.mono }}>
-              {reloading ? "Reloading…" : `Auto-refreshing in ${countdown}s`}
+              App cached for offline use
             </div>
           </div>
-          <button
-            onClick={handleReload}
-            disabled={reloading}
-            style={{
-              background: reloading
-                ? `${cyan}26`
-                : `linear-gradient(135deg,${cyan},#0891b2)`,
-              border: "none", borderRadius: 9,
-              padding: "9px 16px", color: "#fff",
-              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-              cursor: reloading ? "not-allowed" : "pointer", flexShrink: 0,
-              transition: "background 0.2s", whiteSpace: "nowrap",
-            }}
-          >
-            {reloading ? "Reloading…" : `Reload (${countdown}s)`}
-          </button>
         </div>
-        {!reloading && (
-          <div style={{
-            position: "absolute", bottom: 0, left: 0, right: 0, height: 3,
-            background: `${cyan}1F`,
-          }}>
-            <div style={{
-              height: "100%", background: cyan,
-              width: `${(countdown / 10) * 100}%`,
-              transition: "width 1s linear",
-            }} />
-          </div>
-        )}
-      </div>
+      )}
     </>
   );
 }
