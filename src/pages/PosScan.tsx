@@ -922,6 +922,7 @@ const formatBackdate = (iso: string) => {
   const NAV_H = isMobile ? 92 : 128;
 
   const [reopenPayAfterEdit, setReopenPayAfterEdit] = useState(false);
+  const [reopenPayAfterBackdate, setReopenPayAfterBackdate] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
   const [toast, setToast] = useState<{ text: string; lastKey?: string } | null>(null);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -3131,7 +3132,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
 />
 
 {/* ══════════════════ SALE DOCK ══════════════════ */}
-{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && (
+{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && !backdateOpen && (
   <SaleDock
     count={cart.length}
     total={grandTotal}
@@ -3144,7 +3145,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
 )}
 
 {/* ══════════════════ ADD TOAST ══════════════════ */}
-{toast && step === "scan" && !payOpen && (
+{toast && step === "scan" && !payOpen && !backdateOpen && (
   <AddToast
     text={toast.text}
     theme={theme}
@@ -3361,6 +3362,53 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
           >
             + Add more products
           </button>
+
+          {/* ── Backdate row ─────────────────────────────────────────── */}
+<button
+  onClick={() => {
+    setReopenPayAfterBackdate(true);
+    setPayOpen(false);
+    setBackdateOpen(true);
+  }}
+  title={backdate ? "Change the sale date" : "Record this sale as a past sale"}
+  style={{
+    marginTop: 8,
+    width: "100%",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 10,
+    padding: "10px 12px",
+    borderRadius: 10,
+    border: `1px solid ${
+      backdate ? "rgba(251,191,36,0.65)" : "rgba(251,191,36,0.35)"
+    }`,
+    background: backdate ? "rgba(251,191,36,0.14)" : "rgba(251,191,36,0.06)",
+    color: "#fbbf24",
+    fontFamily: theme.font.mono,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    textAlign: "left",
+  }}
+>
+  <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    🕐 {backdate ? "Sale date" : "Backdate this sale"}
+  </span>
+  <span
+    style={{
+      color: backdate ? "#fbbf24" : theme.text.muted,
+      fontWeight: 600,
+      fontSize: 11,
+      maxWidth: "60%",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+      whiteSpace: "nowrap",
+    }}
+  >
+    {backdate && saleDate ? formatBackdate(saleDate) : "Set a past date"}
+  </span>
+</button>
         </div>
 
         {/* ── Payment chips ── */}
@@ -3716,11 +3764,21 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
 {/* ══════════════════ BACKDATE PICKER MODAL ══════════════════ */}
 <BackdatePickerModal
   open={backdateOpen}
-  onClose={() => setBackdateOpen(false)}
+  onClose={() => {
+    setBackdateOpen(false);
+    if (reopenPayAfterBackdate) {
+      setReopenPayAfterBackdate(false);
+      setPayOpen(true);
+    }
+  }}
   onApply={(iso) => {
     setSaleDate(iso);
     setBackdate(true);
     setBackdateOpen(false);
+    if (reopenPayAfterBackdate) {
+      setReopenPayAfterBackdate(false);
+      setPayOpen(true);
+    }
   }}
   theme={theme}
   isMobile={isMobile}
