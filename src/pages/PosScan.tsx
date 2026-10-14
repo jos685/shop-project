@@ -885,6 +885,196 @@ function BackdatePickerModal({
     document.body
   );
 }
+
+// ── Themed confirmation modal — drop-in replacement for window.confirm() ──
+function ConfirmModal({
+  open,
+  title,
+  message,
+  confirmLabel = "Confirm",
+  cancelLabel = "Cancel",
+  danger = false,
+  onConfirm,
+  onCancel,
+  theme,
+  isMobile,
+}: {
+  open: boolean;
+  title: string;
+  message: string;
+  confirmLabel?: string;
+  cancelLabel?: string;
+  danger?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+  theme: any;
+  isMobile: boolean;
+}) {
+  const [vw, setVw] = useState<number>(() =>
+    typeof window !== "undefined" ? window.innerWidth : 400
+  );
+
+  useEffect(() => {
+    if (!open) return;
+    const onResize = () => setVw(window.innerWidth);
+    onResize();
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open]);
+
+  // Escape to cancel — same convention as other modals on this page
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCancel();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onCancel]);
+
+  if (!open) return null;
+
+  const isTiny   = vw < 380;
+  const accent   = danger ? "#f87171" : theme.accent.cyan;
+  const accentBg = danger ? "rgba(248,113,113,0.14)" : "rgba(6,182,212,0.14)";
+
+  return createPortal(
+    <div
+      onClick={onCancel}
+      style={{
+        position: "fixed", inset: 0, zIndex: 100,
+        background: "rgba(0,0,0,0.7)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        display: "flex",
+        alignItems: isMobile ? "flex-end" : "center",
+        justifyContent: "center",
+        padding: isMobile ? 0 : 20,
+        animation: "fadeIn 0.15s ease both",
+        overflow: "hidden",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="confirm-modal-title"
+        style={{
+          boxSizing: "border-box",
+          background: theme.bg.card,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: isMobile ? "20px 20px 0 0" : 18,
+          borderBottom: isMobile ? "none" : `1px solid ${theme.border.default}`,
+          width: isMobile ? "100%" : "min(420px, 100%)",
+          maxWidth: "100%",
+          // Hard cap so the modal never fills the screen on tiny viewports
+          maxHeight: isMobile ? "min(80dvh, 80vh)" : "min(90vh, 90vh)",
+          overflowY: "auto",
+          overflowX: "hidden",
+          padding: isMobile
+            ? `18px 16px calc(env(safe-area-inset-bottom, 0px) + 18px)`
+            : "20px 20px 20px",
+          display: "flex", flexDirection: "column", gap: 14,
+          animation: "zoomIn 0.2s ease both",
+          boxShadow: "0 24px 60px rgba(0,0,0,0.55)",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {/* Icon + Title row */}
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
+          <div
+            style={{
+              width: 40, height: 40,
+              borderRadius: 12,
+              background: accentBg,
+              border: `1px solid ${accent}55`,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 20, flexShrink: 0,
+            }}
+          >
+            {danger ? "⚠️" : "❓"}
+          </div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              id="confirm-modal-title"
+              style={{
+                fontFamily: theme.font.display, fontWeight: 800,
+                fontSize: isTiny ? 15 : 16,
+                color: theme.text.primary,
+                lineHeight: 1.25,
+                wordBreak: "break-word",
+              }}
+            >
+              {title}
+            </div>
+            <div
+              style={{
+                fontFamily: theme.font.mono,
+                fontSize: 11,
+                color: theme.text.muted,
+                marginTop: 5,
+                lineHeight: 1.55,
+                wordBreak: "break-word",
+              }}
+            >
+              {message}
+            </div>
+          </div>
+        </div>
+
+        {/* Actions — stacked on very narrow screens, side-by-side otherwise */}
+        <div
+          style={{
+            display: "flex",
+            gap: 8,
+            flexDirection: isTiny ? "column-reverse" : "row",
+            marginTop: 2,
+          }}
+        >
+          <button
+            onClick={onCancel}
+            style={{
+              boxSizing: "border-box",
+              flex: 1,
+              padding: "12px 14px",
+              border: `1px solid ${theme.border.default}`,
+              background: "transparent",
+              borderRadius: 12,
+              color: theme.text.secondary,
+              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {cancelLabel}
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              boxSizing: "border-box",
+              flex: 1,
+              padding: "12px 14px",
+              background: danger
+                ? `linear-gradient(135deg,#ef4444,#b91c1c)`
+                : `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
+              border: "none",
+              borderRadius: 12,
+              color: "#fff",
+              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
   
 export default function PosScan() {
   
@@ -898,6 +1088,7 @@ export default function PosScan() {
   // ── Backdate mode (set by the "Past Sale" button on PosTransactionsPage) ──
   const [backdate, setBackdate] = useState<boolean>(() => !!location.state?.backdate);
   const [backdateOpen, setBackdateOpen] = useState(false);
+  const [clearCartOpen, setClearCartOpen] = useState(false);
 
   const [saleDate, setSaleDate] = useState<string>(() => {
   const d = new Date();
@@ -3223,21 +3414,15 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
               Items
             </span>
             {cart.length > 0 && (
-              <button
-                onClick={() => {
-                  if (!confirm("Clear all items from the cart?")) return;
-                  setCart([]);
-                  setSelectedAgent(null);
-                  setPin(""); setPinError("");
-                  setError("");
-                }}
+             <button
+                onClick={() => setClearCartOpen(true)}
                 style={{
                   background: "none", border: "none",
                   color: "#f87171", fontSize: 10, cursor: "pointer",
                   fontFamily: theme.font.mono, fontWeight: 700,
                   padding: 0,
                 }}
-              >
+               >
                 Clear all
               </button>
             )}
@@ -3783,6 +3968,26 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
   theme={theme}
   isMobile={isMobile}
   initialISO={saleDate}
+/>
+
+{/* ══════════════════ CLEAR CART CONFIRM ══════════════════ */}
+<ConfirmModal
+  open={clearCartOpen}
+  danger
+  title="Clear all items?"
+  message={`This will remove ${cart.length} item${cart.length === 1 ? "" : "s"} from the cart. This can't be undone.`}
+  confirmLabel="Yes, clear cart"
+  cancelLabel="Keep items"
+  onCancel={() => setClearCartOpen(false)}
+  onConfirm={() => {
+    setCart([]);
+    setSelectedAgent(null);
+    setPin(""); setPinError("");
+    setError("");
+    setClearCartOpen(false);
+  }}
+  theme={theme}
+  isMobile={isMobile}
 />
 
     </div>

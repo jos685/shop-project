@@ -18,7 +18,58 @@ const SHARED_STYLES = `
   @keyframes pwaSlideUp { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
   @keyframes pwaPulse   { 0%,100%{box-shadow:0 0 0 0 rgba(6,182,212,0.55)} 60%{box-shadow:0 0 0 9px rgba(6,182,212,0)} }
   @keyframes pwaSpin    { to{transform:rotate(360deg)} }
+  @keyframes pwaDrain   { from { width: 100%; } to { width: 0%; } }
+
+  @media (max-width: 480px) {
+    .pwa-shell {
+      left: 10px !important;
+      right: 10px !important;
+      padding: 12px !important;
+      border-radius: 14px !important;
+    }
+    .pwa-install-row {
+      flex-wrap: wrap;
+    }
+    .pwa-install-actions {
+      width: 100%;
+      justify-content: flex-end;
+    }
+  }
 `;
+
+// ── Reusable countdown progress bar ──────────────────────────────────────────
+function CountdownBar({
+  duration,
+  color,
+  trackColor,
+}: {
+  duration: number; // ms
+  color: string;
+  trackColor: string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: 3,
+        background: trackColor,
+        overflow: "hidden",
+      }}
+    >
+      <div
+        style={{
+          height: "100%",
+          background: color,
+          width: "100%",
+          animation: `pwaDrain ${duration}ms linear forwards`,
+        }}
+      />
+    </div>
+  );
+}
 
 // ── Shared card style factory — theme-aware ───────────────────────────────────
 function cardStyle(theme: any, accentBorder: string, zIndex: number) {
@@ -47,7 +98,6 @@ function cardStyle(theme: any, accentBorder: string, zIndex: number) {
 }
 
 // ── 1. Update toast ───────────────────────────────────────────────────────────
-// ── 1. Update toast ───────────────────────────────────────────────────────────
 export function PwaUpdatePrompt() {
   const { theme } = useTheme();
   const isDark = theme.isDark;
@@ -70,7 +120,6 @@ export function PwaUpdatePrompt() {
         window.removeEventListener("online", onOnline);
       };
     },
-    // ── No update pending → the SW has pre-cached the app for offline use.
     onOfflineReady() {
       setOfflineReady(true);
       setTimeout(() => setOfflineReady(false), 4000);
@@ -79,7 +128,6 @@ export function PwaUpdatePrompt() {
 
   const handleReload = () => { setReloading(true); updateServiceWorker(true); };
 
-  // Countdown when update is available
   useEffect(() => {
     if (!needRefresh) return;
     setCountdown(10);
@@ -87,7 +135,6 @@ export function PwaUpdatePrompt() {
     return () => clearInterval(id);
   }, [needRefresh]);
 
-  // Auto-reload at zero
   useEffect(() => {
     if (!needRefresh || countdown > 0) return;
     handleReload();
@@ -101,9 +148,11 @@ export function PwaUpdatePrompt() {
     <>
       <style>{SHARED_STYLES}</style>
 
-      {/* ── Update available ───────────────────────────────────────────── */}
       {needRefresh && (
-        <div style={{ ...cardStyle(theme, `${gold}80`, 99999), bottom: 88 }}>
+        <div
+          className="pwa-shell"
+          style={{ ...cardStyle(theme, `${gold}80`, 99999), bottom: 88 }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
             <div style={{
               width: 36, height: 36, borderRadius: 10, flexShrink: 0,
@@ -134,42 +183,36 @@ export function PwaUpdatePrompt() {
                   : `linear-gradient(135deg,${gold},#f59e0b)`,
                 border: "none", borderRadius: 9,
                 padding: "9px 16px",
-                // Dark text reads better on a gold button
                 color: "#0f172a",
                 fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
                 cursor: reloading ? "not-allowed" : "pointer",
                 opacity: reloading ? 0.7 : 1,
                 flexShrink: 0, whiteSpace: "nowrap",
+                transition: "filter 0.15s ease",
               }}
+              onMouseEnter={(e) => { if (!reloading) e.currentTarget.style.filter = "brightness(1.1)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.filter = "brightness(1)"; }}
             >
               {reloading ? "…" : `Update (${countdown}s)`}
             </button>
           </div>
 
-          {/* Countdown progress bar */}
           {!reloading && (
-            <div style={{
-              position: "absolute", bottom: 0, left: 0, right: 0, height: 3,
-              background: `${gold}1F`,
-            }}>
-              <div style={{
-                height: "100%", background: gold,
-                width: `${(countdown / 10) * 100}%`,
-                transition: "width 1s linear",
-              }} />
-            </div>
+            <CountdownBar duration={10000} color={gold} trackColor={`${gold}1F`} />
           )}
         </div>
       )}
 
-      {/* ── No update → app is cached offline. Silent, transient banner. ── */}
       {offlineReady && !needRefresh && (
-        <div style={{
-          ...cardStyle(theme, `${cyan}59`, 99999),
-          bottom: 88,
-          display: "flex", alignItems: "center", gap: 12,
-          pointerEvents: "none",
-        }}>
+        <div
+          className="pwa-shell"
+          style={{
+            ...cardStyle(theme, `${cyan}59`, 99999),
+            bottom: 88,
+            display: "flex", alignItems: "center", gap: 12,
+            pointerEvents: "none",
+          }}
+        >
           <div style={{
             width: 36, height: 36, borderRadius: 10, flexShrink: 0,
             background: isDark ? "rgba(6,182,212,0.12)" : "rgba(6,182,212,0.1)",
@@ -184,36 +227,93 @@ export function PwaUpdatePrompt() {
               App cached for offline use
             </div>
           </div>
+          <CountdownBar duration={4000} color={cyan} trackColor={`${cyan}1F`} />
         </div>
       )}
     </>
   );
 }
-// ── 2. Install banner ─────────────────────────────────────────────────────────
+
+// ── 2. Install banner — bottom-right, compact ────────────────────────────────
+function installCardStyle(theme: any, accentBorder: string) {
+  const isDark = theme.isDark;
+  return {
+    position: "fixed" as const,
+    bottom: 16,
+    right: 16,
+    left: "auto" as const,
+    zIndex: 99998,
+    background: isDark
+      ? "linear-gradient(135deg,#0d1117,#111827)"
+      : theme.bg.card,
+    border: `1px solid ${accentBorder}`,
+    borderRadius: 14,
+    padding: "10px 12px",
+    boxShadow: isDark
+      ? "0 10px 30px rgba(0,0,0,0.55)"
+      : "0 8px 22px rgba(0,0,0,0.12)",
+    animation: "pwaSlideUp 0.35s cubic-bezier(0.16,1,0.3,1) both",
+    width: 320,
+    maxWidth: "calc(100vw - 32px)",
+    overflow: "hidden" as const,
+  };
+}
+
 export function PwaInstallBanner() {
   const { theme } = useTheme();
   const isDark = theme.isDark;
 
-  type BeforeInstallPromptEvent = Event & { prompt: () => Promise<void> };
+  type BeforeInstallPromptEvent = Event & {
+    prompt: () => Promise<void>;
+    userChoice: Promise<{ outcome: "accepted" | "dismissed" }>;
+  };
+
   const [prompt, setPrompt] = useState<BeforeInstallPromptEvent | null>(null);
   const [visible, setVisible] = useState(false);
   const [installing, setInstalling] = useState(false);
   const [showIosSteps, setShowIosSteps] = useState(false);
+  const [installed, setInstalled] = useState(false);
+
+  const INSTALL_AUTO_DISMISS_MS = 15_000;
+  const [showBar, setShowBar] = useState(false);
 
   useEffect(() => {
-    if (isStandalone()) return;
-    if (sessionStorage.getItem(INSTALL_SESSION_KEY)) return;
-
-    setVisible(true);
+    if (isStandalone()) {
+      setInstalled(true);
+      return;
+    }
 
     const handler = (e: Event) => {
       e.preventDefault();
       setPrompt(e as BeforeInstallPromptEvent);
     };
 
+    const installedHandler = () => {
+      setInstalled(true);
+      setVisible(false);
+      setPrompt(null);
+    };
+
     window.addEventListener("beforeinstallprompt", handler);
-    return () => window.removeEventListener("beforeinstallprompt", handler);
+    window.addEventListener("appinstalled", installedHandler);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler);
+      window.removeEventListener("appinstalled", installedHandler);
+    };
   }, []);
+
+  useEffect(() => {
+    if (installed || isStandalone()) return;
+    if (sessionStorage.getItem(INSTALL_SESSION_KEY)) return;
+    setVisible(true);
+    setShowBar(true);
+  }, [installed]);
+
+  useEffect(() => {
+    if (!visible || showIosSteps) return;
+    const id = setTimeout(() => setVisible(false), INSTALL_AUTO_DISMISS_MS);
+    return () => clearTimeout(id);
+  }, [visible, showIosSteps]);
 
   const dismiss = () => {
     sessionStorage.setItem(INSTALL_SESSION_KEY, "1");
@@ -221,38 +321,36 @@ export function PwaInstallBanner() {
   };
 
   const install = async () => {
-    if (isIos()) { setShowIosSteps(true); return; }
+    if (isIos()) {
+      setShowIosSteps(true);
+      return;
+    }
 
     if (prompt) {
       setInstalling(true);
       try {
         await prompt.prompt();
+        const { outcome } = await prompt.userChoice;
+
+        if (outcome === "accepted") {
+          setVisible(false);
+          setPrompt(null);
+        } else {
+          setPrompt(null);
+        }
+      } catch (err) {
+        console.error("Install prompt failed:", err);
         setPrompt(null);
-        setVisible(false);
-      } catch (error) {
-        console.error("Install prompt failed:", error);
       } finally {
         setInstalling(false);
       }
       return;
     }
 
-    if (!isIos() && !/android/i.test(navigator.userAgent)) {
-      if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
-        setShowIosSteps(true);
-        return;
-      }
-    }
-
-    if (/android/i.test(navigator.userAgent)) {
-      setShowIosSteps(true);
-      return;
-    }
-
     setShowIosSteps(true);
   };
 
-  if (!visible) return null;
+  if (!visible || installed) return null;
 
   const getInstructions = () => {
     if (isIos()) {
@@ -264,51 +362,26 @@ export function PwaInstallBanner() {
     }
 
     if (/android/i.test(navigator.userAgent)) {
-      if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
-        if (!prompt) {
-          return [
-            { n: "1", text: 'Tap the menu icon (⋮) in the top right' },
-            { n: "2", text: 'Tap "Install app" or "Add to Home screen"' },
-            { n: "3", text: 'Follow the prompts to install 🎉' },
-          ];
-        }
-        return [
-          { n: "1", text: 'Wait for the install prompt to appear' },
-          { n: "2", text: 'Or tap the "Install" button below' },
-          { n: "3", text: 'Follow the on-screen instructions 🎉' },
-        ];
-      }
       return [
-        { n: "1", text: "Open this page in Chrome or Edge browser" },
-        { n: "2", text: 'Look for the install icon (⊞) in the address bar or menu' },
-        { n: "3", text: 'Tap "Install" to add to home screen 🎉' },
-      ];
-    }
-
-    if (/chrome/i.test(navigator.userAgent) || /edg/i.test(navigator.userAgent)) {
-      return [
-        { n: "1", text: 'Look for the install icon (⊞) in the address bar' },
-        { n: "2", text: 'Click the icon to install the app' },
-        { n: "3", text: 'Or click the "Install" button below 🎉' },
+        { n: "1", text: 'Tap the menu icon (⋮) in the top right' },
+        { n: "2", text: 'Tap "Install app" or "Add to Home screen"' },
+        { n: "3", text: 'Confirm the install 🎉' },
       ];
     }
 
     return [
-      { n: "1", text: "Open this page in Chrome or Edge browser" },
-      { n: "2", text: 'Look for the install icon in the address bar' },
-      { n: "3", text: 'Click the icon and follow the prompts 🎉' },
+      { n: "1", text: 'Look for the install icon (⊞) in the address bar' },
+      { n: "2", text: 'Click it and confirm the install' },
+      { n: "3", text: 'The app will appear on your home screen 🎉' },
     ];
   };
 
   const getButtonText = () => {
     if (installing) return "Installing…";
-    if (isIos()) return "📱 iOS Guide";
-    if (prompt) return "📲 Install";
-    if (/android/i.test(navigator.userAgent)) return "📱 Install";
     return "📲 Install";
   };
 
-  const shouldPulse = !installing && !isIos();
+  const shouldPulse = !installing && !isIos() && !!prompt;
 
   const cyan    = theme.accent.cyan;
   const textPri = theme.text.primary;
@@ -317,18 +390,24 @@ export function PwaInstallBanner() {
   return (
     <>
       <style>{SHARED_STYLES}</style>
-      <div style={{ ...cardStyle(theme, `${cyan}59`, 99998), bottom: 72, padding: "14px 14px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div
+        className="pwa-install-shell"
+        style={installCardStyle(theme, `${cyan}59`)}
+      >
+        <div
+          className="pwa-install-row"
+          style={{ display: "flex", alignItems: "center", gap: 10 }}
+        >
           <img
             src="/Qash.png"
             alt="Q-SHOP"
-            style={{ width: 44, height: 44, borderRadius: 12, objectFit: "cover", flexShrink: 0 }}
+            style={{ width: 36, height: 36, borderRadius: 10, objectFit: "cover", flexShrink: 0 }}
           />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: textPri, fontFamily: theme.font.mono }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: textPri, fontFamily: theme.font.mono, lineHeight: 1.2 }}>
               Add Q-SHOP to Home Screen
             </div>
-            <div style={{ fontSize: 11, color: textMut, fontFamily: theme.font.mono, marginTop: 2, lineHeight: 1.4 }}>
+            <div style={{ fontSize: 10, color: textMut, fontFamily: theme.font.mono, marginTop: 2, lineHeight: 1.3 }}>
               {isIos()
                 ? "Available via Safari's share menu"
                 : prompt
@@ -336,7 +415,10 @@ export function PwaInstallBanner() {
                 : "Install for faster access and offline use"}
             </div>
           </div>
-          <div style={{ display: "flex", gap: 7, flexShrink: 0 }}>
+          <div
+            className="pwa-install-actions"
+            style={{ display: "flex", gap: 6, flexShrink: 0 }}
+          >
             <button
               onClick={install}
               disabled={installing}
@@ -344,53 +426,74 @@ export function PwaInstallBanner() {
                 background: installing
                   ? `${cyan}26`
                   : `linear-gradient(135deg,${cyan},#0891b2)`,
-                border: "none", borderRadius: 9, padding: "9px 15px",
-                color: "#fff", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                border: "none", borderRadius: 8, padding: "7px 12px",
+                color: "#fff", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
                 cursor: installing ? "not-allowed" : "pointer",
                 animation: shouldPulse ? "pwaPulse 2.5s ease infinite" : "none",
                 whiteSpace: "nowrap",
+                transition: "filter 0.15s ease",
               }}
+              onMouseEnter={(e) => { if (!installing) e.currentTarget.style.filter = "brightness(1.1)"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.filter = "brightness(1)"; }}
             >
               {getButtonText()}
             </button>
             <button
               onClick={dismiss}
               title="Close"
+              aria-label="Dismiss"
               style={{
                 background: "transparent",
                 border: `1px solid ${theme.border.default}`,
-                borderRadius: 9, padding: "9px 11px",
+                borderRadius: 8, padding: "7px 9px",
                 color: textMut, fontFamily: theme.font.mono,
-                fontSize: 14, cursor: "pointer", lineHeight: 1,
+                fontSize: 12, cursor: "pointer", lineHeight: 1,
+                flexShrink: 0,
+                transition: "background 0.15s ease, color 0.15s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = `${cyan}1a`;
+                e.currentTarget.style.color = textPri;
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "transparent";
+                e.currentTarget.style.color = textMut;
               }}
             >✕</button>
           </div>
-          
         </div>
 
         {showIosSteps && (
           <div style={{
-            marginTop: 12,
+            marginTop: 10,
             background: isDark ? "rgba(6,182,212,0.06)" : "rgba(6,182,212,0.05)",
             border: `1px solid ${cyan}33`,
-            borderRadius: 10, padding: "12px 14px",
-            display: "flex", flexDirection: "column", gap: 8,
+            borderRadius: 10, padding: "10px 12px",
+            display: "flex", flexDirection: "column", gap: 6,
           }}>
             {getInstructions().map(s => (
-              <div key={s.n} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+              <div key={s.n} style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
                 <span style={{
-                  width: 20, height: 20, borderRadius: "50%", flexShrink: 0,
+                  width: 18, height: 18, borderRadius: "50%", flexShrink: 0,
                   background: isDark ? "rgba(6,182,212,0.2)" : "rgba(6,182,212,0.15)",
                   border: `1px solid ${cyan}66`,
                   display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 10, fontWeight: 700, color: cyan, fontFamily: theme.font.mono,
+                  fontSize: 9, fontWeight: 700, color: cyan, fontFamily: theme.font.mono,
                 }}>{s.n}</span>
-                <span style={{ fontSize: 12, color: theme.text.secondary, fontFamily: theme.font.mono, lineHeight: 1.5 }}>
+                <span style={{ fontSize: 11, color: theme.text.secondary, fontFamily: theme.font.mono, lineHeight: 1.45 }}>
                   {s.text}
                 </span>
               </div>
             ))}
           </div>
+        )}
+
+        {showBar && !showIosSteps && !installing && (
+          <CountdownBar
+            duration={INSTALL_AUTO_DISMISS_MS}
+            color={cyan}
+            trackColor={`${cyan}1F`}
+          />
         )}
       </div>
     </>
@@ -403,7 +506,7 @@ export function PwaReinstallNudge() {
   const isDark = theme.isDark;
 
   const [visible, setVisible] = useState(false);
-  const COUNTDOWN_SECONDS = 15; // how long the banner stays
+  const COUNTDOWN_SECONDS = 15;
   const [countdown, setCountdown] = useState(COUNTDOWN_SECONDS);
 
   useEffect(() => {
@@ -418,7 +521,6 @@ export function PwaReinstallNudge() {
     const id = setTimeout(() => setCountdown(c => c - 1), 1000);
     return () => clearTimeout(id);
   }, [visible, countdown]);
-  
 
   const dismiss = () => {
     localStorage.setItem(REINSTALL_KEY, "1");
@@ -434,7 +536,10 @@ export function PwaReinstallNudge() {
   return (
     <>
       <style>{SHARED_STYLES}</style>
-      <div style={{ ...cardStyle(theme, `${gold}59`, 99997), bottom: 80, padding: "14px 14px" }}>
+      <div
+        className="pwa-shell"
+        style={{ ...cardStyle(theme, `${gold}59`, 99997), bottom: 80, padding: "14px 14px" }}
+      >
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{
             width: 44, height: 44, borderRadius: 12, flexShrink: 0,
@@ -455,28 +560,31 @@ export function PwaReinstallNudge() {
           <button
             onClick={dismiss}
             title="Dismiss"
+            aria-label="Dismiss"
             style={{
               background: "transparent",
               border: `1px solid ${theme.border.default}`,
               borderRadius: 9, padding: "9px 11px",
               color: textMut, fontFamily: theme.font.mono,
               fontSize: 14, cursor: "pointer", lineHeight: 1, flexShrink: 0,
+              transition: "background 0.15s ease, color 0.15s ease",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = `${gold}1a`;
+              e.currentTarget.style.color = theme.text.primary;
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "transparent";
+              e.currentTarget.style.color = textMut;
             }}
           >✕</button>
         </div>
 
-        <div style={{
-          position: "absolute",
-          bottom: 0, left: 0, right: 0, height: 3,
-          background: `${gold}1F`,
-        }}>
-          <div style={{
-            height: "100%",
-            background: gold,
-            width: `${(countdown / COUNTDOWN_SECONDS) * 100}%`,
-            transition: "width 1s linear",
-          }} />
-        </div>
+        <CountdownBar
+          duration={COUNTDOWN_SECONDS * 1000}
+          color={gold}
+          trackColor={`${gold}1F`}
+        />
       </div>
     </>
   );
