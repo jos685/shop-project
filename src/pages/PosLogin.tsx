@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
@@ -18,6 +18,37 @@ export default function PosLogin() {
   const { isOnline } = useNetwork();
   const dk = theme.isDark;
   const security = useLoginSecurity();
+
+    const [installPrompt, setInstallPrompt] = useState<any>(null);
+  const [isInstalled,   setIsInstalled]   = useState(() =>
+    window.matchMedia("(display-mode: standalone)").matches ||
+    (navigator as any).standalone === true
+  );
+  const [showIosHint,   setShowIosHint]   = useState(false);
+  const isIos = /iphone|ipad|ipod/i.test(navigator.userAgent);
+
+  useEffect(() => {
+    const handler = (e: Event) => { e.preventDefault(); setInstallPrompt(e); };
+    const installed = () => { setIsInstalled(true); setInstallPrompt(null); };
+    window.addEventListener("beforeinstallprompt", handler);
+    window.addEventListener("appinstalled", installed);
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler);
+      window.removeEventListener("appinstalled", installed);
+    };
+  }, []);
+
+  const handleInstall = async () => {
+  if (isIos) { setShowIosHint(h => !h); return; }
+  if (!installPrompt) {
+    // Brave, Firefox, Safari desktop, or Chrome before prompt fires
+    setShowIosHint(h => !h);  // reuse the same hint toggle
+    return;
+  }
+  await installPrompt.prompt();
+  const { outcome } = await installPrompt.userChoice;
+  if (outcome === "accepted") { setIsInstalled(true); setInstallPrompt(null); }
+};
 
   const [businessCode, setBusinessCode] = useState("");
   const [shopSuffix,   setShopSuffix]   = useState("");
@@ -719,6 +750,70 @@ export default function PosLogin() {
             </div>
 
           </form>
+
+                    {!isInstalled && (
+            <div style={{ marginTop: 14 }}>
+              <button
+                type="button"
+                onClick={handleInstall}
+                style={{
+                  width: "100%",
+                  padding: "13px 16px",
+                  borderRadius: 14,
+                  background: "transparent",
+                  border: `1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"}`,
+                  color: dk ? "#c2bdd1" : "#44403c",
+                  fontFamily: "'Inter', system-ui, sans-serif",
+                  fontWeight: 600,
+                  fontSize: 14,
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  gap: 8,
+                  transition: "border-color 0.15s, background 0.15s",
+                }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="7 10 12 15 17 10"/>
+                  <line x1="12" y1="15" x2="12" y2="3"/>
+                </svg>
+                Install
+              </button>
+              {showIosHint && (
+  <div style={{
+    marginTop: 8,
+    padding: "10px 13px",
+    background: dk ? "rgba(249,115,22,0.08)" : "#fff7ed",
+    border: "1px solid rgba(249,115,22,0.3)",
+    borderRadius: 10,
+    fontSize: 11.5,
+    color: dk ? "#fdba74" : "#c2410c",
+    lineHeight: 1.6,
+    fontFamily: "'Inter', sans-serif",
+  }}>
+    {isIos ? (
+      <>
+        Tap <strong>Share</strong>{" "}
+        <svg style={{ verticalAlign: "middle" }} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/>
+          <polyline points="16 6 12 2 8 6"/>
+          <line x1="12" y1="2" x2="12" y2="15"/>
+        </svg>
+        {" "}in Safari → <strong>Add to Home Screen</strong>
+      </>
+    ) : (
+      <>
+        Tap the <strong>install icon</strong> in your browser's address bar,
+        or open the browser menu (<strong>⋮</strong>) and choose
+        {" "}<strong>"Install app"</strong> or <strong>"Add to Home screen"</strong>.
+      </>
+    )}
+  </div>
+)}
+            </div>
+          )}
 
           <div className="est-form-footer">
             <div className="est-form-footer-dot" style={{ background: isOnline ? "#4ade80" : "#ef4444", boxShadow: isOnline ? "0 0 0 3px rgba(74,222,128,0.18)" : "0 0 0 3px rgba(239,68,68,0.18)" }} />

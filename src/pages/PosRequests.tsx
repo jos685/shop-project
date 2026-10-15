@@ -54,6 +54,72 @@ const owedByCustomer = (sale: CreditSale, returns: TransactionReturn[]) =>
 const owedByShop = (sale: CreditSale, returns: TransactionReturn[]) =>
   Math.max(0, -getSaleNet(sale, returns));
 
+// ── Running balance timeline ─────────────────────────────────────────
+// Walks payments AND returns in strict chronological order, so the
+// "Bal:" figure on each row reflects the TRUE balance right after that
+// event — matching what owedByCustomer / owedByShop would say at that
+// moment in time.
+//
+// A return reduces the balance by the value of goods returned PLUS any
+// refund handed back (because the refund is money that left the till
+// without reducing debt — the return value and refund are two halves
+// of the same transaction and we account for both).
+//
+// Returns a Map keyed by payment.id → balance after that payment.
+export interface BalanceEvent {
+  id: string;
+  kind: "payment" | "return";
+  amount: number;       // net effect on the balance (positive reduces debt)
+  created_at: string;
+}
+
+function buildBalanceTimeline(
+  startingBalance: number,
+  payments: CreditPayment[],
+  returns: TransactionReturn[],
+): {
+  afterPayment: Map<string, number>;
+  afterReturn: Map<string, number>;
+} {
+  const events: BalanceEvent[] = [
+    ...payments.map(p => ({
+      id: p.id,
+      kind: "payment" as const,
+      amount: Number(p.amount) || 0,
+      created_at: p.created_at,
+    })),
+    ...returns.map(r => {
+      const returnValue = Number(r.quantity_returned) * Number(r.unit_price);
+      const refundSplit =
+        Number(r.refund_cash_amount || 0) + Number(r.refund_mpesa_amount || 0);
+      const refund = refundSplit > 0 ? refundSplit : Number(r.amount_refunded || 0);
+      // Net effect on balance: return value reduces debt, refund puts
+      // money back in the customer's pocket without reducing the sale,
+      // so it cancels part of the return's effect.
+      return {
+        id: r.id,
+        kind: "return" as const,
+        amount: Math.max(0, returnValue - refund),
+        created_at: r.created_at,
+      };
+    }),
+  ].sort((a, b) =>
+    new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+  );
+
+  const afterPayment = new Map<string, number>();
+  const afterReturn = new Map<string, number>();
+  let running = startingBalance;
+
+  for (const ev of events) {
+    running = Math.max(0, running - ev.amount);
+    if (ev.kind === "payment") afterPayment.set(ev.id, running);
+    else afterReturn.set(ev.id, running);
+  }
+
+  return { afterPayment, afterReturn };
+}
+
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
@@ -1963,60 +2029,7 @@ ${theme.kiCss}
                           </button>
                         </div>
 
-                        {/* ── Unified Payment History ── */}
-                        {(() => {
-                          const allPmts = group.sales
-                            .flatMap(s => (creditPayments[s.id] ?? []))
-                            .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-                          const allLoaded = group.sales.every(s => creditPayments[s.id] !== undefined);
-                          const totalCredit = group.totalAmount;
-                          return (
-                            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}` }}>
-                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
-                                Payment History {allLoaded ? `(${allPmts.length})` : ""}
-                              </div>
-                              {!allLoaded ? (
-                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                  <div style={{ width: 14, height: 14, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
-                                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Loading…</span>
-                                </div>
-                              ) : allPmts.length === 0 ? (
-                                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
-                              ) : (
-                                <div style={{ display: "flex", flexDirection: "column", gap: 0, background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border.default}`, borderRadius: 10, overflow: "hidden" }}>
-                                  {allPmts.map((p, idx) => {
-                                    const cumulativePaid   = allPmts.slice(0, idx + 1).reduce((s, x) => s + Number(x.amount), 0);
-                                    const runningBalance   = Math.max(0, totalCredit - cumulativePaid);
-                                    return (
-                                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < allPmts.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
-                                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, flexShrink: 0 }}>{idx + 1}</div>
-                                        <div style={{ flex: 1, minWidth: 0 }}>
-                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                                            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#34d399" }}>+{fmt(Number(p.amount))}</span>
-                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: p.payment_method === "mpesa" ? "#06b6d4" : "#34d399", background: p.payment_method === "mpesa" ? "rgba(6,182,212,0.1)" : "rgba(52,211,153,0.1)", border: `1px solid ${p.payment_method === "mpesa" ? "rgba(6,182,212,0.25)" : "rgba(52,211,153,0.25)"}`, borderRadius: 4, padding: "1px 6px" }}>
-                                              {p.payment_method === "mpesa" ? "M-Pesa" : "Cash"}
-                                            </span>
-                                          </div>
-                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
-                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                                              {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} {new Date(p.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
-                                              {p.collected_by_name ? ` · ${p.collected_by_name}` : ""}
-                                            </span>
-                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: runningBalance > 0 ? "rgba(248,113,113,0.7)" : "#34d399" }}>
-                                              Bal: {fmt(runningBalance)}
-                                            </span>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    );
-                                  })}
-                                  
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })()}
-
+                        
                         {group.sales.map((cs, csIdx, arr) => {
                           const saleReturns = creditReturns[cs.id] || [];
                           const balance     = owedByCustomer(cs, saleReturns);
@@ -2270,7 +2283,7 @@ ${theme.kiCss}
                                       </div>
                                     </div>
 
-                                  <div style={{ padding: "10px 16px 12px", borderTop: `1px solid ${theme.border.default}` }}>
+                                                                    <div style={{ padding: "10px 16px 12px", borderTop: `1px solid ${theme.border.default}` }}>
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
                                       Payment History {payments.length > 0 && `(${payments.length})`}
                                     </div>
@@ -2280,13 +2293,34 @@ ${theme.kiCss}
                                       </div>
                                     ) : payments.length === 0 ? (
                                       <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
-                                    ) : (
+                                    ) : (() => {
+                                      // Newest payment on top; running balance walks
+                                      // payments AND returns chronologically so "Bal:"
+                                      // matches the true balance after each payment.
+                                      const orderedPayments = [...payments].sort(
+                                        (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
+                                      );
+                                      const { afterPayment } = buildBalanceTimeline(
+                                        cs.amount,
+                                        payments,
+                                        saleReturns,
+                                      );
+                                      return (
                                       <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                                        {payments.map((p, idx) => (
+                                        {orderedPayments.map((p, idx) => {
+                                          const runningBal = afterPayment.get(p.id);
+                                          return (
                                           <div key={p.id} style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                                             <div style={{ width: 22, height: 22, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, flexShrink: 0, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, marginTop: 1 }}>{idx + 1}</div>
                                             <div style={{ flex: 1, minWidth: 0 }}>
-                                              <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, fontWeight: 600 }}>{fmt(p.amount)}</div>
+                                              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+                                                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, fontWeight: 600 }}>{fmt(p.amount)}</div>
+                                                {runningBal !== undefined && (
+                                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: runningBal > 0 ? "rgba(248,113,113,0.75)" : "#34d399", flexShrink: 0 }}>
+                                                    Bal: {fmt(runningBal)}
+                                                  </div>
+                                                )}
+                                              </div>
                                               <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
                                                 {p.payment_method === "cash" ? "💵 Cash" : "📱 M-Pesa"}{p.mpesa_ref ? ` · ${p.mpesa_ref}` : ""}
                                               </div>
@@ -2300,7 +2334,8 @@ ${theme.kiCss}
                                               {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })}
                                             </div>
                                           </div>
-                                        ))}
+                                          );
+                                        })}
                                         <div style={{ display: "flex", justifyContent: "space-between", borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, marginTop: 2, fontSize: 11, fontFamily: theme.font.mono }}>
                                           <span style={{ color: theme.text.muted }}>Total paid</span>
                                           <span style={{ color: "#34d399", fontWeight: 700 }}>{fmt(cs.amount_paid)}</span>
@@ -2312,13 +2347,80 @@ ${theme.kiCss}
                                           </div>
                                         )}
                                       </div>
-                                    )}
+                                      );
+                                    })()}
                                   </div>
                                 </div>
                               )}
                             </div>
                           );
                         })}
+
+
+                        {/* ── Unified Payment History ── */}
+                          {(() => {
+                            const allPmts = group.sales
+                              .flatMap(s => (creditPayments[s.id] ?? []))
+                              .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+
+                            // Build the true running balance using both payments AND returns,
+                            // so the "Bal:" figure matches the real outstanding balance after
+                            // each payment — even when a return occurred earlier or later.
+                            const allReturns = group.sales.flatMap(s => creditReturns[s.id] ?? []);
+                            const { afterPayment: balanceAfter } = buildBalanceTimeline(
+                              group.totalAmount,
+                              allPmts,
+                              allReturns,
+                            );
+
+                            const allLoaded = group.sales.every(s => creditPayments[s.id] !== undefined);
+                            const totalCredit = group.totalAmount;
+                          return (
+                            <div style={{ padding: "12px 16px", borderBottom: `1px solid ${theme.border.default}` }}>
+                              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                                Payment History {allLoaded ? `(${allPmts.length})` : ""}
+                              </div>
+                              {!allLoaded ? (
+                                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                  <div style={{ width: 14, height: 14, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite", flexShrink: 0 }} />
+                                  <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Loading…</span>
+                                </div>
+                              ) : allPmts.length === 0 ? (
+                                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, fontStyle: "italic" }}>No payments recorded yet</div>
+                              ) : (
+                                <div style={{ display: "flex", flexDirection: "column", gap: 0, background: "rgba(255,255,255,0.02)", border: `1px solid ${theme.border.default}`, borderRadius: 10, overflow: "hidden" }}>
+                                  {allPmts.map((p, idx) => {
+                                    
+                                    const runningBalance = balanceAfter.get(p.id) ?? totalCredit;
+                                    return (
+                                      <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderBottom: idx < allPmts.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
+                                        <div style={{ width: 28, height: 28, borderRadius: "50%", background: "rgba(52,211,153,0.1)", border: "1px solid rgba(52,211,153,0.25)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", fontWeight: 700, flexShrink: 0 }}>{idx + 1}</div>
+                                        <div style={{ flex: 1, minWidth: 0 }}>
+                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                                            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 700, color: "#34d399" }}>+{fmt(Number(p.amount))}</span>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: p.payment_method === "mpesa" ? "#06b6d4" : "#34d399", background: p.payment_method === "mpesa" ? "rgba(6,182,212,0.1)" : "rgba(52,211,153,0.1)", border: `1px solid ${p.payment_method === "mpesa" ? "rgba(6,182,212,0.25)" : "rgba(52,211,153,0.25)"}`, borderRadius: 4, padding: "1px 6px" }}>
+                                              {p.payment_method === "mpesa" ? "M-Pesa" : "Cash"}
+                                            </span>
+                                          </div>
+                                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                              {new Date(p.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })} {new Date(p.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                                              {p.collected_by_name ? ` · ${p.collected_by_name}` : ""}
+                                            </span>
+                                            <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: runningBalance > 0 ? "rgba(248,113,113,0.7)" : "#34d399" }}>
+                                              Bal: {fmt(runningBalance)}
+                                            </span>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                  
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                                                 {/* ── Bottom summary — totals for the whole customer group ── */}
                                                 <div style={{

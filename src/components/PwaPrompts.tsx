@@ -20,19 +20,14 @@ const SHARED_STYLES = `
   @keyframes pwaSpin    { to{transform:rotate(360deg)} }
   @keyframes pwaDrain   { from { width: 100%; } to { width: 0%; } }
 
-  @media (max-width: 480px) {
-    .pwa-shell {
-      left: 10px !important;
-      right: 10px !important;
-      padding: 12px !important;
-      border-radius: 14px !important;
-    }
+   @media (max-width: 480px) {
+    /* Only the small screens get pushed full-width; the install banner
+       handles its own layout in installCardStyle so we don't fight it. */
     .pwa-install-row {
-      flex-wrap: wrap;
+      flex-wrap: nowrap;
     }
     .pwa-install-actions {
-      width: 100%;
-      justify-content: flex-end;
+      flex-shrink: 0;
     }
   }
 `;
@@ -208,7 +203,7 @@ export function PwaUpdatePrompt() {
           className="pwa-shell"
           style={{
             ...cardStyle(theme, `${cyan}59`, 99999),
-            bottom: 88,
+            bottom: "calc(env(safe-area-inset-bottom, 0px) + 24px)",
             display: "flex", alignItems: "center", gap: 12,
             pointerEvents: "none",
           }}
@@ -237,25 +232,45 @@ export function PwaUpdatePrompt() {
 // ── 2. Install banner — bottom-right, compact ────────────────────────────────
 function installCardStyle(theme: any, accentBorder: string) {
   const isDark = theme.isDark;
+  const isNarrow =
+    typeof window !== "undefined" &&
+    window.matchMedia("(max-width: 640px)").matches;
+
   return {
     position: "fixed" as const,
-    bottom: 16,
-    right: 16,
-    left: "auto" as const,
     zIndex: 99998,
     background: isDark
       ? "linear-gradient(135deg,#0d1117,#111827)"
       : theme.bg.card,
     border: `1px solid ${accentBorder}`,
-    borderRadius: 14,
-    padding: "10px 12px",
     boxShadow: isDark
       ? "0 10px 30px rgba(0,0,0,0.55)"
       : "0 8px 22px rgba(0,0,0,0.12)",
     animation: "pwaSlideUp 0.35s cubic-bezier(0.16,1,0.3,1) both",
-    width: 320,
-    maxWidth: "calc(100vw - 32px)",
     overflow: "hidden" as const,
+
+    // Mobile: full-width card, floats above the safe area with breathing room.
+    // Desktop: compact bottom-right corner card.
+    ...(isNarrow
+      ? {
+          left: 12,
+          right: 12,
+          bottom: "calc(env(safe-area-inset-bottom, 0px) + 20px)",
+          borderRadius: 14,
+          padding: "12px 14px",
+          maxWidth: 440,
+          marginLeft: "auto",
+          marginRight: "auto",
+        }
+      : {
+          right: 16,
+          left: "auto" as const,
+          bottom: 16,
+          borderRadius: 14,
+          padding: "10px 12px",
+          width: 320,
+          maxWidth: "calc(100vw - 32px)",
+        }),
   };
 }
 
@@ -404,10 +419,8 @@ export function PwaInstallBanner() {
             style={{ width: 36, height: 36, borderRadius: 10, objectFit: "cover", flexShrink: 0 }}
           />
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: textPri, fontFamily: theme.font.mono, lineHeight: 1.2 }}>
-              Add Q-SHOP to Home Screen
-            </div>
-            <div style={{ fontSize: 10, color: textMut, fontFamily: theme.font.mono, marginTop: 2, lineHeight: 1.3 }}>
+           
+            <div style={{ fontSize: 10, fontWeight: 700, color: textPri, fontFamily: theme.font.mono, marginTop: 2, lineHeight: 1.3 }}>
               {isIos()
                 ? "Available via Safari's share menu"
                 : prompt

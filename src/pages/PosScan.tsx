@@ -7,7 +7,7 @@ import QrScanner from "../components/QrScanner";
 import { supabase, productImageUrl } from "../lib/supabase";
 import { useOwnerFeatures } from "../lib/ownerFeatures";
 import { enqueue } from "../lib/offlineQueue";
-import { sanitizeText, sanitizePhone, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
+import { sanitizeText, sanitizePhone, sanitizeAmount } from "../lib/sanitize";
 import { createPortal } from "react-dom";
 // import FloatingCart from "../components/FloatingCart";
 import UnlistedItemModal from "../components/UnlistedItemModal";
@@ -17,6 +17,8 @@ import AddToast from "../components/AddToast";
 import type { CartItem, ListedCartItem, CustomItem } from "../types/pos";
 import { cartItemName, cartItemImage } from "../types/pos";
 import CenterModal from "../components/CenterModal";
+import ReceiptSuccessScreen from "../components/ReceiptSuccessScreen";
+import { useBusinessInfo } from "../lib/useBusinessInfo"
 
 
 type Step         = "scan" | "verify" | "success";
@@ -1127,6 +1129,9 @@ const formatBackdate = (iso: string) => {
   const { features } = useOwnerFeatures(shop?.owner_id);
   const canScan = features.scan_to_sell;
 
+  // Business info (name, phone, logo) for the receipt header — cache-first
+  const businessInfo = useBusinessInfo(shop);
+
   // ── flow state ────────────────────────────────────────────────────────
   const [step,         setStep]         = useState<Step>("scan");
   const [verifyMethod, setVerifyMethod] = useState<VerifyMethod>("pin");
@@ -1323,6 +1328,12 @@ const editUnlistedItem = (key: string) => {
   const [businessName,  setBusinessName]  = useState("");
   const [receiptStatus, setReceiptStatus] = useState<"idle" | "sending" | "sent" | "failed">("idle");
 
+    // Stock loading state — drives the skeleton on first load and the
+  // "Refreshing" pill on background re-fetches.
+  const [stockLoading,   setStockLoading]   = useState(true);
+  const [stockRefreshing, setStockRefreshing] = useState(false);
+  const firstStockFetchDone = useRef(false);
+
   // ── camera sync ───────────────────────────────────────────────────────
   useEffect(() => {
     setCameraActive(canScan && mode === "camera" && step === "scan" && !addingProduct);
@@ -1337,24 +1348,45 @@ const editUnlistedItem = (key: string) => {
   const cacheKey = shop ? `pos_cache_${shop.id}` : null;
 
   // Load from cache first so the UI is immediately populated when offline.
+   // Load from cache first so the UI is immediately populated when offline.
+  // If the cache has products, we can drop the skeleton right away —
+  // the network fetch will quietly refresh in the background.
   useEffect(() => {
-    if (!cacheKey) return;
+    if (!cacheKey) {
+      // No shop yet — leave the skeleton up, but it'll resolve quickly.
+      return;
+    }
     try {
       const raw = localStorage.getItem(cacheKey);
-      if (!raw) return;
+      if (!raw) return; // no cache → keep skeleton, network fetch will resolve it
       const { agents, products, commission, bizName, customItems: cachedCustom } = JSON.parse(raw);
-        if (agents)        setShopAgents(agents);
-        if (products)      setMyProducts(products);
-        if (commission)    setCommissionConfig(commission);
-        if (bizName)       setBusinessName(bizName);
-        if (cachedCustom)  setCustomItems(cachedCustom);
-    } catch {}
+      if (agents)        setShopAgents(agents);
+      if (products) {
+        setMyProducts(products);
+        // Cache hit with actual products — kill the skeleton immediately
+        if (Array.isArray(products) && products.length > 0) {
+          setStockLoading(false);
+          firstStockFetchDone.current = true;
+        }
+      }
+      if (commission)    setCommissionConfig(commission);
+      if (bizName)       setBusinessName(bizName);
+      if (cachedCustom)  setCustomItems(cachedCustom);
+    } catch {
+      // Corrupted cache — network fetch will overwrite it.
+    }
   }, [cacheKey]);
 
-  // Network fetch — skipped entirely when offline so we don't clobber the cache with empty data.
+    // Network fetch — skipped entirely when offline so we don't clobber the cache with empty data.
   useEffect(() => {
     if (!shop || !isOnline) return;
+
+    // If this isn't the first fetch (cache already gave us products), show
+    // the "Refreshing" pill instead of the skeleton.
+    if (firstStockFetchDone.current) setStockRefreshing(true);
+
     (async () => {
+      try {
       const [agentsRes, allocsRes, commRes, profileRes, customRes] = await Promise.all([
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
@@ -1428,9 +1460,16 @@ const editUnlistedItem = (key: string) => {
       }
       
     
-      // Full stock cache (all items including 0-remaining) for the stock info page
+            // Full stock cache (all items including 0-remaining) for the stock info page
       if (shop?.id) {
         try { localStorage.setItem(`pos_stock_full_${shop.id}`, JSON.stringify({ items: allProducts, cachedAt: Date.now() })); } catch {}
+      }
+      } catch (err) {
+        console.warn("stock fetch failed:", err);
+      } finally {
+        setStockLoading(false);
+        setStockRefreshing(false);
+        firstStockFetchDone.current = true;
       }
     })();
   }, [shop, isOnline, cacheKey]);
@@ -1544,6 +1583,7 @@ const editUnlistedItem = (key: string) => {
 // state and the localStorage cache. Called after failures and on focus.
 const refreshProducts = useCallback(async () => {
   if (!shop || !isOnline) return;
+  setStockRefreshing(true);
   try {
     const { data: allocsData, error } = await supabase
       .from("shop_allocations")
@@ -1603,8 +1643,12 @@ const refreshProducts = useCallback(async () => {
         );
       } catch {}
     }
-  } catch (err) {
+    } catch (err) {
     console.warn("refreshProducts error:", err);
+  } finally {
+    setStockLoading(false);
+    setStockRefreshing(false);
+    firstStockFetchDone.current = true;
   }
 }, [shop, isOnline, cacheKey]);
 
@@ -2435,6 +2479,11 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
         .num-del:active:not(:disabled) { background:rgba(248,113,113,0.2) !important; transform:scale(0.92); }
         .method-card:hover { border-color:rgba(6,182,212,0.3) !important; }
         @keyframes pinDotPop { 0%{transform:scale(0.6);opacity:0.5} 70%{transform:scale(1.25)} 100%{transform:scale(1.1);opacity:1} }
+                @keyframes stockShimmer {
+          0%, 100% { opacity: 0.45; }
+          50%      { opacity: 0.9; }
+        }
+        .stock-skel { animation: stockShimmer 1.6s ease-in-out infinite; }
       `}</style>
 
       {/* ── Header ── */}
@@ -2749,23 +2798,127 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
 
     {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
 
-    {myProducts.length === 0 ? (
+        {stockLoading && myProducts.length === 0 ? (
+      /* ── Skeleton while the very first stock fetch is in flight ── */
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{
+          fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+          textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2,
+          display: "flex", alignItems: "center", gap: 6,
+        }}>
+          <span
+            style={{
+              display: "inline-block", width: 10, height: 10,
+              border: `1.5px solid ${theme.border.default}`,
+              borderTopColor: theme.accent.cyan,
+              borderRadius: "50%",
+              animation: "spin 0.8s linear infinite",
+            }}
+          />
+          Loading stock…
+        </div>
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr",
+          gap: 8,
+        }}>
+          {[0,1,2,3,4,5].map(i => (
+            <div
+              key={i}
+              className="stock-skel"
+              style={{
+                display: "flex", alignItems: "center", gap: 10,
+                padding: "10px 10px",
+                background: "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))",
+                border: "1px solid rgba(255,255,255,0.06)",
+                borderRadius: 11,
+                animationDelay: `${i * 90}ms`,
+              }}
+            >
+              {/* thumb */}
+              <div style={{
+                width: 30, height: 30, borderRadius: 8,
+                background: "rgba(255,255,255,0.06)",
+                flexShrink: 0,
+              }} />
+              {/* name + sku */}
+              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                <div style={{
+                  height: 9, width: "70%",
+                  background: "rgba(255,255,255,0.07)",
+                  borderRadius: 4,
+                }} />
+                <div style={{
+                  height: 7, width: "45%",
+                  background: "rgba(255,255,255,0.05)",
+                  borderRadius: 4,
+                }} />
+              </div>
+              {/* qty pill */}
+              <div style={{
+                width: 42, height: 30, borderRadius: 8,
+                background: "rgba(255,255,255,0.05)",
+                flexShrink: 0,
+              }} />
+            </div>
+          ))}
+        </div>
+      </div>
+    ) : myProducts.length === 0 ? (
       <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
         <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
         <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
+        <div style={{ color: theme.text.muted, fontSize: 10, fontFamily: theme.font.mono, marginTop: 6 }}>
+          {isOnline ? "Pull down or revisit to refresh" : "Offline — reconnect to refresh"}
+        </div>
       </div>
     ) : (
       <div>
-        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
-          {searchQuery.trim()
-            ? `${filteredProducts.length} of ${myProducts.length} products`
-            : `Available (${myProducts.length})`}
+        <div style={{
+          fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+          textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8,
+          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
+        }}>
+          <span>
+            {searchQuery.trim()
+              ? `${filteredProducts.length} of ${myProducts.length} products`
+              : `Available (${myProducts.length})`}
+          </span>
+          {stockRefreshing && (
+            <button
+              onClick={() => { /* visual only — the fetch is already in flight */ }}
+              title="Refreshing stock…"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 5,
+                background: "rgba(6,182,212,0.08)",
+                border: "1px solid rgba(6,182,212,0.28)",
+                borderRadius: 20,
+                padding: "3px 9px",
+                color: theme.accent.cyan,
+                fontFamily: theme.font.mono, fontSize: 9, fontWeight: 700,
+                letterSpacing: "0.04em",
+                cursor: "default",
+                textTransform: "none",
+              }}
+            >
+              <span style={{
+                display: "inline-block", width: 8, height: 8,
+                border: `1.5px solid rgba(6,182,212,0.35)`,
+                borderTopColor: theme.accent.cyan,
+                borderRadius: "50%",
+                animation: "spin 0.8s linear infinite",
+              }} />
+              Refreshing…
+            </button>
+          )}
         </div>
         {filteredProducts.length === 0 && (
           <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>
             No products match "{searchQuery}"
           </div>
         )}
+
+
                 <div style={{
           maxHeight: isMobile ? "52vh" : 520,
           overflowY: "auto",
@@ -2979,118 +3132,28 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
           </div>
         )}
 
-        {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
-        {step === "success" && (
-          <div className="section" style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 20, paddingTop: 16, textAlign: "center" }}>
-            <div className="success-icon" style={{ width: 86, height: 86, borderRadius: "50%", background: wasQueued ? "rgba(251,191,36,0.15)" : payMethod === "credit" ? "rgba(248,113,113,0.15)" : "rgba(52,211,153,0.15)", border: `2px solid ${wasQueued ? "#fbbf24" : payMethod === "credit" ? "#f87171" : "#34d399"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 38 }}>
-              {wasQueued ? "⏳" : payMethod === "credit" ? "📝" : "✓"}
-            </div>
-            <div>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26 }}>
-                {wasQueued ? "Sale Queued Offline" : payMethod === "credit" ? "Credit Sale Recorded!" : "Sale Recorded!"}
-              </div>
-              <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 4 }}>
-                {wasQueued
-                  ? "Will sync automatically when your connection is restored."
-                  : payMethod === "credit"
-                  ? (() => { const ip = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal); return ip > 0 ? `${fmt(ip)} paid upfront · ${fmt(grandTotal - ip)} remaining` : `Stock deducted · ${fmt(grandTotal)} balance due`; })()
-                  : `${cart.length} item${cart.length !== 1 ? "s" : ""} synced to owner dashboard`}
-              </div>
-              {/* Silent receipt status */}
-              {receiptStatus !== "idle" && (
-                <div style={{ marginTop: 8, fontSize: 11, fontFamily: theme.font.mono, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-                  color: receiptStatus === "sent" ? "#34d399" : receiptStatus === "failed" ? "#f87171" : theme.text.muted }}>
-                  {receiptStatus === "sending" && (
-                    <span style={{ width: 10, height: 10, border: "1.5px solid rgba(255,255,255,0.2)", borderTopColor: theme.text.muted, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                  )}
-                  {receiptStatus === "sent"    && "✓ Receipt sent"}
-                  {receiptStatus === "failed"  && "⚠ Receipt could not be delivered"}
-                  {receiptStatus === "sending" && "Sending receipt..."}
-                </div>
-              )}
-            </div>
-            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 18, padding: "20px 22px", width: "100%", maxWidth: 400, display: "flex", flexDirection: "column", gap: 10 }}>
-              {/* Ref + timestamp row */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingBottom: 10, borderBottom: `1px solid ${theme.border.default}` }}>
-                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  {wasQueued ? "Status" : payMethod === "credit" ? "Credit Ref" : "Receipt Ref"}
-                </span>
-                <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: wasQueued ? "#fbbf24" : payMethod === "credit" ? theme.accent.red : theme.accent.cyan }}>
-                  {wasQueued ? "Pending sync" : payMethod === "credit" ? `CR-${savedBatchRef}` : `TXN-${savedBatchRef}`}
-                </span>
-              </div>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Date &amp; Time</span>
-                <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.secondary }}>{saleTimestamp}</span>
-              </div>
-              {/* Items */}
-              {cart.map(item => (
-              <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 12, color: theme.text.secondary }}>
-                  {item.quantity}× {cartItemName(item)}
-                  {item.kind === "unlisted" && (
-                    <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", marginLeft: 6 }}>· unlisted</span>
-                  )}
-                </span>
-                <span style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.primary }}>
-                  {fmt(item.sellPrice * item.quantity)}
-                </span>
-              </div>
-            ))}
-              {/* Summary rows */}
-              {payMethod === "credit" ? (
-                <>
-                  {[
-                    { label: "Seller",   value: selectedAgent?.name ?? "—" },
-                    { label: "Customer", value: customerName || "—" },
-                    { label: "Phone",    value: customerPhone || "—" },
-                    { label: "Payment",  value: "📝 Pay Later" },
-                  ].map(({ label, value }) => (
-                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-                      <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 500, color: theme.text.primary }}>{value}</span>
-                    </div>
-                  ))}
-                  {(() => {
-                    const ip  = Math.max(0, Number(initialPayment) || 0);
-                    const bal = grandTotal - ip;
-                    return (
-                      <>
-                        {ip > 0 && (
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                            <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Paid Upfront</span>
-                            <span style={{ fontSize: 13, fontFamily: theme.font.mono, fontWeight: 600, color: "#34d399" }}>{fmt(ip)}</span>
-                          </div>
-                        )}
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: `1px solid ${theme.border.default}`, paddingTop: 10, marginTop: 4 }}>
-                          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Balance Due</span>
-                          <span style={{ fontSize: 20, fontFamily: theme.font.display, fontWeight: 800, color: bal <= 0 ? "#34d399" : theme.accent.red }}>{bal <= 0 ? "Paid ✓" : fmt(bal)}</span>
-                        </div>
-                      </>
-                    );
-                  })()}
-                </>
-              ) : (
-                <>
-                  {[
-                    { label: "Seller",   value: selectedAgent?.name ?? "—" },
-                    { label: "Payment",  value: payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : "⚡ Split" },
-                    { label: "Customer", value: customerPhone || "—" },
-                    { label: "Total",    value: fmt(grandTotal), highlight: true },
-                  ].map(({ label, value, highlight }) => (
-                    <div key={label} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", borderTop: highlight ? `1px solid ${theme.border.default}` : "none", paddingTop: highlight ? 10 : 0, marginTop: highlight ? 4 : 0 }}>
-                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</span>
-                      <span style={{ fontSize: highlight ? 20 : 13, fontFamily: highlight ? theme.font.display : theme.font.mono, fontWeight: highlight ? 800 : 500, color: highlight ? theme.accent.gold : theme.text.primary }}>{value}</span>
-                    </div>
-                  ))}
-                </>
-              )}
-            </div>
-            <button className="abtn" onClick={handleReset}
-              style={{ background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", maxWidth: 320 }}>
-              + New Sale
-            </button>
-          </div>
+      {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
+                {step === "success" && (
+          <ReceiptSuccessScreen
+            cart={cart}
+            grandTotal={grandTotal}
+            payMethod={payMethod}
+            selectedAgentName={selectedAgent?.name ?? ""}
+            customerName={customerName}
+            customerPhone={customerPhone}
+            mpesaRef={mpesaRef}
+            initialPayment={Number(initialPayment) || 0}
+            savedBatchRef={savedBatchRef}
+            saleTimestamp={saleTimestamp}
+            wasQueued={wasQueued}
+            isBackdated={backdate}
+            backdatedISO={backdate ? backdateISO : null}
+            receiptStatus={receiptStatus}
+            biz={businessInfo}
+            theme={theme}
+            isMobile={isMobile}
+            onReset={handleReset}
+          />
         )}
       
       </div>
@@ -3341,8 +3404,18 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
     text={toast.text}
     theme={theme}
     bottomOffset={NAV_H}
-    onEdit={toast.lastKey ? () => { setToast(null); setPayOpen(true); } : undefined}
-  onUndo={() => undoItem(toast.lastKey!)}
+    onEdit={
+      toast.lastKey
+        ? () => {
+            const item = cart.find(i => i.key === toast.lastKey);
+            setToast(null);
+            if (!item) return;
+            if (item.kind === "listed") editItem(item.key);
+            else editUnlistedItem(item.key);
+          }
+        : undefined
+    }
+    onUndo={() => undoItem(toast.lastKey!)}
   />
 )}
 
@@ -3630,23 +3703,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
           })}
         </div>
 
-        {/* ── M-Pesa ref ── */}
-        {(payMethod === "mpesa" || payMethod === "split") && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 6 }}>
-              M-Pesa Ref (optional)
-            </label>
-            <input
-              className="ki"
-              value={mpesaRef}
-              onChange={e => setMpesaRef(sanitizeCode(e.target.value, 12))}
-              placeholder="e.g. QHX7K3LM2P"
-              maxLength={12}
-              spellCheck={false}
-            />
-          </div>
-        )}
-
+       
         {/* ── Split amounts ── */}
         {payMethod === "split" && (
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 12 }}>
