@@ -1077,6 +1077,608 @@ function ConfirmModal({
     document.body
   );
 }
+
+// ── Shared cart items editor ──────────────────────────────────────────
+// Used by (a) the mobile pay modal body and (b) the desktop CartRail.
+// Renders the sticky column headers + one editable row per cart item.
+function CartItemsList({
+  cart,
+  theme,
+  onUpdateQty,
+  onUpdatePrice,
+  onRemove,
+  maxHeight,
+}: {
+  cart: CartItem[];
+  theme: any;
+  onUpdateQty: (key: string, qty: number) => void;
+  onUpdatePrice: (key: string, price: number) => void;
+  onRemove: (key: string) => void;
+  maxHeight?: number | string;
+}) {
+  return (
+    <div style={{
+      maxHeight: maxHeight ?? "min(260px, 40vh)",
+      overflowY: "auto",
+      overflowX: "hidden",
+      paddingRight: 4,
+      WebkitOverflowScrolling: "touch",
+    }}>
+      {/* Column headers */}
+      <div style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+        gap: 6, alignItems: "center",
+        fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+        textTransform: "uppercase", letterSpacing: "0.06em",
+        padding: "0 0 6px",
+        position: "sticky", top: 0,
+        background: theme.bg.card,
+        zIndex: 1,
+      }}>
+        <span>Product</span>
+        <span style={{ textAlign: "center" }}>Qty</span>
+        <span style={{ textAlign: "center" }}>Price</span>
+        <span style={{ textAlign: "right" }}>Total</span>
+        <span />
+      </div>
+
+      {cart.map(item => {
+        const isListed  = item.kind === "listed";
+        const remaining = isListed ? item.allocation.remaining : 9999;
+        const minPrice  = isListed ? item.allocation.product.price : 0;
+        return (
+          <div key={item.key} style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+            gap: 6, alignItems: "center",
+            padding: "7px 0",
+            borderBottom: `1px solid ${theme.border.default}`,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+              <ProductImage imageUrl={cartItemImage(item)} productName={cartItemName(item)} size={28} />
+              <div style={{ minWidth: 0 }}>
+                <div style={{
+                  fontSize: 12, fontWeight: 600,
+                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                }}>
+                  {cartItemName(item)}
+                </div>
+                {!isListed && (
+                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc" }}>unlisted</span>
+                )}
+              </div>
+            </div>
+
+            <EditableNumber
+              value={item.quantity}
+              min={1}
+              max={remaining}
+              onCommit={v => onUpdateQty(item.key, v)}
+              theme={theme}
+              width={52}
+              ariaLabel="Quantity"
+            />
+
+            <EditableNumber
+              value={item.sellPrice}
+              min={minPrice}
+              onCommit={v => onUpdatePrice(item.key, v)}
+              theme={theme}
+              width={76}
+              ariaLabel="Price"
+            />
+
+            <div style={{
+              fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+              color: theme.accent.gold, textAlign: "right",
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+            }}>
+              {fmt(item.sellPrice * item.quantity)}
+            </div>
+
+            <button
+              onClick={() => onRemove(item.key)}
+              aria-label="Remove item"
+              style={{
+                width: 22, height: 22, padding: 0, lineHeight: 1,
+                border: "none", background: "transparent",
+                color: "#f87171", cursor: "pointer", fontSize: 14,
+                display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              ✕
+            </button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function CartRail({
+  cart,
+  theme,
+  grandTotal,
+  onClearAll,
+  onCharge,
+  onUpdateQty,
+  onUpdatePrice,
+  onRemove,
+  chargeError
+}: any) {
+  const empty = cart.length === 0;
+
+  return (
+    <aside style={{
+      display: "flex", flexDirection: "column",
+      height: "100%",
+      background: theme.bg.card,
+      border: `1px solid ${theme.border.default}`,
+      borderRadius: 16,
+      overflow: "hidden",
+      minWidth: 0,
+    }}>
+      {/* ── Header ── */}
+      <div style={{
+        padding: "14px 16px 10px",
+        borderBottom: `1px solid ${theme.border.default}`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 10, flexShrink: 0,
+      }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Cart
+          </div>
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16 }}>
+            {cart.length} item{cart.length !== 1 ? "s" : ""}
+          </div>
+        </div>
+        {!empty && (
+          <button
+            onClick={onClearAll}
+            style={{
+              background: "none", border: "none",
+              color: "#f87171", fontSize: 10, cursor: "pointer",
+              fontFamily: theme.font.mono, fontWeight: 700, padding: 0,
+            }}
+          >
+            Clear all
+          </button>
+        )}
+      </div>
+
+      {/* ── Items (flex:1, scrolls) ── */}
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "8px 14px" }}>
+        {empty ? (
+          <div style={{
+            height: "100%",
+            display: "flex", flexDirection: "column",
+            alignItems: "center", justifyContent: "center",
+            gap: 8, padding: "24px 12px", textAlign: "center",
+          }}>
+            <span style={{ fontSize: 34, opacity: 0.25 }}>🛒</span>
+            <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>
+              Cart is empty
+            </div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, opacity: 0.7 }}>
+              Scan or tap a product to add
+            </div>
+          </div>
+        ) : (
+          <CartItemsList
+            cart={cart}
+            theme={theme}
+            onUpdateQty={onUpdateQty}
+            onUpdatePrice={onUpdatePrice}
+            onRemove={onRemove}
+            maxHeight="100%"
+          />
+        )}
+      </div>
+
+      {/* ── Footer (pinned) ── */}
+            {/* ── Footer (pinned) ── */}
+      <div style={{
+        borderTop: `1px solid ${theme.border.default}`,
+        padding: "16px",
+        display: "flex", flexDirection: "column", gap: 14,
+        flexShrink: 0,
+        background: theme.bg.card,
+      }}>
+        {chargeError && (
+          <div style={{
+            fontSize: 12, fontFamily: theme.font.mono,
+            color: "#f87171", background: "rgba(248,113,113,0.08)",
+            border: "1px solid rgba(248,113,113,0.25)",
+            borderRadius: 10, padding: "10px 12px",
+          }}>
+            ⚠ {chargeError}
+          </div>
+        )}
+        
+        {/* Subtotal */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Subtotal
+          </span>
+          <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 26, color: theme.accent.gold, lineHeight: 1 }}>
+            {fmt(grandTotal)}
+          </span>
+        </div>
+
+        {/* Charge Button - Prominent and always visible */}
+        <button
+          onClick={onCharge}
+          style={{
+            padding: "16px",
+            background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
+            border: "none", borderRadius: 13, color: "#fff",
+            fontFamily: theme.font.display, fontWeight: 800, fontSize: 18,
+            cursor: "pointer",
+            boxShadow: "0 4px 14px rgba(6,182,212,0.3)",
+            transition: "transform 0.1s",
+          }}
+          onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
+          onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+          onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
+        >
+          Charge · {fmt(grandTotal)}
+        </button>
+      </div>
+    </aside>
+  );
+}
+
+function AuthModal({
+  open,
+  onClose,
+  theme,
+  shopAgents,
+  selectedAgent, setSelectedAgent,
+  pin, setPin,
+  pinError, setPinError,
+  pinIsLocked, pinCountdown, pinShake,
+  onPinKey,
+  processing,
+  grandTotal,
+  error,
+  // Add payment props:
+  payMethod, setPayMethod,
+  cashAmount, setCashAmount,
+  mpesaAmount, setMpesaAmount,
+  mpesaRef, setMpesaRef,
+  customerName, setCustomerName,
+  customerPhone, setCustomerPhone,
+  initialCashAmount, setInitialCashAmount,
+  initialMpesaAmount, setInitialMpesaAmount,
+  setInitialPayment,
+  backdate, saleDate, formatBackdate, onOpenBackdate
+}: any) {
+  if (!open) return null;
+
+  return createPortal(
+    <div
+      onClick={e => { if (e.target === e.currentTarget && !processing) onClose(); }}
+      style={{
+        position: "fixed", inset: 0, zIndex: 80,
+        background: "rgba(0,0,0,0.6)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20, animation: "fadeIn 0.15s ease both",
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          background: theme.bg.card,
+          border: `1px solid ${theme.border.default}`,
+          borderRadius: 20,
+          boxShadow: "0 24px 60px rgba(0,0,0,0.7)",
+          padding: "18px 18px 22px",
+          width: "min(480px, calc(100vw - 40px))",
+          // Fixed height prevents the modal from jumping when fields appear
+          height: "min(600px, 88dvh)", 
+          display: "flex",
+          flexDirection: "column",
+          animation: "zoomIn 0.2s ease both",
+        }}
+      >
+        {processing ? (
+          <div style={{ padding: "40px 24px", display: "flex", flexDirection: "column", alignItems: "center", gap: 16 }}>
+            <div style={{ position: "relative", width: 56, height: 56 }}>
+              <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid rgba(6,182,212,0.15)" }} />
+              <div style={{ position: "absolute", inset: 0, borderRadius: "50%", border: "3px solid transparent", borderTopColor: theme.accent.cyan, animation: "spin 0.75s linear infinite" }} />
+            </div>
+            <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted }}>
+              Processing…
+            </div>
+          </div>
+        ) : (
+          <>
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, flexShrink: 0 }}>
+              <div>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18 }}>
+                  {selectedAgent ? "Enter PIN" : "Complete Checkout"}
+                </div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                  Charge · {fmt(grandTotal)}
+                </div>
+              </div>
+              <button
+                onClick={onClose}
+                aria-label="Close"
+                style={{
+                  width: 30, height: 30, borderRadius: "50%",
+                  border: `1px solid ${theme.border.default}`,
+                  background: "transparent", color: theme.text.muted,
+                  cursor: "pointer", fontSize: 14,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                }}
+              >✕</button>
+            </div>
+
+            {/* Scrollable Content Area */}
+            <div style={{ flex: 1, overflowY: "auto", display: "flex", flexDirection: "column", gap: 16, paddingRight: 4 }}>
+              {selectedAgent ? (
+                /* ── PIN VIEW ── */
+                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                  <button
+                    onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
+                    style={{ alignSelf: "flex-start", background: "none", border: "none", color: theme.text.muted, fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 4 }}
+                  >
+                    ← Back to Payment & Agent
+                  </button>
+
+                  <div style={{ textAlign: "center", marginBottom: 4 }}>
+                    <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                      {selectedAgent.name} selected
+                    </div>
+                  </div>
+
+                  <div className={pinShake ? "shake" : ""} style={{ display: "flex", gap: 16, justifyContent: "center", marginBottom: 14, opacity: pinIsLocked ? 0.3 : 1 }}>
+                    {[0, 1, 2, 3].map(i => (
+                      <div key={i} style={{
+                        width: 16, height: 16, borderRadius: "50%",
+                        background: i < pin.length ? theme.accent.cyan : "transparent",
+                        border: `2.5px solid ${i < pin.length ? theme.accent.cyan : "rgba(255,255,255,0.22)"}`,
+                        transition: "all 0.15s cubic-bezier(0.34,1.56,0.64,1)",
+                        boxShadow: i < pin.length ? `0 0 12px ${theme.accent.cyan}65` : "none",
+                        transform: i < pin.length ? "scale(1.15)" : "scale(1)",
+                      }} />
+                    ))}
+                  </div>
+
+                  {(pinError || error) && (
+                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171", textAlign: "center", marginBottom: 10 }}>
+                      ⚠ {pinError || error}
+                    </div>
+                  )}
+                  {pinIsLocked && (
+                    <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#f87171", textAlign: "center", marginBottom: 10 }}>
+                      🔒 Too many wrong PINs — try again in {pinCountdown}s
+                    </div>
+                  )}
+
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8 }}>
+                    {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
+                      <button
+                        key={k}
+                        disabled={!k || pinIsLocked}
+                        onClick={() => { if (k) onPinKey(k); }}
+                        style={{
+                          height: 52, border: "none", borderRadius: 12,
+                          background: k === "⌫" ? "rgba(248,113,113,0.08)" : k ? "rgba(255,255,255,0.06)" : "transparent",
+                          color: k === "⌫" ? "#f87171" : theme.text.primary,
+                          fontFamily: theme.font.mono,
+                          fontSize: k === "⌫" ? 20 : 22,
+                          cursor: k && !pinIsLocked ? "pointer" : "default",
+                          opacity: pinIsLocked ? 0.3 : 1,
+                        }}
+                      >{k}</button>
+                    ))}
+                  </div>
+                </div>
+              ) : (
+                /* ── PAYMENT + AGENT VIEW ── */
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  
+                  {/* 1. Payment Chips */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 6 }}>
+                    {([
+                      { key: "cash"   as const, icon: "💵", label: "Cash"      },
+                      { key: "mpesa"  as const, icon: "📱", label: "M-Pesa"    },
+                      { key: "split"  as const, icon: "⚡", label: "Split"     },
+                      { key: "credit" as const, icon: "📝", label: "Pay Later" },
+                    ]).map(({ key, icon, label }) => {
+                      const sel = payMethod === key;
+                      return (
+                        <button
+                          key={key}
+                          onClick={() => {
+                            setPayMethod(key);
+                            setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
+                          }}
+                          style={{
+                            padding: "10px 4px",
+                            border: `1.5px solid ${sel ? theme.accent.cyan : theme.border.default}`,
+                            borderRadius: 10,
+                            background: sel ? "rgba(6,182,212,0.12)" : "transparent",
+                            color: sel ? theme.accent.cyan : theme.text.muted,
+                            fontFamily: theme.font.mono, fontWeight: 700, fontSize: 11,
+                            cursor: "pointer",
+                            display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                          }}
+                        >
+                          <span style={{ fontSize: 18 }}>{icon}</span>
+                          <span>{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {/* 2. Method-Specific Fields */}
+                  {payMethod === "split" && (
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      <div>
+                        <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#34d399", display: "block", marginBottom: 5, textTransform: "uppercase" }}>💵 Cash</label>
+                        <input className="ki" type="text" inputMode="numeric" value={cashAmount}
+                          onChange={e => {
+                            const v = sanitizeAmount(e.target.value);
+                            setCashAmount(v);
+                            setMpesaAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0)))));
+                          }}
+                          placeholder="0" />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, display: "block", marginBottom: 5, textTransform: "uppercase" }}>📱 M-Pesa</label>
+                        <input className="ki" type="text" inputMode="numeric" value={mpesaAmount}
+                          onChange={e => {
+                            const v = sanitizeAmount(e.target.value);
+                            setMpesaAmount(v);
+                            setCashAmount(String(Math.max(0, Math.round(grandTotal - (Number(v) || 0)))));
+                          }}
+                          placeholder="0" />
+                      </div>
+                    </div>
+                  )}
+                  {(payMethod === "mpesa" || payMethod === "split") && (
+                    <div>
+                      <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                        M-Pesa Ref <span style={{ textTransform: "none" }}>(optional)</span>
+                      </label>
+                      <input className="ki" type="text" value={mpesaRef}
+                        onChange={e => setMpesaRef(e.target.value)}
+                        placeholder="e.g. QK12ABC3XY" maxLength={20} />
+                    </div>
+                  )}
+                  {payMethod === "credit" && (
+                    <>
+                      <div>
+                        <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                          Customer Name <span style={{ color: theme.accent.red }}>*</span>
+                        </label>
+                        <input
+                          id="credit-customer-name"
+                          className="ki" type="text" value={customerName}
+                          onChange={e => setCustomerName(sanitizeText(e.target.value, 60))}
+                          placeholder="e.g. John Kamau" maxLength={60}
+                          style={{ borderColor: customerName.trim() ? undefined : "rgba(248,113,113,0.5)" }}
+                        />
+                      </div>
+                      <div>
+                        <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                          Initial Payment <span style={{ textTransform: "none" }}>(optional)</span>
+                        </label>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                          <input className="ki" type="text" inputMode="numeric" value={initialCashAmount}
+                            onChange={e => {
+                              const v = sanitizeAmount(e.target.value);
+                              const c = Number(v) || 0; const m = Number(initialMpesaAmount) || 0;
+                              const safeC = c + m > grandTotal ? Math.max(0, grandTotal - m) : c;
+                              setInitialCashAmount(String(safeC)); setInitialPayment(String(safeC + m));
+                            }} placeholder="💵 Cash" />
+                          <input className="ki" type="text" inputMode="numeric" value={initialMpesaAmount}
+                            onChange={e => {
+                              const v = sanitizeAmount(e.target.value);
+                              const m = Number(v) || 0; const c = Number(initialCashAmount) || 0;
+                              const safeM = c + m > grandTotal ? Math.max(0, grandTotal - c) : m;
+                              setInitialMpesaAmount(String(safeM)); setInitialPayment(String(c + safeM));
+                            }} placeholder="📱 M-Pesa" />
+                        </div>
+                      </div>
+                    </>
+                  )}
+
+                  {/* 3. Customer Phone */}
+                  <div>
+                    <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
+                      Customer Phone <span style={{ textTransform: "none" }}>(optional — receipt)</span>
+                    </label>
+                    <input className="ki" type="tel" value={customerPhone}
+                      onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
+                      placeholder="07XXXXXXXXX" maxLength={13} />
+                  </div>
+
+                  {/* 4. Backdate Row */}
+                  <button
+                    onClick={onOpenBackdate}
+                    style={{
+                      width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between",
+                      gap: 10, padding: "10px 12px", borderRadius: 10,
+                      border: `1px solid ${backdate ? "rgba(251,191,36,0.65)" : "rgba(251,191,36,0.35)"}`,
+                      background: backdate ? "rgba(251,191,36,0.14)" : "rgba(251,191,36,0.06)",
+                      color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                      cursor: "pointer", textAlign: "left",
+                    }}
+                  >
+                    <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      🕐 {backdate ? "Sale date" : "Backdate this sale"}
+                    </span>
+                    <span style={{ color: backdate ? "#fbbf24" : theme.text.muted, fontWeight: 600, fontSize: 11, maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {backdate && saleDate ? formatBackdate(saleDate) : "Set a past date"}
+                    </span>
+                  </button>
+
+                  {/* 5. Agent List (2x2 Grid) */}
+                  <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 16, marginTop: 4 }}>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 8 }}>
+                      Who is selling?
+                    </div>
+                    {shopAgents.length === 0 ? (
+                      <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: 14, textAlign: "center" }}>
+                        No agents assigned to this shop yet.
+                      </div>
+                    ) : (
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {shopAgents.map((sa: any) => (
+                          <button
+                            key={sa.id}
+                            onClick={() => {
+                              if (!payMethod) {
+                                setPayMethod("cash");
+                              }
+                              if (payMethod === "credit" && !customerName.trim()) {
+                                const el = document.getElementById("credit-customer-name") as HTMLInputElement | null;
+                                el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                setTimeout(() => el?.focus(), 250);
+                                return;
+                              }
+                              setSelectedAgent(sa); setPin(""); setPinError("");
+                            }}
+                            style={{
+                              padding: "12px 8px",
+                              border: `1px solid ${theme.border.default}`,
+                              borderRadius: 12, background: "transparent",
+                              cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+                              color: theme.text.primary,
+                            }}
+                          >
+                            <div style={{ width: 34, height: 34, borderRadius: "50%", background: "rgba(6,182,212,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontWeight: 700, color: theme.accent.cyan, flexShrink: 0, fontSize: 13 }}>
+                              {sa.avatar || sa.name.charAt(0).toUpperCase()}
+                            </div>
+                            <div style={{ minWidth: 0, textAlign: "center", width: "100%" }}>
+                              <div style={{ fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
+                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.agent_code}</div>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+
   
 export default function PosScan() {
   
@@ -1090,6 +1692,10 @@ export default function PosScan() {
   // ── Backdate mode (set by the "Past Sale" button on PosTransactionsPage) ──
   const [backdate, setBackdate] = useState<boolean>(() => !!location.state?.backdate);
   const [backdateOpen, setBackdateOpen] = useState(false);
+
+  // Desktop-only: the auth modal (agent → PIN) replaces the mobile payOpen flow.
+  const [authOpen, setAuthOpen] = useState(false);
+  const [chargeError, setChargeError] = useState("");
   const [clearCartOpen, setClearCartOpen] = useState(false);
 
   const [saleDate, setSaleDate] = useState<string>(() => {
@@ -1315,7 +1921,19 @@ const editUnlistedItem = (key: string) => {
     try { localStorage.setItem(cartKey, JSON.stringify(cart)); } catch {}
   }, [cart, cartKey, step]);
 
-  const pinIsLocked = pinCountdown > 0;
+ 
+    const pinIsLocked = pinCountdown > 0;
+
+  // Detect when the user clicks the bottom navigation "Sell" button while on the success screen.
+  const prevLocationKey = useRef(location.key);
+  useEffect(() => {
+    if (location.key !== prevLocationKey.current) {
+      prevLocationKey.current = location.key;
+      if (location.pathname === "/pos" && step === "success") {
+        handleReset();
+      }
+    }
+  }, [location, step]);
 
   // misc
   const [processing,   setProcessing]   = useState(false);
@@ -1704,6 +2322,7 @@ const refreshProducts = useCallback(async () => {
       setTimeout(() => setScanFeedback(""), 2500);
       return;
     }
+    setChargeError("");
     const existing = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
     if (existing) {
       // Re-tap = increment quantity by 1
@@ -1754,38 +2373,45 @@ const exactSkuMatch = useMemo(() => {
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
     if (!addingProduct) return;
+
+    // Snapshot into a local so TS keeps the non-null narrowing inside the
+    // setCart updater callback below.
+    setChargeError("");
+    const product = addingProduct;
+
     const qty = Math.max(1, parseInt(addQty) || 1);
-    const sp  = Number(addSellPrice) || addingProduct.product.price;
-  
-    if (qty > addingProduct.remaining) {
-      setError(`Only ${addingProduct.remaining} units available.`);
+    const sp  = Number(addSellPrice) || product.product.price;
+
+    if (qty > product.remaining) {
+      setError(`Only ${product.remaining} units available.`);
       return;
     }
-    if (sp < addingProduct.product.price) {
-      setError(`Sell price cannot be less than ${fmt(addingProduct.product.price)}.`);
+    if (sp < product.product.price) {
+      setError(`Sell price cannot be less than ${fmt(product.product.price)}.`);
       return;
     }
-  
+
     setCart(prev => {
       const existing = prev.find(
-        i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id
+        i => i.kind === "listed" && i.allocation.product_id === product.product_id
       );
       if (existing) {
         return prev.map(i =>
-          i.kind === "listed" && i.allocation.product_id === addingProduct.product_id
+          i.kind === "listed" && i.allocation.product_id === product.product_id
             ? { ...i, quantity: qty, sellPrice: sp }
             : i
         );
       }
       const newItem: ListedCartItem = {
         kind: "listed",
-        key: addingProduct.id,
-        allocation: addingProduct,
+        key: product.id,
+        allocation: product,
         quantity: qty,
         sellPrice: sp,
       };
       return [...prev, newItem];
     });
+
     setAddingProduct(null);
     setAddQty("1");
     setAddSellPrice("");
@@ -1793,7 +2419,7 @@ const exactSkuMatch = useMemo(() => {
 
     if (reopenPayAfterEdit) {
       setReopenPayAfterEdit(false);
-      setPayOpen(true);   // bring the payment modal back with the updated row
+      setPayOpen(true);
     }
   };
 
@@ -1805,6 +2431,7 @@ const exactSkuMatch = useMemo(() => {
     quantity: number;
     sellPrice: number;
   }) => {
+    setChargeError("");
     if (editingUnlistedKey) {
       // Update the existing unlisted row
       setCart(prev => prev.map(i =>
@@ -1963,6 +2590,7 @@ const exactSkuMatch = useMemo(() => {
       setSavedBatchRef("OFFLINE");
       setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
       setPayOpen(false);
+      setAuthOpen(false);
       setStep("success");
       submittingRef.current = false;
       return;
@@ -2089,6 +2717,7 @@ const exactSkuMatch = useMemo(() => {
       setSelectedAgent(verifiedAgent);
       setProcessing(false);
       setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
+      setAuthOpen(false);
       setStep("success");
 
       // Save customer contact for future lookups (credit sales always have name + phone)
@@ -2196,11 +2825,11 @@ const exactSkuMatch = useMemo(() => {
     });
 
     // Inject the backdated timestamp into every row (only when backdate mode is on)
-const rowsWithDate = backdateISO
-? txRows.map(r => ({ ...r, created_at: backdateISO }))
-: txRows;
+    const rowsWithDate = backdateISO
+    ? txRows.map(r => ({ ...r, created_at: backdateISO }))
+    : txRows;
 
-const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: rowsWithDate });
+   const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: rowsWithDate });
     if (txErr) {
       console.error("shop_transactions insert error:", JSON.stringify(txErr, null, 2));
       console.error("txRows payload:", JSON.stringify(txRows, null, 2));
@@ -2219,6 +2848,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
     setSelectedAgent(verifiedAgent);
     setProcessing(false);
     setSaleTimestamp(new Date().toLocaleString("en-KE", { dateStyle: "medium", timeStyle: "short" }));
+    setAuthOpen(false);
     setStep("success");
 
     // Auto-save customer contact if name + phone were provided
@@ -2257,6 +2887,18 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
       submittingRef.current = false;
     }
   };
+
+  // Desktop Charge button. Validates everything the mobile modal would have
+// validated, then opens the AuthModal (agent → PIN). Refuses on empty cart
+// with an inline error per Q5.
+const handleDesktopCharge = useCallback(() => {
+  setChargeError("");
+  if (cart.length === 0) {
+    setChargeError("Cart is empty — add items first.");
+    return;
+  }
+  setAuthOpen(true);
+}, [cart.length]);
 
   // ── Badge QR verify ───────────────────────────────────────────────────
   const handleBadgeScan = (text: string) => {
@@ -2329,10 +2971,10 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
     // ── Physical keyboard input while the PIN pad is open ────────────────
     // No dep array on purpose: handlePinKey closes over pin / pinFails /
     // selectedAgent, so we re-bind the listener each render to see fresh values.
-    useEffect(() => {
+     useEffect(() => {
       const pinPadOpen =
         (step === "verify" && verifyMethod === "pin" && !!selectedAgent && !processing) ||
-        (payOpen && !!selectedAgent && !processing);
+        ((payOpen || authOpen) && !!selectedAgent && !processing); // <-- Added authOpen
       if (!pinPadOpen) return;
   
       const onKey = (e: KeyboardEvent) => {
@@ -2373,6 +3015,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
       setCart([]); setAddingProduct(null); setAddQty("1"); setAddSellPrice("");
       setSelectedAgent(null); setPin(""); setPinError(""); setBadgeError("");
       setCustomerName(""); setCustomerPhone("");
+      
     
       // Clear backdate state
       setBackdate(false);
@@ -2388,6 +3031,8 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
       setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
       setError(""); setScanFeedback(""); setProcessing(false);
       setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
+      setAuthOpen(false);
+      setChargeError("");
       setUnlistedOpen(false);
       if (cartKey) localStorage.removeItem(cartKey);
       setPinFails(0); setPinCountdown(0);
@@ -2402,6 +3047,391 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
         setBadgeActive(false);
       }
     };
+
+const renderScanStep = () => (
+  <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+    {/* ── Backdate banner ── */}
+    {backdate && (
+      <div style={{
+        background: "rgba(251,191,36,0.08)",
+        border: "1px solid rgba(251,191,36,0.35)",
+        borderRadius: 12,
+        padding: "12px 14px",
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 10, flexWrap: "wrap",
+      }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>🕐</span>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#fbbf24", fontWeight: 700 }}>
+              Backdate mode
+            </div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "rgba(251,191,36,0.75)", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              Recording on {formatBackdate(saleDate)}
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+          <button
+            onClick={() => setBackdateOpen(true)}
+            style={{ background: "rgba(251,191,36,0.15)", border: "1px solid rgba(251,191,36,0.45)", borderRadius: 8, padding: "6px 12px", color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+          >
+            Change
+          </button>
+          <button
+            onClick={() => setBackdate(false)}
+            aria-label="Cancel backdate"
+            style={{ background: "transparent", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "6px 10px", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+          >
+            ✕
+          </button>
+        </div>
+      </div>
+    )}
+
+    {/* Cart restored banner */}
+    {cartRestored && (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 12, padding: "10px 14px" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+          <span>🛒</span>
+          Cart restored — {cart.length} item{cart.length !== 1 ? "s" : ""} from your last session
+        </div>
+        <button onClick={() => { setCart([]); setCartRestored(false); }}
+          style={{ background: "none", border: "none", color: theme.text.muted, fontSize: 16, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>✕</button>
+      </div>
+    )}
+
+    {/* Manual / Camera toggle */}
+    <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
+      {(["manual", "camera"] as const).map(m => (
+        <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
+          style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
+          {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
+        </button>
+      ))}
+    </div>
+
+    {/* Camera: locked */}
+    {mode === "camera" && !canScan && (
+      <div style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", borderRadius: 16, padding: "32px 20px", textAlign: "center" }}>
+        <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
+        <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#e2e8f0", marginBottom: 8 }}>
+          Camera Scan Not Available
+        </div>
+        <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted, lineHeight: 1.7, marginBottom: 16 }}>
+          This shop's current package does not include QR scanning.<br />
+          You can still add products manually from the list.
+        </div>
+        <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: "rgba(168,85,247,0.7)", background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.18)", borderRadius: 8, padding: "8px 14px", display: "inline-block" }}>
+          Ask the business owner to upgrade their package to enable camera scanning
+        </div>
+      </div>
+    )}
+
+    {/* Camera: active */}
+    {mode === "camera" && canScan && (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {scanFeedback && (
+          <div style={{ background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)", borderRadius: 10, padding: "10px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚠ {scanFeedback}</div>
+        )}
+        <QrScanner active={cameraActive} onScanSuccess={handleQrScan} />
+        <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+          {["Hold 10–30cm from QR code", "Ensure good lighting", "Center QR in frame"].map(tip => (
+            <div key={tip} style={{ fontSize: 11, color: theme.text.muted, fontFamily: theme.font.mono, marginBottom: 3, display: "flex", gap: 8 }}>
+              <span style={{ color: theme.accent.cyan }}>→</span>{tip}
+            </div>
+          ))}
+        </div>
+      </div>
+    )}
+
+    {/* Manual mode */}
+    {mode === "manual" && (
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+
+        {/* Search */}
+        <div style={{ position: "relative" }}>
+          <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45, pointerEvents: "none" }}>🔍</span>
+          <input
+            className="ki"
+            value={searchQuery}
+            onChange={e => { setSearchQuery(e.target.value); setError(""); }}
+            onKeyDown={async e => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              const q = searchQuery.trim();
+              if (!q) return;
+              if (exactSkuMatch) { handleProductTap(exactSkuMatch); setSearchQuery(""); return; }
+              const alloc = await fetchAllocationBySku(q);
+              if (alloc) { handleProductTap(alloc); setSearchQuery(""); return; }
+              if (filteredProducts.length === 1) { handleProductTap(filteredProducts[0]); setSearchQuery(""); return; }
+              if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
+            }}
+            placeholder="Search by name or SKU…"
+            style={{ paddingLeft: 40, paddingRight: searchQuery ? 40 : 14 }}
+            spellCheck={false}
+            autoComplete="off"
+            maxLength={40}
+          />
+          {searchQuery && (
+            <button onClick={() => { setSearchQuery(""); setError(""); }}
+              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.08)", color: theme.text.muted, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }}>×</button>
+          )}
+        </div>
+
+        {/* Sell unlisted */}
+        <button
+          onClick={() => { setUnlistedOpen(true); setError(""); }}
+          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "12px 14px", background: "rgba(168,85,247,0.06)", border: "1px dashed rgba(168,85,247,0.4)", borderRadius: 12, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer", transition: "background 0.15s" }}
+          onMouseEnter={e => (e.currentTarget.style.background = "rgba(168,85,247,0.12)")}
+          onMouseLeave={e => (e.currentTarget.style.background = "rgba(168,85,247,0.06)")}
+        >
+          ➕ Sell item not in stock
+        </button>
+
+        {/* Exact SKU quick-add */}
+        {exactSkuMatch && (
+          <button onClick={() => { handleProductTap(exactSkuMatch); setSearchQuery(""); }}
+            style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 12, cursor: "pointer", textAlign: "left" }}>
+            <span style={{ fontSize: 16 }}>⚡</span>
+            <span style={{ flex: 1, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+              Exact SKU match — tap to add <strong>{exactSkuMatch.product.name}</strong>
+            </span>
+            <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Enter ↵</span>
+          </button>
+        )}
+
+        {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
+
+        {/* Stock */}
+        {stockLoading && myProducts.length === 0 ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2, display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ display: "inline-block", width: 10, height: 10, border: `1.5px solid ${theme.border.default}`, borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+              Loading stock…
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+              {[0,1,2,3,4,5].map(i => (
+                <div key={i} className="stock-skel" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", background: "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 11, animationDelay: `${i * 90}ms` }}>
+                  <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", flexShrink: 0 }} />
+                  <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ height: 9, width: "70%", background: "rgba(255,255,255,0.07)", borderRadius: 4 }} />
+                    <div style={{ height: 7, width: "45%", background: "rgba(255,255,255,0.05)", borderRadius: 4 }} />
+                  </div>
+                  <div style={{ width: 42, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.05)", flexShrink: 0 }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : myProducts.length === 0 ? (
+          <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
+            <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
+            <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
+            <div style={{ color: theme.text.muted, fontSize: 10, fontFamily: theme.font.mono, marginTop: 6 }}>
+              {isOnline ? "Pull down or revisit to refresh" : "Offline — reconnect to refresh"}
+            </div>
+          </div>
+        ) : (
+          <div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+              <span>
+                {searchQuery.trim()
+                  ? `${filteredProducts.length} of ${myProducts.length} products`
+                  : `Available (${myProducts.length})`}
+              </span>
+              {stockRefreshing && (
+                <button
+                  onClick={() => { /* visual only */ }}
+                  title="Refreshing stock…"
+                  style={{ display: "inline-flex", alignItems: "center", gap: 5, background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.28)", borderRadius: 20, padding: "3px 9px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 9, fontWeight: 700, letterSpacing: "0.04em", cursor: "default", textTransform: "none" }}
+                >
+                  <span style={{ display: "inline-block", width: 8, height: 8, border: `1.5px solid rgba(6,182,212,0.35)`, borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                  Refreshing…
+                </button>
+              )}
+            </div>
+            {filteredProducts.length === 0 && (
+              <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>
+                No products match "{searchQuery}"
+              </div>
+            )}
+
+            <div style={{ maxHeight: isMobile ? "52vh" : 520, overflowY: "auto", overflowX: "hidden", paddingRight: 2, WebkitOverflowScrolling: "touch", paddingBottom: step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? 80 : 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+                {filteredProducts.map(alloc => {
+                  const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
+                  const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
+                  const inCart = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
+                  return (
+                    <button key={alloc.id} onClick={() => handleProductTap(alloc)}
+                      style={{ padding: "8px 10px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 11, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left", transition: "border-color 0.15s" }}
+                      onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
+                      onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
+                      <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+                        <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
+                          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+                        <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
+                          <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
+                          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
+                        </div>
+                        {inCart && (
+                          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 5, padding: "1px 6px" }}>
+                            ×{inCart.quantity}
+                          </div>
+                        )}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    )}
+  </div>
+);
+
+const renderVerifyStep = () => (
+  <div className="section" style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 20, alignItems: "flex-start" }}>
+
+    {/* LEFT COLUMN — Order summary */}
+    <div style={{ flex: isMobile ? "unset" : "0 0 36%", display: "flex", flexDirection: "column", gap: 14, position: isMobile ? "static" : "sticky", top: 80, width: isMobile ? "100%" : "auto" }}>
+      <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Order Summary</div>
+        {cart.map(item => (
+          <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
+              {item.quantity}× {cartItemName(item)}
+              {item.kind === "unlisted" && (
+                <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", marginLeft: 6 }}>· unlisted</span>
+              )}
+            </div>
+            <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>
+              {fmt(item.sellPrice * item.quantity)}
+            </div>
+            <button
+              onClick={() => {
+                if (item.kind === "listed") editItem(item.key);
+                else editUnlistedItem(item.key);
+              }}
+              aria-label="Edit item"
+              style={{ flexShrink: 0, width: 26, height: 26, borderRadius: 7, border: `1px solid ${theme.border.default}`, background: "transparent", color: theme.accent.cyan, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center" }}
+            >
+              ✎
+            </button>
+          </div>
+        ))}
+        <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+            {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
+            {payMethod === "credit" && customerName ? ` · ${customerName}` : customerPhone ? ` · ${customerPhone}` : ""}
+          </div>
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>{fmt(grandTotal)}</div>
+        </div>
+      </div>
+    </div>
+
+    {/* RIGHT COLUMN — Verify method + agent + PIN */}
+    <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
+      {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px" }}>⚠ {error}</div>}
+
+      {/* Method toggle */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        {([
+          { key: "badge" as const, icon: "📛", label: "Scan Badge", desc: "Agent QR badge" },
+          { key: "pin"   as const, icon: "🔑", label: "Enter PIN",  desc: "4-digit agent PIN" },
+        ]).map(({ key, icon, label, desc }) => {
+          const isSel = verifyMethod === key;
+          return (
+            <button key={key} className="method-card"
+              onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
+              style={{ padding: "16px 10px 14px", border: `1.5px solid ${isSel ? "rgba(6,182,212,0.55)" : "rgba(255,255,255,0.08)"}`, borderRadius: 16, background: isSel ? "rgba(6,182,212,0.1)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5, transition: "all 0.15s", textAlign: "center", position: "relative" }}>
+              <span style={{ fontSize: 24, lineHeight: 1 }}>{icon}</span>
+              <div style={{ fontFamily: theme.font.display, fontSize: 13, fontWeight: 700, color: isSel ? theme.accent.cyan : theme.text.primary, marginTop: 2 }}>
+                {label}
+              </div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: isSel ? "rgba(6,182,212,0.7)" : theme.text.muted }}>
+                {desc}
+              </div>
+              {isSel && (
+                <div style={{ position: "absolute", top: 10, right: 10, width: 7, height: 7, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.9)" }} />
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* PIN method */}
+      {verifyMethod === "pin" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          <div>
+            <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is selling?</label>
+            {shopAgents.length === 0 ? (
+              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, padding: 14, background: "rgba(255,255,255,0.02)", borderRadius: 10, border: `1px solid ${theme.border.default}` }}>
+                No agents assigned to this shop yet.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {shopAgents.map(sa => {
+                  const isSel = selectedAgent?.id === sa.id;
+                  return (
+                    <button key={sa.id} onClick={() => { setSelectedAgent(sa); setPin(""); setPinError(""); }}
+                      style={{ padding: "12px 14px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "row", alignItems: "center", gap: 12, transition: "all 0.15s", textAlign: "left" }}>
+                      <div style={{ width: 40, height: 40, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: isSel ? theme.accent.cyan : theme.text.muted, flexShrink: 0 }}>
+                        {sa.avatar || sa.name.charAt(0).toUpperCase()}
+                      </div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{sa.agent_code}</div>
+                      </div>
+                      {isSel && <div style={{ width: 8, height: 8, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.6)", flexShrink: 0 }} />}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {selectedAgent && (
+            <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: "10px 14px", background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, textAlign: "center" }}>
+              {selectedAgent.name} selected — PIN entry will appear on screen
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Badge method */}
+      {verifyMethod === "badge" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 12, padding: "12px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6 }}>
+            📛 Ask the selling agent to hold their <strong style={{ color: theme.text.primary }}>QR badge</strong> up to the camera to verify the sale.
+          </div>
+          {badgeError && (
+            <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
+              ⚠ {badgeError}
+            </div>
+          )}
+          <QrScanner active={badgeActive} onScanSuccess={handleBadgeScan} />
+          {processing && (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "14px", background: "rgba(6,182,212,0.06)", borderRadius: 12, fontSize: 13, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+              <span style={{ width: 16, height: 16, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
+              Processing sale...
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  </div>
+);
+
 
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
@@ -2487,12 +3517,13 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
       `}</style>
 
       {/* ── Header ── */}
+      {!isDesktop && (
       <div style={{
         borderBottom: `1px solid ${theme.border.default}`,
         padding: isMobile ? "12px 14px" : "16px 40px",
         position: "sticky", top: 58, background: theme.bg.base, zIndex: 40,
         display: "flex", flexDirection: "column", gap: 10,
-      }}>
+       }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             {step !== "scan" && step !== "success" && (
@@ -2515,7 +3546,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
             </div>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-  {step === "scan" && (
+      {step === "scan" && (
     <button
       onClick={() => setBackdateOpen(true)}
       title="Record a sale from a past date"
@@ -2592,764 +3623,279 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
           </div>
         )}
       </div>
-
-      <div style={{
-          padding: isMobile
-          ? `14px 14px ${
-              step === "scan" && cart.length > 0 && !payOpen && !addingProduct
-                ? "calc(env(safe-area-inset-bottom, 0px) + 140px)"
-                : "90px"
-            }`
-          : `24px 40px ${
-              step === "scan" && cart.length > 0 && !payOpen && !addingProduct
-                ? "calc(env(safe-area-inset-bottom, 0px) + 140px)"
-                : "90px"
-            }`,
-          maxWidth: isDesktop ? 1400 : 720,
-          margin: "0 auto"
-        }}>
-
-        {/* ══════════════════ STEP 1: SCAN ══════════════════ */}
-        {step === "scan" && (
-  <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-
-    {/* ── Backdate banner ── */}
-{backdate && (
-  <div style={{
-    background: "rgba(251,191,36,0.08)",
-    border: "1px solid rgba(251,191,36,0.35)",
-    borderRadius: 12,
-    padding: "12px 14px",
-    display: "flex", alignItems: "center", justifyContent: "space-between",
-    gap: 10, flexWrap: "wrap",
+    )}
+   {/* ══════════════════ MAIN CONTENT ══════════════════ */}
+{step !== "success" && (isDesktop ? (
+    <div style={{
+    display: "grid",
+    gridTemplateColumns: "minmax(0, 1fr) clamp(380px, 35%, 500px)",
+    gap: 20,
+    height: "calc(100dvh - 58px)", // Adjusted from 128px to 58px to match the sticky header
+    maxWidth: 1400,
+    margin: "0 auto",
+    padding: "24px 40px", // Added slightly more top padding
+    overflow: "hidden",
   }}>
-    <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-      <span style={{ fontSize: 18, flexShrink: 0 }}>🕐</span>
-      <div style={{ minWidth: 0 }}>
-        <div style={{
-          fontSize: 12, fontFamily: theme.font.mono,
-          color: "#fbbf24", fontWeight: 700,
-        }}>
-          Backdate mode
-        </div>
-        <div style={{
-          fontSize: 10, fontFamily: theme.font.mono,
-          color: "rgba(251,191,36,0.75)", marginTop: 2,
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          Recording on {formatBackdate(saleDate)}
-        </div>
-      </div>
-    </div>
-    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-      <button
-        onClick={() => setBackdateOpen(true)}
-        style={{
-          background: "rgba(251,191,36,0.15)",
-          border: "1px solid rgba(251,191,36,0.45)",
-          borderRadius: 8,
-          padding: "6px 12px",
-          color: "#fbbf24",
-          fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
-          cursor: "pointer",
-        }}
-      >
-        Change
-      </button>
-      <button
-        onClick={() => setBackdate(false)}
-        aria-label="Cancel backdate"
-        style={{
-          background: "transparent",
-          border: `1px solid ${theme.border.default}`,
-          borderRadius: 8,
-          padding: "6px 10px",
-          color: theme.text.muted,
-          fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
-          cursor: "pointer",
-        }}
-      >
-        ✕
-      </button>
-    </div>
-  </div>
-)}
-
-    {/* Cart restored banner */}
-    {cartRestored && (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 12, padding: "10px 14px" }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-                  <span>🛒</span>
-                  Cart restored — {cart.length} item{cart.length !== 1 ? "s" : ""} from your last session
-                </div>
-                <button onClick={() => { setCart([]); setCartRestored(false); }}
-                  style={{ background: "none", border: "none", color: theme.text.muted, fontSize: 16, cursor: "pointer", padding: "0 4px", lineHeight: 1 }}>✕</button>
-              </div>
-            )}
-
-            <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
-              {(["manual", "camera"] as const).map(m => (
-                <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
-                  style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
-                  {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
-                </button>
-              ))}
-            </div>
-
-            {mode === "camera" && !canScan && (
-              <div style={{ background: "rgba(168,85,247,0.06)", border: "1px solid rgba(168,85,247,0.2)", borderRadius: 16, padding: "32px 20px", textAlign: "center" }}>
-                <div style={{ fontSize: 44, marginBottom: 12 }}>🔒</div>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, color: "#e2e8f0", marginBottom: 8 }}>
-                  Camera Scan Not Available
-                </div>
-                <div style={{ fontFamily: theme.font.mono, fontSize: 12, color: theme.text.muted, lineHeight: 1.7, marginBottom: 16 }}>
-                  This shop's current package does not include QR scanning.<br />
-                  You can still add products manually from the list.
-                </div>
-                <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: "rgba(168,85,247,0.7)", background: "rgba(168,85,247,0.08)", border: "1px solid rgba(168,85,247,0.18)", borderRadius: 8, padding: "8px 14px", display: "inline-block" }}>
-                  Ask the business owner to upgrade their package to enable camera scanning
-                </div>
-              </div>
-            )}
-
-            {mode === "camera" && canScan && (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {scanFeedback && (
-                  <div style={{ background: "rgba(234,179,8,0.08)", border: "1px solid rgba(234,179,8,0.25)", borderRadius: 10, padding: "10px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.gold }}>⚠ {scanFeedback}</div>
-                )}
-                <QrScanner active={cameraActive} onScanSuccess={handleQrScan} />
-                <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
-                  {["Hold 10–30cm from QR code", "Ensure good lighting", "Center QR in frame"].map(tip => (
-                    <div key={tip} style={{ fontSize: 11, color: theme.text.muted, fontFamily: theme.font.mono, marginBottom: 3, display: "flex", gap: 8 }}>
-                      <span style={{ color: theme.accent.cyan }}>→</span>{tip}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-        
-
-{mode === "manual" && (
-  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-
-    {/* Unified search — name or SKU, fuzzy */}
-    <div style={{ position: "relative" }}>
-      <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45, pointerEvents: "none" }}>🔍</span>
-      <input
-        className="ki"
-        value={searchQuery}
-        onChange={e => { setSearchQuery(e.target.value); setError(""); }}
-        onKeyDown={async e => {
-          if (e.key !== "Enter") return;
-          e.preventDefault();
-          const q = searchQuery.trim();
-          if (!q) return;
-          if (exactSkuMatch) { handleProductTap(exactSkuMatch); setSearchQuery(""); return; }
-          // Try a network SKU lookup for a product not yet in the local list.
-          const alloc = await fetchAllocationBySku(q);
-          if (alloc) { handleProductTap(alloc); setSearchQuery(""); return; }
-          if (filteredProducts.length === 1) { handleProductTap(filteredProducts[0]); setSearchQuery(""); return; }
-          if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
-        }}
-        placeholder="Search by name or SKU…"
-        style={{ paddingLeft: 40, paddingRight: searchQuery ? 40 : 14 }}
-        spellCheck={false}
-        autoComplete="off"
-        maxLength={40}
-      />
-      {searchQuery && (
-        <button onClick={() => { setSearchQuery(""); setError(""); }}
-          style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.08)", color: theme.text.muted, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }}>×</button>
-      )}
+    {/* LEFT — scan/verify content */}
+    <div style={{ minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingRight: 4 }}>
+      {step === "scan" && renderScanStep()}
+      {step === "verify" && renderVerifyStep()}
     </div>
 
-    <button
-  onClick={() => { setUnlistedOpen(true); setError(""); }}
-  style={{
-    display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
-    padding: "12px 14px",
-    background: "rgba(168,85,247,0.06)",
-    border: "1px dashed rgba(168,85,247,0.4)",
-    borderRadius: 12,
-    color: "#c084fc",
-    fontFamily: theme.font.mono,
-    fontSize: 13,
-    cursor: "pointer",
-    transition: "background 0.15s",
-  }}
-  onMouseEnter={e => (e.currentTarget.style.background = "rgba(168,85,247,0.12)")}
-  onMouseLeave={e => (e.currentTarget.style.background = "rgba(168,85,247,0.06)")}
->
-  ➕ Sell item not in stock
-</button>
-
-    {/* Exact SKU quick-add */}
-    {exactSkuMatch && (
-      <button onClick={() => { handleProductTap(exactSkuMatch); setSearchQuery(""); }}
-        style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 12, cursor: "pointer", textAlign: "left" }}>
-        <span style={{ fontSize: 16 }}>⚡</span>
-        <span style={{ flex: 1, fontSize: 12, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-          Exact SKU match — tap to add <strong>{exactSkuMatch.product.name}</strong>
-        </span>
-        <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Enter ↵</span>
-      </button>
-    )}
-
-    {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>}
-
-        {stockLoading && myProducts.length === 0 ? (
-      /* ── Skeleton while the very first stock fetch is in flight ── */
-      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <div style={{
-          fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
-          textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 2,
-          display: "flex", alignItems: "center", gap: 6,
-        }}>
-          <span
-            style={{
-              display: "inline-block", width: 10, height: 10,
-              border: `1.5px solid ${theme.border.default}`,
-              borderTopColor: theme.accent.cyan,
-              borderRadius: "50%",
-              animation: "spin 0.8s linear infinite",
-            }}
+    {/* RIGHT — cart rail */}
+             
+          <CartRail
+            cart={cart}
+            theme={theme}
+            grandTotal={grandTotal}
+            onEditItem={handleUpdateCartQty}
+            onClearAll={() => setClearCartOpen(true)}
+            onCharge={handleDesktopCharge}
+            onUpdateQty={handleUpdateCartQty}
+            onUpdatePrice={handleUpdateCartPrice}
+            onRemove={handleRemoveFromCart}
+            chargeError={chargeError}
           />
-          Loading stock…
-        </div>
-        <div style={{
-          display: "grid",
-          gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr",
-          gap: 8,
-        }}>
-          {[0,1,2,3,4,5].map(i => (
-            <div
-              key={i}
-              className="stock-skel"
-              style={{
-                display: "flex", alignItems: "center", gap: 10,
-                padding: "10px 10px",
-                background: "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))",
-                border: "1px solid rgba(255,255,255,0.06)",
-                borderRadius: 11,
-                animationDelay: `${i * 90}ms`,
-              }}
-            >
-              {/* thumb */}
-              <div style={{
-                width: 30, height: 30, borderRadius: 8,
-                background: "rgba(255,255,255,0.06)",
-                flexShrink: 0,
-              }} />
-              {/* name + sku */}
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
-                <div style={{
-                  height: 9, width: "70%",
-                  background: "rgba(255,255,255,0.07)",
-                  borderRadius: 4,
-                }} />
-                <div style={{
-                  height: 7, width: "45%",
-                  background: "rgba(255,255,255,0.05)",
-                  borderRadius: 4,
-                }} />
-              </div>
-              {/* qty pill */}
-              <div style={{
-                width: 42, height: 30, borderRadius: 8,
-                background: "rgba(255,255,255,0.05)",
-                flexShrink: 0,
-              }} />
-            </div>
-          ))}
-        </div>
-      </div>
-    ) : myProducts.length === 0 ? (
-      <div style={{ textAlign: "center", padding: "36px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14 }}>
-        <div style={{ fontSize: 34, opacity: 0.2, marginBottom: 10 }}>📦</div>
-        <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No stock available</div>
-        <div style={{ color: theme.text.muted, fontSize: 10, fontFamily: theme.font.mono, marginTop: 6 }}>
-          {isOnline ? "Pull down or revisit to refresh" : "Offline — reconnect to refresh"}
-        </div>
-      </div>
-    ) : (
-      <div>
-        <div style={{
-          fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
-          textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8,
-          display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8,
-        }}>
-          <span>
-            {searchQuery.trim()
-              ? `${filteredProducts.length} of ${myProducts.length} products`
-              : `Available (${myProducts.length})`}
-          </span>
-          {stockRefreshing && (
-            <button
-              onClick={() => { /* visual only — the fetch is already in flight */ }}
-              title="Refreshing stock…"
-              style={{
-                display: "inline-flex", alignItems: "center", gap: 5,
-                background: "rgba(6,182,212,0.08)",
-                border: "1px solid rgba(6,182,212,0.28)",
-                borderRadius: 20,
-                padding: "3px 9px",
-                color: theme.accent.cyan,
-                fontFamily: theme.font.mono, fontSize: 9, fontWeight: 700,
-                letterSpacing: "0.04em",
-                cursor: "default",
-                textTransform: "none",
-              }}
-            >
-              <span style={{
-                display: "inline-block", width: 8, height: 8,
-                border: `1.5px solid rgba(6,182,212,0.35)`,
-                borderTopColor: theme.accent.cyan,
-                borderRadius: "50%",
-                animation: "spin 0.8s linear infinite",
-              }} />
-              Refreshing…
-            </button>
-          )}
-        </div>
-        {filteredProducts.length === 0 && (
-          <div style={{ textAlign: "center", padding: "24px 16px", color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono }}>
-            No products match "{searchQuery}"
-          </div>
-        )}
-
-
-                <div style={{
-          maxHeight: isMobile ? "52vh" : 520,
-          overflowY: "auto",
-          overflowX: "hidden",
-          paddingRight: 2,          // keeps scrollbar off the cards
-          WebkitOverflowScrolling: "touch",
-
-          // Reserve space at the end of the list so the last product can
-          // scroll clear of the floating SaleDock. Without this the final
-          // card sits flush against the container edge and gets hidden
-          // behind the dock. Only applies while the dock is visible.
-          paddingBottom:
-            step === "scan" && cart.length > 0 && !payOpen && !addingProduct
-              ? 80
-              : 12,
-        }}>
-          <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
-            {filteredProducts.map(alloc => {
-            const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
-            const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
-            const inCart = cart.find(
-              i => i.kind === "listed" && i.allocation.product_id === alloc.product_id
-            );
-            return (
-              <button key={alloc.id} onClick={() => handleProductTap(alloc)}
-                  style={{ padding: "8px 10px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 11, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left", transition: "border-color 0.15s" }}
-                  onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
-                  onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
-                  <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
-                    <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
-                      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
-                    </div>
-                  </div>
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-                    <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
-                      <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
-                      <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
-                    </div>
-                    {inCart && (
-                      <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 5, padding: "1px 6px" }}>
-                        ×{inCart.quantity}
-                      </div>
-                    )}
-                  </div>
-                </button>
-            );
-          })}
-        </div>
-        </div>
-      </div>
-    )}
   </div>
-
-  
-)}
-
-          </div>
-        )}
-
-       
-
-        {/* ══════════════════ STEP 3: VERIFY ══════════════════ */}
-        {step === "verify" && (
-          <div className="section" style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: isMobile ? 14 : 20, alignItems: "flex-start" }}>
-
-            {/* LEFT COLUMN — Cart summary (sticky on desktop) */}
-            <div style={{ flex: isMobile ? "unset" : "0 0 36%", display: "flex", flexDirection: "column", gap: 14, position: isMobile ? "static" : "sticky", top: 80, width: isMobile ? "100%" : "auto" }}>
-              <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>Order Summary</div>
-                {cart.map(item => (
-  <div key={item.key} style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-    <div style={{ fontSize: 13, color: theme.text.secondary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, marginRight: 8 }}>
-      {item.quantity}× {cartItemName(item)}
-      {item.kind === "unlisted" && (
-        <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc", marginLeft: 6 }}>· unlisted</span>
-      )}
-    </div>
-    <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: theme.text.primary, flexShrink: 0 }}>
-      {fmt(item.sellPrice * item.quantity)}
-    </div>
-
-    <button
-  onClick={() => {
-    if (item.kind === "listed") editItem(item.key);
-    else editUnlistedItem(item.key);
-  }}
-  aria-label="Edit item"
-  style={{
-    flexShrink: 0, width: 26, height: 26, borderRadius: 7,
-    border: `1px solid ${theme.border.default}`,
-    background: "transparent", color: theme.accent.cyan,
-    cursor: "pointer", fontSize: 13,
-    display: "flex", alignItems: "center", justifyContent: "center",
-  }}
->
-  ✎
-</button>
+) : (
+  <div style={{
+    padding: isMobile
+      ? `14px 14px ${step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? "calc(env(safe-area-inset-bottom, 0px) + 140px)" : "90px"}`
+      : `24px 40px ${step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? "calc(env(safe-area-inset-bottom, 0px) + 140px)" : "90px"}`,
+    maxWidth: 720,
+    margin: "0 auto",
+  }}>
+    {step === "scan" && renderScanStep()}
+    {step === "verify" && renderVerifyStep()}
   </div>
 ))}
-                <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 8, display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 4 }}>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                    {payMethod === "cash" ? "💵 Cash" : payMethod === "mpesa" ? "📱 M-Pesa" : payMethod === "split" ? "⚡ Split" : "📝 Pay Later"}
-                    {payMethod === "credit" && customerName ? ` · ${customerName}` : customerPhone ? ` · ${customerPhone}` : ""}
-                  </div>
-                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>{fmt(grandTotal)}</div>
-                </div>
-              </div>
-            </div>
+      
 
-            {/* RIGHT COLUMN — Verify method + agent + PIN */}
-            <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 14, minWidth: 0 }}>
-              {error && <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px" }}>⚠ {error}</div>}
-              {/* Method toggle — card style */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                {([
-                  { key: "badge" as const, icon: "📛", label: "Scan Badge", desc: "Agent QR badge" },
-                  { key: "pin"   as const, icon: "🔑", label: "Enter PIN",  desc: "4-digit agent PIN" },
-                ]).map(({ key, icon, label, desc }) => {
-                  const isSel = verifyMethod === key;
-                  return (
-                    <button key={key} className="method-card"
-                      onClick={() => { setVerifyMethod(key); setPinError(""); setBadgeError(""); setPin(""); }}
-                      style={{
-                        padding: "16px 10px 14px",
-                        border: `1.5px solid ${isSel ? "rgba(6,182,212,0.55)" : "rgba(255,255,255,0.08)"}`,
-                        borderRadius: 16,
-                        background: isSel ? "rgba(6,182,212,0.1)" : "rgba(255,255,255,0.02)",
-                        cursor: "pointer",
-                        display: "flex", flexDirection: "column", alignItems: "center", gap: 5,
-                        transition: "all 0.15s", textAlign: "center",
-                        position: "relative",
-                      }}>
-                      <span style={{ fontSize: 24, lineHeight: 1 }}>{icon}</span>
-                      <div style={{ fontFamily: theme.font.display, fontSize: 13, fontWeight: 700, color: isSel ? theme.accent.cyan : theme.text.primary, marginTop: 2 }}>
-                        {label}
-                      </div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: isSel ? "rgba(6,182,212,0.7)" : theme.text.muted }}>
-                        {desc}
-                      </div>
-                      {isSel && (
-                        <div style={{ position: "absolute", top: 10, right: 10, width: 7, height: 7, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.9)" }} />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
-
-              {/* ── PIN method ── */}
-              {verifyMethod === "pin" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-                  <div>
-                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is selling?</label>
-                    {shopAgents.length === 0 ? (
-                      <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono, padding: 14, background: "rgba(255,255,255,0.02)", borderRadius: 10, border: `1px solid ${theme.border.default}` }}>
-                        No agents assigned to this shop yet.
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                        {shopAgents.map(sa => {
-                          const isSel = selectedAgent?.id === sa.id;
-                          return (
-                            <button key={sa.id} onClick={() => { setSelectedAgent(sa); setPin(""); setPinError(""); }}
-                              style={{ padding: "12px 14px", border: `1px solid ${isSel ? "rgba(6,182,212,0.5)" : "rgba(255,255,255,0.08)"}`, borderRadius: 12, background: isSel ? "rgba(6,182,212,0.12)" : "rgba(255,255,255,0.02)", cursor: "pointer", display: "flex", flexDirection: "row", alignItems: "center", gap: 12, transition: "all 0.15s", textAlign: "left" }}>
-                              <div style={{ width: 40, height: 40, borderRadius: "50%", background: isSel ? "rgba(6,182,212,0.2)" : "rgba(255,255,255,0.06)", border: `1px solid ${isSel ? "rgba(6,182,212,0.4)" : "rgba(255,255,255,0.1)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: isSel ? theme.accent.cyan : theme.text.muted, flexShrink: 0 }}>
-                                {sa.avatar || sa.name.charAt(0).toUpperCase()}
-                              </div>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 13, fontWeight: 600, color: isSel ? theme.accent.cyan : theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sa.name}</div>
-                                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{sa.agent_code}</div>
-                              </div>
-                              {isSel && <div style={{ width: 8, height: 8, borderRadius: "50%", background: theme.accent.cyan, boxShadow: "0 0 8px rgba(6,182,212,0.6)", flexShrink: 0 }} />}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-
-                  {selectedAgent && (
-                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: "10px 14px", background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, textAlign: "center" }}>
-                      {selectedAgent.name} selected — PIN entry will appear on screen
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* ── Badge method ── */}
-              {verifyMethod === "badge" && (
-                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                  <div style={{ background: "rgba(6,182,212,0.05)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 12, padding: "12px 14px", fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6 }}>
-                    📛 Ask the selling agent to hold their <strong style={{ color: theme.text.primary }}>QR badge</strong> up to the camera to verify the sale.
-                  </div>
-                  {badgeError && (
-                    <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 14px", textAlign: "center" }}>
-                      ⚠ {badgeError}
-                    </div>
-                  )}
-                  <QrScanner active={badgeActive} onScanSuccess={handleBadgeScan} />
-                  {processing && (
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, padding: "14px", background: "rgba(6,182,212,0.06)", borderRadius: 12, fontSize: 13, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
-                      <span style={{ width: 16, height: 16, border: "2px solid rgba(6,182,212,0.3)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} />
-                      Processing sale...
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          </div>
-        )}
 
       {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
-                {step === "success" && (
-          <ReceiptSuccessScreen
-            cart={cart}
-            grandTotal={grandTotal}
-            payMethod={payMethod}
-            selectedAgentName={selectedAgent?.name ?? ""}
-            customerName={customerName}
-            customerPhone={customerPhone}
-            mpesaRef={mpesaRef}
-            initialPayment={Number(initialPayment) || 0}
-            savedBatchRef={savedBatchRef}
-            saleTimestamp={saleTimestamp}
-            wasQueued={wasQueued}
-            isBackdated={backdate}
-            backdatedISO={backdate ? backdateISO : null}
-            receiptStatus={receiptStatus}
-            biz={businessInfo}
-            theme={theme}
-            isMobile={isMobile}
-            onReset={handleReset}
-          />
-        )}
-      
-      </div>
+      {step === "success" && (
+  <div style={{
+    height: "calc(100dvh - 58px)",
+    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    alignItems: "center",
+    padding: "24px 20px",
+  }}>
+    <ReceiptSuccessScreen
+      cart={cart}
+      grandTotal={grandTotal}
+      payMethod={payMethod}
+      selectedAgentName={selectedAgent?.name ?? ""}
+      customerName={customerName}
+      customerPhone={customerPhone}
+      mpesaRef={mpesaRef}
+      initialPayment={Number(initialPayment) || 0}
+      savedBatchRef={savedBatchRef}
+      saleTimestamp={saleTimestamp}
+      wasQueued={wasQueued}
+      isBackdated={backdate}
+      backdatedISO={backdate ? backdateISO : null}
+      receiptStatus={receiptStatus}
+      biz={businessInfo}
+      theme={theme}
+      isMobile={isMobile}
+      onReset={handleReset}
+    />
+  </div>
+)}
+  
     
-
-      {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
-      {addingProduct && (
-        <div
-          style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
-          onClick={e => {
-            if (e.target === e.currentTarget) {
-              setAddingProduct(null);
-              setError("");
-              if (reopenPayAfterEdit) {
-                setReopenPayAfterEdit(false);
-                setPayOpen(true);
-              }
-            }
-          }}>
-          <div className="overlay-sheet" style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 16 }}>
-            {/* Product info */}
-            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                            <ProductImage 
-                  imageUrl={addingProduct.product.image_url} 
-                  productName={addingProduct.product.name} 
-                  size={48} 
-                />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{addingProduct.product.name}</div>
-                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                  {addingProduct.product.sku} · {fmt(addingProduct.product.price)} · {addingProduct.remaining} left
-                </div>
-              </div>
-              {cart.find(i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id) && (
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 8, padding: "3px 8px", flexShrink: 0 }}>
-                  In cart
-                </div>
-              )}
-            </div>
-
-           
-
-                          {/* Quantity */}
-                                <div>
-                                  <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                                    Quantity
-                                  </label>
-
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                                    {/* Quick-pick chips */}
-                                    {[1, 2, 3, 5, 10].map(q => (
-                                      <button
-                                        key={q}
-                                        onClick={() => setAddQty(q.toString())}
-                                        style={{
-                                          width: 44,
-                                          height: 44,
-                                          flexShrink: 0,
-                                          border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`,
-                                          borderRadius: 10,
-                                          cursor: "pointer",
-                                          background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent",
-                                          color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted,
-                                          fontFamily: theme.font.mono,
-                                          fontSize: 15,
-                                          fontWeight: 600,
-                                        }}
-                                      >
-                                        {q}
-                                      </button>
-                                    ))}
-
-                                    {/* Custom qty input with "Qty" prefix */}
-                                    <div
-                                      style={{
-                                        flex: "1 1 130px",
-                                        minWidth: 120,
-                                        maxWidth: 170,
-                                        height: 44,
-                                        display: "flex",
-                                        alignItems: "center",
-                                        border: "1.5px solid rgba(6,182,212,0.55)",
-                                        borderRadius: 10,
-                                        overflow: "hidden",
-                                        background: theme.bg.input,
-                                      }}
-                                    >
-                                      <span
-                                        style={{
-                                          padding: "0 8px 0 12px",
-                                          fontFamily: theme.font.mono,
-                                          fontSize: 12,
-                                          fontWeight: 700,
-                                          color: theme.accent.cyan,
-                                          textTransform: "uppercase",
-                                          letterSpacing: "0.05em",
-                                          borderRight: "1px solid rgba(6,182,212,0.35)",
-                                          height: "100%",
-                                          display: "flex",
-                                          alignItems: "center",
-                                        }}
-                                      >
-                                        Qty
-                                      </span>
-                                      <input
-                                        type="text"
-                                        inputMode="numeric"
-                                        value={addQty}
-                                        onChange={e => setAddQty(e.target.value.replace(/[^0-9]/g, ""))}
-                                        placeholder="Custom"
-                                        style={{
-                                          flex: 1,
-                                          height: "100%",
-                                          minWidth: 0,
-                                          background: "transparent",
-                                          border: "none",
-                                          outline: "none",
-                                          textAlign: "center",
-                                          fontFamily: theme.font.mono,
-                                          fontWeight: 700,
-                                          fontSize: 16,
-                                          color: theme.accent.cyan,
-                                          padding: "0 8px",
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                </div>
-
-            {/* Sell Price */}
-            {(() => {
-            
-                  const sp      = Number(addSellPrice) || addingProduct.product.price;
-                  const qty     = Math.max(1, parseInt(addQty) || 1);
-                  const markup  = Math.max(0, sp - addingProduct.product.price);
-                  const hasCommission = commissionConfig.enabled && commissionConfig.rate > 0;
-                  return (
-                    <div>
-                      <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
-                        Sell Price
-                        <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>custom</span>
-                      </label>
-                      <input className="ki" type="text" inputMode="numeric"
-                        value={addSellPrice}
-                        onChange={e => { setAddSellPrice(sanitizeAmount(e.target.value)); setError(""); }}
-                      />
-                      {markup > 0 && (
-                        <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
-                          <span style={{ color: "#34d399" }}>Markup: {fmt(markup * qty)}</span>
-                          {hasCommission && (
-                            <span style={{ color: theme.accent.cyan }}>
-                              Commission: {fmt(Math.round(markup * qty * commissionConfig.rate / 100))}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()}
-
-
-
-            {/* Subtotal preview */}
-            <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
-              <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>
-                {fmt((Number(addSellPrice) || addingProduct.product.price) * (Math.max(1, parseInt(addQty) || 1)))}
-              </span>
-            </div>
-
-            {error && (
-              <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>
-            )}
-
-            <div style={{ display: "flex", gap: 10 }}>
-            <button
-              onClick={() => {
+            {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
+      {addingProduct && (() => {
+        const adding = addingProduct;   // narrowed to LocalAlloc
+        const alreadyInCart = cart.find(
+          i => i.kind === "listed" && i.allocation.product_id === adding.product_id
+        );
+        return (
+          <div
+            style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
+            onClick={e => {
+              if (e.target === e.currentTarget) {
                 setAddingProduct(null);
                 setError("");
                 if (reopenPayAfterEdit) {
                   setReopenPayAfterEdit(false);
                   setPayOpen(true);
                 }
-              }}
-              style={{ flex: 1, padding: "14px", border: `1px solid ${theme.border.default}`, borderRadius: 13, background: "transparent", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14, cursor: "pointer" }}
-            >
-              Cancel
-            </button>
-              <button className="abtn" onClick={handleAddToCart}
-                style={{ flex: 2, background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", fontSize: 15 }}>
-                {cart.find(i => i.kind === "listed" && i.allocation.product_id === addingProduct.product_id) ? "Update Cart" : "Add to Cart"} →
-              </button>
+              }
+            }}>
+            <div className="overlay-sheet" style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 480, display: "flex", flexDirection: "column", gap: 16 }}>
+              {/* Product info */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <ProductImage
+                  imageUrl={adding.product.image_url}
+                  productName={adding.product.name}
+                  size={48}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{adding.product.name}</div>
+                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                    {adding.product.sku} · {fmt(adding.product.price)} · {adding.remaining} left
+                  </div>
+                </div>
+                {alreadyInCart && (
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 8, padding: "3px 8px", flexShrink: 0 }}>
+                    In cart
+                  </div>
+                )}
+              </div>
+
+              {/* Quantity */}
+              <div>
+                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                  Quantity
+                </label>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  {[1, 2, 3, 5, 10].map(q => (
+                    <button
+                      key={q}
+                      onClick={() => setAddQty(q.toString())}
+                      style={{
+                        width: 44,
+                        height: 44,
+                        flexShrink: 0,
+                        border: `1px solid ${addQty === q.toString() ? "rgba(6,182,212,0.5)" : theme.border.default}`,
+                        borderRadius: 10,
+                        cursor: "pointer",
+                        background: addQty === q.toString() ? "rgba(6,182,212,0.15)" : "transparent",
+                        color: addQty === q.toString() ? theme.accent.cyan : theme.text.muted,
+                        fontFamily: theme.font.mono,
+                        fontSize: 15,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {q}
+                    </button>
+                  ))}
+
+                  <div
+                    style={{
+                      flex: "1 1 130px",
+                      minWidth: 120,
+                      maxWidth: 170,
+                      height: 44,
+                      display: "flex",
+                      alignItems: "center",
+                      border: "1.5px solid rgba(6,182,212,0.55)",
+                      borderRadius: 10,
+                      overflow: "hidden",
+                      background: theme.bg.input,
+                    }}
+                  >
+                    <span
+                      style={{
+                        padding: "0 8px 0 12px",
+                        fontFamily: theme.font.mono,
+                        fontSize: 12,
+                        fontWeight: 700,
+                        color: theme.accent.cyan,
+                        textTransform: "uppercase",
+                        letterSpacing: "0.05em",
+                        borderRight: "1px solid rgba(6,182,212,0.35)",
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                      }}
+                    >
+                      Qty
+                    </span>
+                    <input
+                      type="text"
+                      inputMode="numeric"
+                      value={addQty}
+                      onChange={e => setAddQty(e.target.value.replace(/[^0-9]/g, ""))}
+                      placeholder="Custom"
+                      style={{
+                        flex: 1,
+                        height: "100%",
+                        minWidth: 0,
+                        background: "transparent",
+                        border: "none",
+                        outline: "none",
+                        textAlign: "center",
+                        fontFamily: theme.font.mono,
+                        fontWeight: 700,
+                        fontSize: 16,
+                        color: theme.accent.cyan,
+                        padding: "0 8px",
+                      }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Sell Price */}
+              {(() => {
+                const sp      = Number(addSellPrice) || adding.product.price;
+                const qty     = Math.max(1, parseInt(addQty) || 1);
+                const markup  = Math.max(0, sp - adding.product.price);
+                const hasCommission = commissionConfig.enabled && commissionConfig.rate > 0;
+                return (
+                  <div>
+                    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+                      Sell Price
+                      <span style={{ color: theme.text.muted, fontSize: 9, textTransform: "none", letterSpacing: 0, marginLeft: 6 }}>custom</span>
+                    </label>
+                    <input className="ki" type="text" inputMode="numeric"
+                      value={addSellPrice}
+                      onChange={e => { setAddSellPrice(sanitizeAmount(e.target.value)); setError(""); }}
+                    />
+                    {markup > 0 && (
+                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, marginTop: 6, display: "flex", justifyContent: "space-between" }}>
+                        <span style={{ color: "#34d399" }}>Markup: {fmt(markup * qty)}</span>
+                        {hasCommission && (
+                          <span style={{ color: theme.accent.cyan }}>
+                            Commission: {fmt(Math.round(markup * qty * commissionConfig.rate / 100))}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* Subtotal preview */}
+              <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
+                <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>
+                  {fmt((Number(addSellPrice) || adding.product.price) * (Math.max(1, parseInt(addQty) || 1)))}
+                </span>
+              </div>
+
+              {error && (
+                <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>⚠ {error}</div>
+              )}
+
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  onClick={() => {
+                    setAddingProduct(null);
+                    setError("");
+                    if (reopenPayAfterEdit) {
+                      setReopenPayAfterEdit(false);
+                      setPayOpen(true);
+                    }
+                  }}
+                  style={{ flex: 1, padding: "14px", border: `1px solid ${theme.border.default}`, borderRadius: 13, background: "transparent", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 14, cursor: "pointer" }}
+                >
+                  Cancel
+                </button>
+                <button className="abtn" onClick={handleAddToCart}
+                  style={{ flex: 2, background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`, color: "#fff", fontSize: 15 }}>
+                  {alreadyInCart ? "Update Cart" : "Add to Cart"} →
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
    
       
@@ -3386,7 +3932,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
 />
 
 {/* ══════════════════ SALE DOCK ══════════════════ */}
-{step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && !backdateOpen && (
+{!isDesktop && step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && !backdateOpen && (
   <SaleDock
     count={cart.length}
     total={grandTotal}
@@ -3398,28 +3944,40 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
   />
 )}
 
+
 {/* ══════════════════ ADD TOAST ══════════════════ */}
 {toast && step === "scan" && !payOpen && !backdateOpen && (
-  <AddToast
-    text={toast.text}
-    theme={theme}
-    bottomOffset={NAV_H}
-    onEdit={
-      toast.lastKey
-        ? () => {
-            const item = cart.find(i => i.key === toast.lastKey);
-            setToast(null);
-            if (!item) return;
-            if (item.kind === "listed") editItem(item.key);
-            else editUnlistedItem(item.key);
-          }
-        : undefined
-    }
-    onUndo={() => undoItem(toast.lastKey!)}
-  />
+  <div style={{
+    position: "fixed",
+    zIndex: 999,
+    // On desktop: top right. On mobile: above the sale dock
+    top: isDesktop ? 80 : "auto",
+    bottom: isDesktop ? "auto" : NAV_H,
+    right: isDesktop ? 40 : "auto",
+    left: isDesktop ? "auto" : "50%",
+    transform: isDesktop ? "none" : "translateX(-50%)",
+  }}>
+    <AddToast
+      text={toast.text}
+      theme={theme}
+      bottomOffset={0} // Reset offset since we are positioning the wrapper
+      onEdit={
+        toast.lastKey
+          ? () => {
+              const item = cart.find(i => i.key === toast.lastKey);
+              setToast(null);
+              if (!item) return;
+              if (item.kind === "listed") editItem(item.key);
+              else editUnlistedItem(item.key);
+            }
+          : undefined
+      }
+      onUndo={() => undoItem(toast.lastKey!)}
+    />
+  </div>
 )}
 
-
+{!isDesktop && (
 <CenterModal
   open={payOpen}
   onClose={() => {
@@ -3480,7 +4038,7 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
       {/* ── Scrollable body ── */}
       <div style={{ overflowY: "auto", flex: 1, minHeight: 0, padding: "10px 14px 14px" }}>
 
-                {/* ── Cart items — editable ── */}
+        {/* ── Cart items — editable ── */}
                 <div style={{ marginBottom: 14 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
             <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
@@ -3501,107 +4059,13 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
             )}
           </div>
           
-                <div style={{
-  maxHeight: "min(260px, 40vh)",
-  overflowY: "auto",
-  overflowX: "hidden",
-  paddingRight: 4,
-  WebkitOverflowScrolling: "touch",
-}}>
-  {/* Column headers */}
-  <div style={{
-    display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
-    gap: 6, alignItems: "center",
-    fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
-    textTransform: "uppercase", letterSpacing: "0.06em",
-    padding: "0 0 6px",
-    position: "sticky", top: 0,
-    background: theme.bg.card,
-    zIndex: 1,
-  }}>
-    <span>Product</span>
-    <span style={{ textAlign: "center" }}>Qty</span>
-    <span style={{ textAlign: "center" }}>Price</span>
-    <span style={{ textAlign: "right" }}>Total</span>
-    <span />
-  </div>
-
-  {cart.map(item => {
-    const isListed  = item.kind === "listed";
-    const remaining = isListed ? item.allocation.remaining : 9999;
-    const minPrice  = isListed ? item.allocation.product.price : 0;
-    return (
-      <div key={item.key} style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
-        gap: 6, alignItems: "center",
-        padding: "7px 0",
-        borderBottom: `1px solid ${theme.border.default}`,
-      }}>
-        {/* Product — the minmax(0,1fr) col truncates cleanly */}
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          <ProductImage imageUrl={cartItemImage(item)} productName={cartItemName(item)} size={28} />
-          <div style={{ minWidth: 0 }}>
-            <div style={{
-              fontSize: 12, fontWeight: 600,
-              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-            }}>
-              {cartItemName(item)}
-            </div>
-            {!isListed && (
-              <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc" }}>unlisted</span>
-            )}
-          </div>
-        </div>
-
-        {/* Qty */}
-        <EditableNumber
-            value={item.quantity}
-            min={1}
-            max={remaining}
-            onCommit={v => handleUpdateCartQty(item.key, v)}
-            theme={theme}
-            width={52}
-            ariaLabel="Quantity"
-          />
-
-              {/* Price */}
-          <EditableNumber
-            value={item.sellPrice}
-            min={minPrice}
-            onCommit={v => handleUpdateCartPrice(item.key, v)}
-            theme={theme}
-            width={76}
-            ariaLabel="Price"
-          />
-
-        {/* Line total */}
-        <div style={{
-          fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-          color: theme.accent.gold, textAlign: "right",
-          overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-        }}>
-          {fmt(item.sellPrice * item.quantity)}
-        </div>
-
-        {/* Remove */}
-        <button
-          onClick={() => handleRemoveFromCart(item.key)}
-          aria-label="Remove item"
-          style={{
-            width: 22, height: 22, padding: 0, lineHeight: 1,
-            border: "none", background: "transparent",
-            color: "#f87171", cursor: "pointer", fontSize: 14,
-            display: "flex", alignItems: "center", justifyContent: "center",
-          }}
-        >
-          ✕
-        </button>
-      </div>
-    );
-  })}
-</div>
+     <CartItemsList
+  cart={cart}
+  theme={theme}
+  onUpdateQty={handleUpdateCartQty}
+  onUpdatePrice={handleUpdateCartPrice}
+  onRemove={handleRemoveFromCart}
+/>
           {/* Add more link */}
           <button
             onClick={() => {
@@ -3877,16 +4341,18 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
           </button>
         ))}
       </div>
-    </>
-  )}
-</div>
+       </>
+     )}
+     </div>
             </div>
            </>
          )}
       </CenterModal>
 
+    )}
+
                   {/* ══════════════════ PIN OVERLAY ══════════════════ */}
-{payOpen && selectedAgent && !processing && (
+{!isDesktop && payOpen && selectedAgent && !processing && (
   <div
     onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
     style={{
@@ -4046,6 +4512,44 @@ const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p
   theme={theme}
   isMobile={isMobile}
 />
+
+
+      {/* ══════════════════ DESKTOP AUTH MODAL (agent → PIN) ══════════════════ */}
+      {isDesktop && (
+        <AuthModal
+          open={authOpen}
+          onClose={() => {
+            if (processing) return;
+            setAuthOpen(false);
+            setPin(""); setPinError("");
+            setSelectedAgent(null);
+            
+          }}
+          theme={theme}
+          shopAgents={shopAgents}
+          selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent}
+          pin={pin} setPin={setPin}
+          pinError={pinError} setPinError={setPinError}
+          pinIsLocked={pinIsLocked} pinCountdown={pinCountdown} pinShake={pinShake}
+          onPinKey={handlePinKey}
+          processing={processing}
+          grandTotal={grandTotal}
+          error={error}
+          
+          // New props for the checkout flow:
+          payMethod={payMethod} setPayMethod={setPayMethod}
+          cashAmount={cashAmount} setCashAmount={setCashAmount}
+          mpesaAmount={mpesaAmount} setMpesaAmount={setMpesaAmount}
+          mpesaRef={mpesaRef} setMpesaRef={setMpesaRef}
+          customerName={customerName} setCustomerName={setCustomerName}
+          customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
+          initialCashAmount={initialCashAmount} setInitialCashAmount={setInitialCashAmount}
+          initialMpesaAmount={initialMpesaAmount} setInitialMpesaAmount={setInitialMpesaAmount}
+          setInitialPayment={setInitialPayment}
+          backdate={backdate} saleDate={saleDate} formatBackdate={formatBackdate}
+          onOpenBackdate={() => setBackdateOpen(true)}
+        />
+      )}
 
     </div>
   );
