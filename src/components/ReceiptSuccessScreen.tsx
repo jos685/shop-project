@@ -192,195 +192,225 @@ export default function ReceiptSuccessScreen({
     setTimeout(() => setCopied(false), 2200);
   }, [data, biz, ref]);
 
-  return (
+    return (
     <div
       className="section"
       style={{
         display: "flex",
-        flexDirection: "column",
-        alignItems: "center",
-        gap: 12,
+        flexDirection: isMobile ? "column" : "row", //  Stack on mobile, side-by-side on desktop
+        alignItems: "flex-start",
+        justifyContent: "center",
+        gap: isMobile ? 12 : 32,
         paddingTop: 2,
         width: "100%",
+        maxWidth: 1000, // 👈 Wider to accommodate both columns
+        margin: "0 auto",
         boxSizing: "border-box",
+        paddingBottom: 40,
       }}
     >
-            {/* ── Thin status strip — only when there's something to say ── */}
-      {(wasQueued || isCredit) && (
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 420,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 8,
-            padding: "8px 12px",
-            background: wasQueued
-              ? "rgba(251,191,36,0.10)"
-              : "rgba(248,113,113,0.08)",
-            border: `1px solid ${
-              wasQueued
-                ? "rgba(251,191,36,0.35)"
-                : "rgba(248,113,113,0.30)"
-            }`,
-            borderRadius: 10,
-            color: wasQueued ? "#fbbf24" : "#f87171",
-            fontFamily: theme.font.mono,
-            fontSize: 11.5,
-            fontWeight: 700,
-            letterSpacing: "0.02em",
-            textAlign: "center",
-            lineHeight: 1.3,
-          }}
-        >
-          {wasQueued ? (
-            <>⏳ Queued — will sync when online</>
-          ) : (
-            (() => {
-              const paid = Math.min(Math.max(0, initialPayment), grandTotal);
-              return paid > 0
-                ? <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
-                : <>📝 Credit sale · {fmt(grandTotal)} balance due</>;
-            })()
-          )}
-        </div>
-      )}
-
-      {/* ── Receipt card ── */}
-      <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} />
-
-      {/* ── Action error ── */}
-      {actionError && (
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 420,
-            fontSize: 11,
-            fontFamily: theme.font.mono,
-            color: "#f87171",
-            background: "rgba(248,113,113,0.08)",
-            border: "1px solid rgba(248,113,113,0.25)",
-            borderRadius: 10,
-            padding: "10px 12px",
-            textAlign: "center",
-          }}
-        >
-          ⚠ {actionError}
-        </div>
-      )}
-
-      {/* ── Action bar: 2×2 on phones, 4×1 on wider ── */}
+      {/* ══════════════════ LEFT COLUMN: RECEIPT ══════════════════ */}
       <div
         style={{
+          flex: isMobile ? "unset" : 1, // Takes up remaining space on desktop
           width: "100%",
-          maxWidth: 420,
-          display: "grid",
-          gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr 1fr",
-          gap: 8,
+          maxWidth: isMobile ? "100%" : 500, // Restrict receipt width so it doesn't get too wide
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 12,
         }}
       >
-        <ActionButton
-          theme={theme}
-          icon="📄"
-          label="Download PDF"
-          shortLabel="PDF"
-          isMobile={isMobile}
-          loading={busy === "pdf"}
-          onClick={handlePdf}
-          disabled={busy !== null}
-          accent="#06b6d4"
-        />
-        <ActionButton
-          theme={theme}
-          icon="🖨️"
-          label="Print"
-          shortLabel="Print"
-          isMobile={isMobile}
-          loading={busy === "print"}
-          onClick={handlePrint}
-          disabled={busy !== null}
-          accent="#a78bfa"
-        />
-        <ActionButton
-          theme={theme}
-          icon="📱"
-          label="WhatsApp"
-          shortLabel="WhatsApp"
-          isMobile={isMobile}
-          onClick={() => setWaOpen(true)}
-          disabled={busy !== null}
-          accent="#25D366"
-        />
-        <ActionButton
-          theme={theme}
-          icon={copied ? "✓" : "🔗"}
-          label={copied ? "Copied!" : "Share"}
-          shortLabel={copied ? "Copied" : "Share"}
-          isMobile={isMobile}
-          onClick={handleShare}
-          disabled={busy !== null}
-          accent={copied ? "#34d399" : "#fbbf24"}
-        />
+        {/* ── Thin status strip — only when there's something to say ── */}
+        {(wasQueued || isCredit) && (
+          <div
+            style={{
+              width: "100%",
+              maxWidth: 420,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 8,
+              padding: "8px 12px",
+              background: wasQueued
+                ? "rgba(251,191,36,0.10)"
+                : "rgba(248,113,113,0.08)",
+              border: `1px solid ${
+                wasQueued
+                  ? "rgba(251,191,36,0.35)"
+                  : "rgba(248,113,113,0.30)"
+              }`,
+              borderRadius: 10,
+              color: wasQueued ? "#fbbf24" : "#f87171",
+              fontFamily: theme.font.mono,
+              fontSize: 11.5,
+              fontWeight: 700,
+              letterSpacing: "0.02em",
+              textAlign: "center",
+              lineHeight: 1.3,
+            }}
+          >
+            {wasQueued ? (
+              <>⏳ Queued — will sync when online</>
+            ) : (
+              (() => {
+                const paid = Math.min(Math.max(0, initialPayment), grandTotal);
+                return paid > 0
+                  ? <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
+                  : <>📝 Credit sale · {fmt(grandTotal)} balance due</>;
+              })()
+            )}
+          </div>
+        )}
+
+        {/* ── Receipt card ── */}
+        <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} />
       </div>
 
-      {/* ── New Sale ── */}
-      <button
-        onClick={onReset}
+      {/* ══════════════════ RIGHT COLUMN: ACTIONS ══════════════════ */}
+      <div
         style={{
-          width: "100%",
-          maxWidth: 420,
-          padding: "15px 16px",
-          background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
-          border: "none",
-          borderRadius: 14,
-          color: "#fff",
-          fontFamily: theme.font.display,
-          fontWeight: 800,
-          fontSize: 15,
-          cursor: "pointer",
-          marginTop: 4,
+          width: isMobile ? "100%" : 340, // Fixed width for the action column on desktop
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: 12,
+          position: isMobile ? "static" : "sticky", // Keeps actions visible if receipt is long
+          top: 24,
+          marginTop: isMobile ? 0 : 80,
         }}
       >
-        + New Sale
-      </button>
+        {/* ── Action error ── */}
+        {actionError && (
+          <div
+            style={{
+              width: "100%",
+              fontSize: 11,
+              fontFamily: theme.font.mono,
+              color: "#f87171",
+              background: "rgba(248,113,113,0.08)",
+              border: "1px solid rgba(248,113,113,0.25)",
+              borderRadius: 10,
+              padding: "10px 12px",
+              textAlign: "center",
+            }}
+          >
+            ⚠ {actionError}
+          </div>
+        )}
 
-            {/* ── Receipt-send status — subtle, below the actions ── */}
-      {receiptStatus !== "idle" && (
+        {/* ── Action bar: 2×2 grid ── */}
         <div
           style={{
             width: "100%",
-            maxWidth: 420,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            gap: 6,
-            marginTop: -4,
-            fontSize: 11,
-            fontFamily: theme.font.mono,
-            color:
-              receiptStatus === "sent"   ? "#34d399" :
-              receiptStatus === "failed" ? "#f87171" :
-                                           theme.text.muted,
+            display: "grid",
+            gridTemplateColumns: "1fr 1fr",
+            gap: 8,
           }}
         >
-          {receiptStatus === "sending" && (
-            <span
-              style={{
-                width: 10, height: 10,
-                border: `1.5px solid rgba(255,255,255,0.2)`,
-                borderTopColor: theme.text.muted,
-                borderRadius: "50%",
-                display: "inline-block",
-                animation: "spin 0.7s linear infinite",
-              }}
-            />
-          )}
-          {receiptStatus === "sent"    && "✓ Receipt sent"}
-          {receiptStatus === "failed"  && "⚠ Receipt could not be delivered"}
-          {receiptStatus === "sending" && "Sending receipt…"}
+          <ActionButton
+            theme={theme}
+            icon="📄"
+            label="Download PDF"
+            shortLabel="PDF"
+            isMobile={isMobile}
+            loading={busy === "pdf"}
+            onClick={handlePdf}
+            disabled={busy !== null}
+            accent="#06b6d4"
+          />
+          <ActionButton
+            theme={theme}
+            icon="🖨️"
+            label="Print"
+            shortLabel="Print"
+            isMobile={isMobile}
+            loading={busy === "print"}
+            onClick={handlePrint}
+            disabled={busy !== null}
+            accent="#a78bfa"
+          />
+          <ActionButton
+            theme={theme}
+            icon="📱"
+            label="WhatsApp"
+            shortLabel="WhatsApp"
+            isMobile={isMobile}
+            onClick={() => setWaOpen(true)}
+            disabled={busy !== null}
+            accent="#25D366"
+          />
+          <ActionButton
+            theme={theme}
+            icon={copied ? "✓" : "🔗"}
+            label={copied ? "Copied!" : "Share"}
+            shortLabel={copied ? "Copied" : "Share"}
+            isMobile={isMobile}
+            onClick={handleShare}
+            disabled={busy !== null}
+            accent={copied ? "#34d399" : "#fbbf24"}
+          />
         </div>
-      )}
+
+        {/* ── New Sale ── */}
+        <button
+          onClick={onReset}
+          style={{
+            width: "100%",
+            padding: "15px 16px",
+            background: `linear-gradient(135deg,${theme.accent.cyan},#0891b2)`,
+            border: "none",
+            borderRadius: 14,
+            color: "#fff",
+            fontFamily: theme.font.display,
+            fontWeight: 800,
+            fontSize: 15,
+            cursor: "pointer",
+            marginTop: 4,
+          }}
+        >
+          + New Sale
+        </button>
+
+        {/* ── Receipt-send status — subtle, below the actions ── */}
+        {receiptStatus !== "idle" && (
+          <div
+            style={{
+              width: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 6,
+              marginTop: -4,
+              fontSize: 11,
+              fontFamily: theme.font.mono,
+              color:
+                receiptStatus === "sent"
+                  ? "#34d399"
+                  : receiptStatus === "failed"
+                  ? "#f87171"
+                  : theme.text.muted,
+            }}
+          >
+            {receiptStatus === "sending" && (
+              <span
+                style={{
+                  width: 10,
+                  height: 10,
+                  border: `1.5px solid rgba(255,255,255,0.2)`,
+                  borderTopColor: theme.text.muted,
+                  borderRadius: "50%",
+                  display: "inline-block",
+                  animation: "spin 0.7s linear infinite",
+                }}
+              />
+            )}
+            {receiptStatus === "sent" && "✓ Receipt sent"}
+            {receiptStatus === "failed" && "⚠ Receipt could not be delivered"}
+            {receiptStatus === "sending" && "Sending receipt…"}
+          </div>
+        )}
+      </div>
 
       {/* ── WhatsApp modal ── */}
       <WhatsAppSendModal
@@ -393,6 +423,7 @@ export default function ReceiptSuccessScreen({
       />
     </div>
   );
+
 }
 
 function fmt(n: number) {

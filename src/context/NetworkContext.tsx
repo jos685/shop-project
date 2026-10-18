@@ -64,10 +64,13 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
-    const onOnline = () => {
+        const onOnline = () => {
       setIsOnline(true);
       addToast("Connection restored.", "online");
-      runSync();
+      // Delay sync by 1.5 seconds to allow ShopAuthContext to refresh the JWT first
+      setTimeout(() => {
+        runSync();
+      }, 1500);
     };
     const onOffline = () => {
       setIsOnline(false);

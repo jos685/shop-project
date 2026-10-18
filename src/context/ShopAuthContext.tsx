@@ -43,7 +43,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
   // Keep sessionTokenRef + hasAuthSession in sync with Supabase auth state.
   // Also write authProvisioned=true into localStorage whenever a real session appears,
   // so the setup banner never re-surfaces after a successful auth fix.
-  useEffect(() => {
+    useEffect(() => {
     const markProvisioned = () => {
       try {
         const raw = localStorage.getItem(SESSION_KEY);
@@ -51,29 +51,50 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         const s = JSON.parse(raw);
         if (!s?.authProvisioned) {
           localStorage.setItem(SESSION_KEY, JSON.stringify({ ...s, authProvisioned: true }));
-          // Also update React state so the banner condition re-evaluates immediately.
           setShop(prev => prev ? { ...prev, authProvisioned: true } : prev);
         }
-      } catch { /* ignore */ }
+      } catch {}
     };
 
-    // Seed initial value from whatever Supabase already has in storage
     supabase.auth.getSession().then(({ data }) => {
       const has = !!data?.session;
-      setHasAuthSession(has);
-      sessionTokenRef.current = data?.session?.access_token ?? null;
-      if (has) markProvisioned();
+      
+      if (has) {
+        setHasAuthSession(true);
+        sessionTokenRef.current = data.session.access_token;
+        markProvisioned();
+      } else {
+        // If we have a stored session and are offline, keep the session alive!
+        const hasStored = !!localStorage.getItem(SESSION_KEY);
+        if (hasStored && !navigator.onLine) {
+          console.warn("Offline mode: No JWT session found, but allowing cached shop session.");
+          setHasAuthSession(true); 
+        } else {
+          setHasAuthSession(false);
+        }
+      }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
       sessionTokenRef.current = session?.access_token ?? null;
-      setHasAuthSession(!!session);
-      if (session) markProvisioned();
+      
+      if (session) {
+        setHasAuthSession(true);
+        markProvisioned();
+      } else {
+        // If Supabase emits SIGNED_OUT because of a failed refresh while offline, ignore it.
+        const hasStored = !!localStorage.getItem(SESSION_KEY);
+        if (event === "SIGNED_OUT" && hasStored && !navigator.onLine) {
+          console.warn("Ignored SIGNED_OUT event while offline. Keeping session.");
+        } else {
+          setHasAuthSession(false);
+        }
+      }
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  /** Re-checks with the Supabase server that the JWT is still valid.
+    /** Re-checks with the Supabase server that the JWT is still valid.
    *  Returns true if a usable session is active after the attempt. */
   const refreshAuthSession = useCallback(async (): Promise<boolean> => {
     const { data, error } = await supabase.auth.refreshSession();
@@ -81,6 +102,19 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     setHasAuthSession(ok);
     return ok;
   }, []);
+
+  // Attempt to refresh the token when network is restored
+  useEffect(() => {
+    const handleOnline = async () => {
+      console.log("Network restored. Refreshing auth session...");
+      const ok = await refreshAuthSession();
+      if (!ok) {
+        console.warn("Could not refresh auth session after coming online.");
+      }
+    };
+    window.addEventListener("online", handleOnline);
+    return () => window.removeEventListener("online", handleOnline);
+  }, [refreshAuthSession]);
 
   // Fire-and-forget: set shops.last_seen = null via keepalive fetch
   // Works both during normal operation and during tab close (beforeunload)

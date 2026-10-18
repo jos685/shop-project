@@ -1278,10 +1278,11 @@ function CartRail({
       </div>
 
       {/* ── Footer (pinned) ── */}
-            {/* ── Footer (pinned) ── */}
+      
       <div style={{
         borderTop: `1px solid ${theme.border.default}`,
         padding: "16px",
+        paddingBottom: "32px", // Added to push the button up
         display: "flex", flexDirection: "column", gap: 14,
         flexShrink: 0,
         background: theme.bg.card,
@@ -1307,7 +1308,7 @@ function CartRail({
           </span>
         </div>
 
-        {/* Charge Button - Prominent and always visible */}
+        {/* Charge Button - Renamed to Sale */}
         <button
           onClick={onCharge}
           style={{
@@ -1318,12 +1319,13 @@ function CartRail({
             cursor: "pointer",
             boxShadow: "0 4px 14px rgba(6,182,212,0.3)",
             transition: "transform 0.1s",
+            marginBottom: "16px", // Pushes it slightly higher
           }}
           onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
           onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
           onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
         >
-          Charge · {fmt(grandTotal)}
+          Sale · {fmt(grandTotal)}
         </button>
       </div>
     </aside>
@@ -1361,7 +1363,7 @@ function AuthModal({
     <div
       onClick={e => { if (e.target === e.currentTarget && !processing) onClose(); }}
       style={{
-        position: "fixed", inset: 0, zIndex: 80,
+        position: "fixed", inset: 0, zIndex: 1000,
         background: "rgba(0,0,0,0.6)",
         backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
         display: "flex", alignItems: "center", justifyContent: "center",
@@ -1377,8 +1379,7 @@ function AuthModal({
           boxShadow: "0 24px 60px rgba(0,0,0,0.7)",
           padding: "18px 18px 22px",
           width: "min(480px, calc(100vw - 40px))",
-          // Fixed height prevents the modal from jumping when fields appear
-          height: "min(600px, 88dvh)", 
+          maxHeight: "min(85dvh, 650px)", 
           display: "flex",
           flexDirection: "column",
           animation: "zoomIn 0.2s ease both",
@@ -1468,7 +1469,7 @@ function AuthModal({
                         disabled={!k || pinIsLocked}
                         onClick={() => { if (k) onPinKey(k); }}
                         style={{
-                          height: 52, border: "none", borderRadius: 12,
+                          height: 46, border: "none", borderRadius: 12,
                           background: k === "⌫" ? "rgba(248,113,113,0.08)" : k ? "rgba(255,255,255,0.06)" : "transparent",
                           color: k === "⌫" ? "#f87171" : theme.text.primary,
                           fontFamily: theme.font.mono,
@@ -1621,9 +1622,9 @@ function AuthModal({
                     </span>
                   </button>
 
-                  {/* 5. Agent List (2x2 Grid) */}
-                  <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 16, marginTop: 4 }}>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 8 }}>
+                {/* 5. Agent List (2x2 Grid) */}
+                  <div style={{ borderTop: `1px solid ${theme.border.default}`, paddingTop: 12, marginTop: 0 }}>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 6 }}>
                       Who is selling?
                     </div>
                     {shopAgents.length === 0 ? (
@@ -1631,7 +1632,7 @@ function AuthModal({
                         No agents assigned to this shop yet.
                       </div>
                     ) : (
-                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
                         {shopAgents.map((sa: any) => (
                           <button
                             key={sa.id}
@@ -3679,8 +3680,11 @@ const renderVerifyStep = () => (
     overflowY: "auto",
     display: "flex",
     flexDirection: "column",
-    alignItems: "center",
+    justifyContent: "center",
+    alignItems: "flex-start",
     padding: "24px 20px",
+    paddingTop: "40px",
+    
   }}>
     <ReceiptSuccessScreen
       cart={cart}
@@ -4356,7 +4360,7 @@ const renderVerifyStep = () => (
   <div
     onClick={() => { setSelectedAgent(null); setPin(""); setPinError(""); }}
     style={{
-      position: "fixed", inset: 0, zIndex: 80,
+      position: "fixed", inset: 0, zIndex: 1000,
       background: "rgba(0,0,0,0.55)",
       backdropFilter: "blur(3px)",
       WebkitBackdropFilter: "blur(3px)",
@@ -4375,7 +4379,10 @@ const renderVerifyStep = () => (
         borderRadius: 20,
         boxShadow: "0 24px 60px rgba(0,0,0,0.7)",
         padding: "18px 18px 22px",
-        width: "min(340px, calc(100vw - 32px))",
+        width: selectedAgent ? "min(360px, calc(100vw - 40px))" : "min(480px, calc(100vw - 40px))",
+        maxHeight: "min(85dvh, 650px)", 
+        display: "flex",
+        flexDirection: "column",
         animation: "zoomIn 0.2s ease both",
       }}
     >
@@ -4441,7 +4448,7 @@ const renderVerifyStep = () => (
         </div>
       )}
 
-      {/* Numpad */}
+            {/* Numpad */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 6 }}>
         {["1","2","3","4","5","6","7","8","9","","0","⌫"].map(k => (
           <button
@@ -4463,7 +4470,8 @@ const renderVerifyStep = () => (
             {k}
           </button>
         ))}
-      </div>
+      
+                  </div>
     </div>
   </div>
 )}
