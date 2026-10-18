@@ -13,7 +13,7 @@ import autoTable from "jspdf-autotable";
 import {
   BarChart2, ClipboardList, History, PlusCircle, PackagePlus,
   Send, RotateCcw, Pencil,  Store, ShoppingCart,
-  AlertTriangle,
+  AlertTriangle, Trash2,
 } from "lucide-react";
 
 const LOG_PAGE_SIZE = 12; // for activity log pagination
@@ -369,6 +369,28 @@ const [paymentMethod, setPaymentMethod] = useState<"pochi" | "send" | "paybill" 
 const [paymentDetails, setPaymentDetails] = useState("");
 const [paymentAccount, setPaymentAccount] = useState("");
 
+
+// ── Custom (non-stock) invoice items ─────────────────────
+const [showCustomItemForm, setShowCustomItemForm] = useState(false);
+const [customItemName,  setCustomItemName]  = useState("");
+const [customItemPrice, setCustomItemPrice] = useState("");
+const [customItemUnit,  setCustomItemUnit]  = useState("pcs");
+const [customItemQty,   setCustomItemQty]   = useState("1");
+const [customItemError, setCustomItemError] = useState("");
+
+// ── Invoice tabs + saved-invoice history ─────────────────
+const [invoiceTab, setInvoiceTab] = useState<"create" | "history">("create");
+const [currentInvoiceNumber, setCurrentInvoiceNumber] = useState("");
+const [savedInvoices, setSavedInvoices] = useState<any[]>([]);
+const [invoiceHistoryLoading, setInvoiceHistoryLoading] = useState(false);
+const [invoiceHistoryError, setInvoiceHistoryError] = useState<string | null>(null);
+const [invoiceHistoryPage, setInvoiceHistoryPage] = useState(1);
+const [invoiceHistoryTotal, setInvoiceHistoryTotal] = useState(0);
+const [confirmDeleteInvoice, setConfirmDeleteInvoice] = useState<any | null>(null);
+const [deletingInvoice, setDeletingInvoice] = useState(false);
+const [deleteInvoiceError, setDeleteInvoiceError] = useState<string | null>(null);
+const INVOICES_PAGE_SIZE = 10;
+
 const canSharePdf = (() => {
   if (typeof navigator === "undefined") return false;
   const nav = navigator as any;
@@ -381,14 +403,61 @@ const canSharePdf = (() => {
   }
 })();
 
+// ── Generate a fresh invoice number ─────────────────────
+const makeInvoiceNumber = () => {
+  const n = new Date();
+  return `INV-${n.getFullYear()}${String(n.getMonth()+1).padStart(2,"0")}${String(n.getDate()).padStart(2,"0")}`
+       + `-${String(n.getHours()).padStart(2,"0")}${String(n.getMinutes()).padStart(2,"0")}${String(n.getSeconds()).padStart(2,"0")}`;
+};
+
 const openInvoiceModal = () => {
   setInvoiceItems([]);
   setCustomerName("");
   setCustomerPhone("");
-  setPaymentMethod("pochi");
+  setPaymentMethod("");
   setPaymentDetails("");
   setPaymentAccount("");
+  setInvoiceShareMsg(null);
+
+  // Reset the custom-item form
+  setShowCustomItemForm(false);
+  setCustomItemName("");
+  setCustomItemPrice("");
+  setCustomItemUnit("pcs");
+  setCustomItemQty("1");
+  setCustomItemError("");
+
+  // Always open on the Create tab with a fresh number
+  setInvoiceTab("create");
+  setCurrentInvoiceNumber(makeInvoiceNumber());
+
   setShowInvoiceModal(true);
+};
+
+// ── Add a custom (non-stock) item to the invoice ─────────
+const addCustomItem = () => {
+  const name  = customItemName.trim();
+  const price = Number(customItemPrice);
+  const qty   = Number(customItemQty);
+  const unit  = customItemUnit.trim() || "pcs";
+
+  if (!name)                                          { setCustomItemError("Enter an item name."); return; }
+  if (!customItemPrice || isNaN(price) || price < 0)  { setCustomItemError("Enter a valid price."); return; }
+  if (!customItemQty   || isNaN(qty)   || qty   < 1)  { setCustomItemError("Enter a valid quantity."); return; }
+
+  // A unique pseudo-id — nothing needs to exist in the products table
+  const customId = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+  setInvoiceItems(prev => [
+    ...prev,
+    { product_id: customId, name, price, unit, qty },
+  ]);
+
+  // Keep the panel open and clear fields — fast for multi-entry
+  setCustomItemName("");
+  setCustomItemPrice("");
+  setCustomItemQty("1");
+  setCustomItemError("");
 };
 
   // Deep-link from dashboard: navigate("/pos/info", { state: { tab: "stock" } })
@@ -756,171 +825,301 @@ useEffect(() => {
     });
   };
 
-  const generateInvoicePdf = (): { doc: jsPDF; filename: string } | null => {
-    if (invoiceItems.length === 0) return null;
-    const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-  
-    const biz = shop?.name ?? "Shop";
-    const ownerPhone = (shop as any)?.phone || "";
-    const now = new Date();
-    const invoiceNo = `INV-${now.getFullYear()}${String(now.getMonth()+1).padStart(2,"0")}${String(now.getDate()).padStart(2,"0")}-${String(now.getHours()).padStart(2,"0")}${String(now.getMinutes()).padStart(2,"0")}`;
-  
-    doc.setFontSize(18);
-    doc.setFont("helvetica", "bold");
-    doc.text(biz, 14, 18);
-    if (shop?.shop_code) {
-      doc.setFontSize(9);
-      doc.setFont("helvetica", "normal");
-      doc.setTextColor(140);
-      doc.text(`Shop: ${shop.shop_code}`, 14, 23);
-    }
-  
-    doc.setFontSize(10);
-    doc.setFont("helvetica", "normal");
-    doc.setTextColor(100);
-    doc.text(`Invoice #${invoiceNo}`, 14, 30);
-    doc.text(`Date: ${now.toLocaleDateString("en-KE", { day: "numeric", month: "long", year: "numeric" })}`, 14, 35);
-  
-    let cursorY = 43;
-    if (customerName) {
-      doc.setTextColor(0);
-      doc.text(`Billed to: ${customerName}${customerPhone ? " · " + customerPhone : ""}`, 14, cursorY);
-      cursorY += 6;
-    }
-  
-    // Payment display
-    let paymentDisplay = "";
-    if (paymentMethod === "custom") {
-      paymentDisplay = paymentDetails || "Custom payment";
-    } else if (paymentMethod) {
-      const methodLabels: Record<string, string> = {
-        pochi: "Pochi La Biashara",
-        send: "Send to Number",
-        paybill: "Paybill",
-        till: "Till Number",
-      };
-      const methodLabel = methodLabels[paymentMethod] || paymentMethod;
-      if (paymentMethod === "paybill") {
-        const parts: string[] = [];
-        if (paymentDetails.trim()) parts.push(paymentDetails.trim());
-        if (paymentAccount.trim()) parts.push(`Acc: ${paymentAccount.trim()}`);
-        paymentDisplay = parts.length ? `${methodLabel} - ${parts.join(" · ")}` : methodLabel;
-      } else {
-        paymentDisplay = paymentDetails.trim() ? `${methodLabel} - ${paymentDetails}` : methodLabel;
-      }
-    }
-  
-    const startY = cursorY;
-    const rows = invoiceItems.map((it, i) => [
-      String(i + 1), it.name, String(it.qty), it.unit,
-      `KSh ${it.price.toLocaleString()}`,
-      `KSh ${(it.price * it.qty).toLocaleString()}`,
-    ]);
-    const total = invoiceItems.reduce((s, it) => s + it.price * it.qty, 0);
-  
-    autoTable(doc, {
-      startY,
-      head: [["#", "Product", "Qty", "Unit", "Unit Price", "Total"]],
-      body: rows,
-      styles: { fontSize: 10, cellPadding: 4 },
-      headStyles: { fillColor: [15, 40, 80], textColor: 255 },
-      columnStyles: { 4: { halign: "right" }, 5: { halign: "right" } },
-    });
-  
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const finalY = (doc as any).lastAutoTable.finalY + 8;
-    const boxW = 60, boxH = 10, boxX = pageWidth - 14 - boxW, boxY = finalY;
-  
-    doc.setFillColor(15, 40, 80);
-    doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2, "F");
-    doc.setTextColor(255, 255, 255);
-    doc.setFont("helvetica", "bold");
+  // ── Core PDF builder — used by fresh + historical invoices ──
+const buildInvoicePdf = (opts: {
+  invoiceNumber: string;
+  items: { name: string; price: number; unit: string; qty: number }[];
+  customerName: string;
+  customerPhone: string;
+  paymentMethod: string;
+  paymentDetails: string;
+  paymentAccount: string;
+}): { doc: jsPDF; filename: string } | null => {
+  if (opts.items.length === 0) return null;
+  const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
+
+  const biz        = shop?.name ?? "Shop";
+  const ownerPhone = (shop as any)?.phone || "";
+  const now        = new Date();
+  const invoiceNo  = opts.invoiceNumber;
+
+  doc.setFontSize(18);
+  doc.setFont("helvetica", "bold");
+  doc.text(biz, 14, 18);
+  if (shop?.shop_code) {
     doc.setFontSize(9);
-    doc.text("GRAND TOTAL", boxX + 5, boxY + 7);
-    doc.setFontSize(11);
-    doc.text(`KSh ${total.toLocaleString()}`, boxX + boxW - 5, boxY + 7.3, { align: "right" });
-  
-    // Payment panel
-    const panelX = 14, panelY = boxY, panelW = boxX - panelX - 6, panelH = 18;
-    if (paymentDisplay) {
-      doc.setFillColor(236, 254, 255);
-      doc.setDrawColor(6, 182, 212);
-      doc.setLineWidth(0.4);
-      doc.roundedRect(panelX, panelY, panelW, panelH, 2, 2, "FD");
-      doc.setFillColor(6, 182, 212);
-      doc.rect(panelX, panelY, 1.4, panelH, "F");
-      doc.setTextColor(8, 145, 178);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(9.5);
-      doc.text("PAYMENT DETAILS", panelX + 5, panelY + 5.5);
-      doc.setFont("helvetica", "bold");
-      doc.setFontSize(12.5);
-      doc.setTextColor(15, 23, 42);
-      const wrapped = doc.splitTextToSize(paymentDisplay, panelW - 10);
-      doc.text(wrapped.slice(0, 2), panelX + 5, panelY + 12.5);
+    doc.setFont("helvetica", "normal");
+    doc.setTextColor(140);
+    doc.text(`Shop: ${shop.shop_code}`, 14, 23);
+  }
+
+  doc.setFontSize(10);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(100);
+  doc.text(`Invoice #${invoiceNo}`, 14, 30);
+  doc.text(
+    `Date: ${now.toLocaleDateString("en-KE", { day: "numeric", month: "long", year: "numeric" })}`,
+    14, 35,
+  );
+
+  let cursorY = 43;
+  if (opts.customerName) {
+    doc.setTextColor(0);
+    doc.text(`Billed to: ${opts.customerName}${opts.customerPhone ? " · " + opts.customerPhone : ""}`, 14, cursorY);
+    cursorY += 6;
+  }
+
+  // Payment display
+  let paymentDisplay = "";
+  if (opts.paymentMethod === "custom") {
+    paymentDisplay = opts.paymentDetails || "Custom payment";
+  } else if (opts.paymentMethod) {
+    const methodLabels: Record<string, string> = {
+      pochi: "Pochi La Biashara",
+      send:  "Send to Number",
+      paybill: "Paybill",
+      till:  "Till Number",
+    };
+    const methodLabel = methodLabels[opts.paymentMethod] || opts.paymentMethod;
+    if (opts.paymentMethod === "paybill") {
+      const parts: string[] = [];
+      if (opts.paymentDetails.trim()) parts.push(opts.paymentDetails.trim());
+      if (opts.paymentAccount.trim()) parts.push(`Acc: ${opts.paymentAccount.trim()}`);
+      paymentDisplay = parts.length ? `${methodLabel} - ${parts.join(" · ")}` : methodLabel;
+    } else {
+      paymentDisplay = opts.paymentDetails.trim()
+        ? `${methodLabel} - ${opts.paymentDetails}`
+        : methodLabel;
     }
+  }
+
+  const startY = cursorY;
+  const rows = opts.items.map((it, i) => [
+    String(i + 1), it.name, String(it.qty), it.unit,
+    `KSh ${it.price.toLocaleString()}`,
+    `KSh ${(it.price * it.qty).toLocaleString()}`,
+  ]);
+  const total = opts.items.reduce((s, it) => s + it.price * it.qty, 0);
+
+  autoTable(doc, {
+    startY,
+    head: [["#", "Product", "Qty", "Unit", "Unit Price", "Total"]],
+    body: rows,
+    styles: { fontSize: 10, cellPadding: 4 },
+    headStyles: { fillColor: [15, 40, 80], textColor: 255 },
+    columnStyles: { 4: { halign: "right" }, 5: { halign: "right" } },
+  });
+
+  const pageWidth = doc.internal.pageSize.getWidth();
+  const finalY = (doc as any).lastAutoTable.finalY + 8;
+  const boxW = 60, boxH = 10, boxX = pageWidth - 14 - boxW, boxY = finalY;
+
+  doc.setFillColor(15, 40, 80);
+  doc.roundedRect(boxX, boxY, boxW, boxH, 2, 2, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(9);
+  doc.text("GRAND TOTAL", boxX + 5, boxY + 7);
+  doc.setFontSize(11);
+  doc.text(`KSh ${total.toLocaleString()}`, boxX + boxW - 5, boxY + 7.3, { align: "right" });
+
+  const panelX = 14, panelY = boxY, panelW = boxX - panelX - 6, panelH = 18;
+  if (paymentDisplay) {
+    doc.setFillColor(236, 254, 255);
+    doc.setDrawColor(6, 182, 212);
+    doc.setLineWidth(0.4);
+    doc.roundedRect(panelX, panelY, panelW, panelH, 2, 2, "FD");
+    doc.setFillColor(6, 182, 212);
+    doc.rect(panelX, panelY, 1.4, panelH, "F");
+    doc.setTextColor(8, 145, 178);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(9.5);
+    doc.text("PAYMENT DETAILS", panelX + 5, panelY + 5.5);
+    doc.setFontSize(12.5);
+    doc.setTextColor(15, 23, 42);
+    const wrapped = doc.splitTextToSize(paymentDisplay, panelW - 10);
+    doc.text(wrapped.slice(0, 2), panelX + 5, panelY + 12.5);
+  }
+
+  const footerTop = boxY + Math.max(boxH, panelH) + 12;
+  const thankYou = "Thank You For Doing Business With Us";
+  doc.setFont("helvetica", "bolditalic");
+  doc.setFontSize(15);
+  doc.setTextColor(15, 40, 80);
+  const tyW = doc.getTextWidth(thankYou);
+  doc.text(thankYou, (pageWidth - tyW) / 2, footerTop);
+
+  if (ownerPhone) {
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(10.5);
+    doc.setTextColor(90, 90, 90);
+    const contact = `Give us a call or contact us through: ${ownerPhone}`;
+    const cW = doc.getTextWidth(contact);
+    doc.text(contact, (pageWidth - cW) / 2, footerTop + 7);
+  }
+
+  return { doc, filename: `${invoiceNo}.pdf` };
+};
+
+// ── Save the current invoice to history (best-effort) ────
+const saveInvoiceToHistory = async (invoiceNumber: string): Promise<boolean> => {
+  if (!shop || invoiceItems.length === 0) return true;
+  const total = invoiceItems.reduce((s, it) => s + it.price * it.qty, 0);
+
+  const { error } = await supabase.rpc("create_shop_invoice", {
+    p_shop_id:         shop.id,
+    p_owner_id:        shop.owner_id,
+    p_invoice_number:  invoiceNumber,
+    p_customer_name:   customerName   || null,
+    p_customer_phone:  customerPhone  || null,
+    p_payment_method:  paymentMethod  || null,
+    p_payment_details: paymentDetails || null,
+    p_payment_account: paymentAccount || null,
+    p_items:           invoiceItems,
+    p_total:           total,
+  });
+
+  if (error) {
+    console.error("[shop invoice save] failed:", error);
+    setInvoiceShareMsg(`Invoice was generated, but saving to history failed: ${error.message}`);
+    return false;
+  }
+  return true;
+};
+
+// ── Fetch saved invoices (scoped to this shop when possible) ──
+const fetchInvoiceHistory = async (page = 1) => {
+  if (!shop) return;
+  setInvoiceHistoryLoading(true);
+  setInvoiceHistoryError(null);
+  const from = (page - 1) * INVOICES_PAGE_SIZE;
+
+  const [listRes, countRes] = await Promise.all([
+    supabase.rpc("get_shop_invoices", {
+      p_shop_id: shop.id,
+      p_limit:   INVOICES_PAGE_SIZE,
+      p_offset:  from,
+    }),
+    supabase.rpc("count_shop_invoices", { p_shop_id: shop.id }),
+  ]);
+
+  if (listRes.error) {
+    setInvoiceHistoryError(listRes.error.message);
+  } else {
+    setSavedInvoices(listRes.data || []);
+    setInvoiceHistoryTotal(Number(countRes.data ?? 0));
+  }
+  if (countRes.error) {
+    console.warn("[shop invoices count] failed:", countRes.error.message);
+  }
+  setInvoiceHistoryLoading(false);
+};
+
+// Auto-fetch when the history tab opens or the page changes
+useEffect(() => {
+  if (showInvoiceModal && invoiceTab === "history") {
+    fetchInvoiceHistory(invoiceHistoryPage);
+  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+}, [showInvoiceModal, invoiceTab, invoiceHistoryPage]);
+
+// ── Re-download a saved invoice ─────────────────────────
+const handleRedownloadInvoice = (inv: any) => {
+  const result = buildInvoicePdf({
+    invoiceNumber:  inv.invoice_number,
+    items:          Array.isArray(inv.items) ? inv.items : [],
+    customerName:   inv.customer_name   ?? "",
+    customerPhone:  inv.customer_phone  ?? "",
+    paymentMethod:  inv.payment_method  ?? "",
+    paymentDetails: inv.payment_details ?? "",
+    paymentAccount: inv.payment_account ?? "",
+  });
+  if (result) result.doc.save(result.filename);
+};
+
+// ── Delete a saved invoice ──────────────────────────────
+const handleDeleteInvoice = async () => {
+  if (!confirmDeleteInvoice || !shop) return;
+  setDeletingInvoice(true);
+  setDeleteInvoiceError(null);
+
+  const { error } = await supabase.rpc("delete_shop_invoice", {
+    p_shop_id:    shop.id,
+    p_invoice_id: confirmDeleteInvoice.id,
+  });
+
+  setDeletingInvoice(false);
+  if (error) { setDeleteInvoiceError(error.message); return; }
+
+  setConfirmDeleteInvoice(null);
+  const remaining = invoiceHistoryTotal - 1;
+  const maxPage   = Math.max(1, Math.ceil(remaining / INVOICES_PAGE_SIZE));
+  const target    = Math.min(invoiceHistoryPage, maxPage);
+  setInvoiceHistoryPage(target);
+  fetchInvoiceHistory(target);
+};
   
-    const footerTop = boxY + Math.max(boxH, panelH) + 12;
-    const thankYou = "Thank You For Doing Business With Us";
-    doc.setFont("helvetica", "bolditalic");
-    doc.setFontSize(15);
-    doc.setTextColor(15, 40, 80);
-    const tyW = doc.getTextWidth(thankYou);
-    doc.text(thankYou, (pageWidth - tyW) / 2, footerTop);
-  
-    if (ownerPhone) {
-      doc.setFont("helvetica", "italic");
-      doc.setFontSize(10.5);
-      doc.setTextColor(90, 90, 90);
-      const contact = `Give us a call or contact us through: ${ownerPhone}`;
-      const cW = doc.getTextWidth(contact);
-      doc.text(contact, (pageWidth - cW) / 2, footerTop + 7);
-    }
-  
-    return { doc, filename: `${invoiceNo}.pdf` };
-  };
-  
-  const handleDownloadInvoice = () => {
-    const result = generateInvoicePdf();
-    if (!result) return;
+ // ── Download the current invoice + save to history ──────
+const handleDownloadInvoice = async () => {
+  const result = buildInvoicePdf({
+    invoiceNumber: currentInvoiceNumber || makeInvoiceNumber(),
+    items: invoiceItems,
+    customerName, customerPhone,
+    paymentMethod, paymentDetails, paymentAccount,
+  });
+  if (!result) return;
+
+  const num = currentInvoiceNumber || result.filename.replace(/\.pdf$/, "");
+  result.doc.save(result.filename);
+  await saveInvoiceToHistory(num);
+  setShowInvoiceModal(false);
+};
+
+// ── Share the current invoice + save to history ─────────
+const handleShareInvoice = async () => {
+  const result = buildInvoicePdf({
+    invoiceNumber: currentInvoiceNumber || makeInvoiceNumber(),
+    items: invoiceItems,
+    customerName, customerPhone,
+    paymentMethod, paymentDetails, paymentAccount,
+  });
+  if (!result) return;
+
+  const num = currentInvoiceNumber || result.filename.replace(/\.pdf$/, "");
+  const blob = result.doc.output("blob");
+  const file = new File([blob], result.filename, { type: "application/pdf" });
+
+  const canShareFiles =
+    typeof navigator !== "undefined" &&
+    typeof (navigator as any).canShare === "function" &&
+    (navigator as any).canShare({ files: [file] });
+
+  if (!canShareFiles) {
     result.doc.save(result.filename);
+    await saveInvoiceToHistory(num);
+    setInvoiceShareMsg("Sharing isn't available on this device — the PDF was downloaded instead.");
+    return;
+  }
+
+  setInvoiceSharing(true);
+  setInvoiceShareMsg(null);
+  try {
+    await (navigator as any).share({
+      files: [file],
+      title: `Invoice ${result.filename}`,
+      text:  `Invoice from ${shop?.name ?? "us"}`,
+    });
+    await saveInvoiceToHistory(num);
     setShowInvoiceModal(false);
-  };
-  
-  const handleShareInvoice = async () => {
-    const result = generateInvoicePdf();
-    if (!result) return;
-    const blob = result.doc.output("blob");
-    const file = new File([blob], result.filename, { type: "application/pdf" });
-  
-    const canShareFiles =
-      typeof navigator !== "undefined" &&
-      typeof (navigator as any).canShare === "function" &&
-      (navigator as any).canShare({ files: [file] });
-  
-    if (!canShareFiles) {
-      result.doc.save(result.filename);
-      setInvoiceShareMsg("Sharing isn't available on this device — the PDF was downloaded instead.");
-      return;
-    }
-  
-    setInvoiceSharing(true);
-    setInvoiceShareMsg(null);
-    try {
-      await (navigator as any).share({
-        files: [file],
-        title: `Invoice ${result.filename}`,
-        text: `Invoice from ${shop?.name ?? "us"}`,
-      });
-      setShowInvoiceModal(false);
-    } catch (err: any) {
-      if (err?.name === "AbortError") return;
-      result.doc.save(result.filename);
-      setInvoiceShareMsg("Couldn't open the share sheet — the PDF was downloaded instead.");
-    } finally {
-      setInvoiceSharing(false);
-    }
-  };
+  } catch (err: any) {
+    if (err?.name === "AbortError") return;
+    result.doc.save(result.filename);
+    await saveInvoiceToHistory(num);
+    setInvoiceShareMsg("Couldn't open the share sheet — the PDF was downloaded instead.");
+  } finally {
+    setInvoiceSharing(false);
+  }
+};
 
   const filteredStock = stock
   .filter(item => {
@@ -994,7 +1193,7 @@ useEffect(() => {
         whiteSpace: "nowrap",
       }}
     >
-      🧾 {isMobile ? "" : "Invoice"}
+      🧾 Invoice
     </button>
 
     <button
@@ -1746,8 +1945,40 @@ useEffect(() => {
         >✕</button>
       </div>
 
+      {/* Tab switcher */}
+<div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+  {([
+    ["create",  "New Invoice", "🧾"],
+    ["history", "My Invoices", "📚"],
+  ] as const).map(([key, label, icon]) => (
+    <button
+      key={key}
+      type="button"
+      onClick={() => setInvoiceTab(key)}
+      style={{
+        flex: 1, padding: "9px 0", borderRadius: 8,
+        border: `1px solid ${invoiceTab === key ? "rgba(234,179,8,0.4)" : theme.border.default}`,
+        background: invoiceTab === key ? "rgba(234,179,8,0.1)" : "transparent",
+        color: invoiceTab === key ? theme.accent.gold : theme.text.muted,
+        fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer",
+        fontWeight: invoiceTab === key ? 700 : 400,
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+      }}
+    >
+      <span>{icon}</span>{label}
+      {key === "history" && invoiceHistoryTotal > 0 && (
+        <span style={{
+          fontSize: 10, padding: "1px 6px", borderRadius: 99,
+          background: invoiceTab === key ? "rgba(234,179,8,0.2)" : "rgba(255,255,255,0.08)",
+        }}>{invoiceHistoryTotal}</span>
+      )}
+    </button>
+  ))}
+</div>
+
       {/* Customer fields */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 14, flexDirection: isMobile ? "column" : "row" }}>
+      {invoiceTab === "create" && (<>
+       <div style={{ display: "flex", gap: 10, marginBottom: 14, flexDirection: isMobile ? "column" : "row" }}>
         <input
           className=""
           placeholder="Customer name (optional)"
@@ -1769,10 +2000,10 @@ useEffect(() => {
             fontFamily: theme.font.mono, fontSize: 13, outline: "none",
           }}
         />
-      </div>
+       </div>
 
-      {/* Payment method */}
-      <div style={{ marginBottom: 8 }}>
+       {/* Payment method */}
+       <div style={{ marginBottom: 8 }}>
         <label style={{ color: theme.text.secondary, fontSize: 11, fontFamily: theme.font.mono, letterSpacing: "0.07em", textTransform: "uppercase", display: "block", marginBottom: 6 }}>
           Payment Method (optional)
         </label>
@@ -1831,10 +2062,10 @@ useEffect(() => {
             style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "12px 14px", color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
           />
         )}
-      </div>
+       </div>
 
-      {/* Product picker */}
-      <InvoiceProductPicker
+       {/* Product picker */}
+       <InvoiceProductPicker
         products={stock.map(s => ({
           id: s.product.id,
           name: s.product.name,
@@ -1863,14 +2094,135 @@ useEffect(() => {
             return [...prev, ...toAdd];
           });
         }}
-      />
+       />
 
-      {/* Invoice items list */}
-      {invoiceItems.length === 0 ? (
+       {/* ── Custom item: something not in your stock ── */}
+          {!showCustomItemForm ? (
+            <button
+              type="button"
+              onClick={() => setShowCustomItemForm(true)}
+              style={{
+                width: "100%",
+                padding: "10px 12px",
+                borderRadius: 8,
+                border: `1px dashed ${theme.accent.cyan}66`,
+                background: "rgba(6,182,212,0.04)",
+                color: theme.accent.cyan,
+                fontFamily: theme.font.mono,
+                fontSize: 12,
+                cursor: "pointer",
+                marginBottom: 14,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+              }}
+            >
+              <PlusCircle size={13} /> Add item not in your stock
+            </button>
+          ) : (
+            <div
+              style={{
+                background: "rgba(6,182,212,0.04)",
+                border: `1px solid ${theme.accent.cyan}66`,
+                borderRadius: 10,
+                padding: 12,
+                marginBottom: 14,
+                display: "flex", flexDirection: "column", gap: 8,
+              }}
+            >
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <div style={{
+                  fontSize: 11, fontFamily: theme.font.mono,
+                  color: theme.accent.cyan, fontWeight: 700,
+                  textTransform: "uppercase", letterSpacing: "0.06em",
+                }}>Custom Item</div>
+                <button
+                  type="button"
+                  onClick={() => { setShowCustomItemForm(false); setCustomItemError(""); }}
+                  aria-label="Close"
+                  style={{
+                    background: "none", border: "none", color: theme.text.muted,
+                    fontSize: 15, cursor: "pointer", lineHeight: 1, padding: 0,
+                  }}
+                >✕</button>
+              </div>
+
+              <input
+                placeholder="Item name *"
+                value={customItemName}
+                onChange={e => setCustomItemName(e.target.value)}
+                style={{
+                  width: "100%", boxSizing: "border-box",
+                  background: theme.bg.input, border: `1px solid ${theme.border.default}`,
+                  borderRadius: 8, padding: "10px 12px", color: theme.text.primary,
+                  fontFamily: theme.font.mono, fontSize: 13, outline: "none",
+                }}
+              />
+
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  type="number" min={0}
+                  placeholder="Price *"
+                  value={customItemPrice}
+                  onChange={e => setCustomItemPrice(e.target.value)}
+                  style={{
+                    flex: 1, background: theme.bg.input,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8,
+                    padding: "10px 12px", color: theme.text.primary,
+                    fontFamily: theme.font.mono, fontSize: 13, outline: "none",
+                  }}
+                />
+                <input
+                  type="number" min={1}
+                  placeholder="Qty"
+                  value={customItemQty}
+                  onChange={e => setCustomItemQty(e.target.value)}
+                  style={{
+                    width: 70, background: theme.bg.input,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8,
+                    padding: "10px 12px", color: theme.text.primary,
+                    fontFamily: theme.font.mono, fontSize: 13, outline: "none",
+                  }}
+                />
+                <input
+                  placeholder="Unit"
+                  value={customItemUnit}
+                  onChange={e => setCustomItemUnit(e.target.value)}
+                  style={{
+                    width: 80, background: theme.bg.input,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8,
+                    padding: "10px 12px", color: theme.text.primary,
+                    fontFamily: theme.font.mono, fontSize: 13, outline: "none",
+                  }}
+                />
+              </div>
+
+              {customItemError && (
+                <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red }}>
+                  ⚠ {customItemError}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={addCustomItem}
+                style={{
+                  padding: "9px 0", borderRadius: 8, border: "none",
+                  background: "linear-gradient(135deg,#06b6d4,#0891b2)",
+                  color: "#fff", fontFamily: theme.font.display,
+                  fontWeight: 700, fontSize: 13, cursor: "pointer",
+                  display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                }}
+              >
+                <PlusCircle size={13} /> Add to Invoice
+              </button>
+            </div>
+          )}
+
+       {/* Invoice items list */}
+       {invoiceItems.length === 0 ? (
         <div style={{ textAlign: "center", padding: "20px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 12 }}>
           No items added yet
         </div>
-      ) : (
+       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "0 10px", fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase" }}>
             <span style={{ flex: 1 }}>Product</span>
@@ -1908,9 +2260,9 @@ useEffect(() => {
             <span>KSh {invoiceItems.reduce((s, it) => s + it.price * it.qty, 0).toLocaleString()}</span>
           </div>
         </div>
-      )}
+       )}
 
-      {invoiceShareMsg && (
+       {invoiceShareMsg && (
         <div style={{
           marginBottom: 12, padding: "10px 12px",
           background: "rgba(251,191,36,0.08)", border: "1px solid rgba(251,191,36,0.25)",
@@ -1919,9 +2271,9 @@ useEffect(() => {
         }}>
           {invoiceShareMsg}
         </div>
-      )}
+       )}
 
-      <div style={{ display: "flex", gap: 10 }}>
+       <div style={{ display: "flex", gap: 10 }}>
         <button
           onClick={handleDownloadInvoice}
           disabled={invoiceItems.length === 0 || invoiceSharing}
@@ -1978,9 +2330,263 @@ useEffect(() => {
           </button>
         )}
       </div>
+      </>)}
+
+           {/* ── HISTORY TAB ── */}
+{invoiceTab === "history" && (
+  <div>
+    {invoiceHistoryLoading ? (
+      <div style={{ textAlign: "center", padding: "50px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 12 }}>
+        <div style={{
+          width: 24, height: 24, border: "2px solid rgba(234,179,8,0.2)",
+          borderTopColor: theme.accent.gold, borderRadius: "50%",
+          animation: "spin 0.8s linear infinite", margin: "0 auto 12px",
+        }} />
+        Loading invoices…
+      </div>
+    ) : invoiceHistoryError ? (
+      <div style={{
+        padding: "16px", background: "rgba(248,113,113,0.06)",
+        border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10,
+        color: "#f87171", fontFamily: theme.font.mono, fontSize: 12,
+        display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+      }}>
+        <span style={{ flex: 1, minWidth: 0 }}>⚠ {invoiceHistoryError}</span>
+        <button
+          onClick={() => fetchInvoiceHistory(invoiceHistoryPage)}
+          style={{
+            background: "rgba(248,113,113,0.15)",
+            border: "1px solid rgba(248,113,113,0.3)",
+            borderRadius: 6, padding: "4px 10px",
+            color: "#f87171", fontFamily: theme.font.mono,
+            fontSize: 11, cursor: "pointer",
+          }}
+        >Retry</button>
+      </div>
+    ) : savedInvoices.length === 0 ? (
+      <div style={{ textAlign: "center", padding: "50px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 12 }}>
+        <div style={{ fontSize: 40, marginBottom: 10, opacity: 0.4 }}>📚</div>
+        No invoices yet.
+        <div style={{ marginTop: 6, fontSize: 11, opacity: 0.7 }}>
+          Downloaded or shared invoices will appear here.
+        </div>
+      </div>
+    ) : (
+      <>
+        <div style={{
+          display: "flex", flexDirection: "column", gap: 8,
+          maxHeight: "55vh", overflowY: "auto",
+        }}>
+          {savedInvoices.map(inv => {
+            const d = new Date(inv.created_at);
+            const dateStr = d.toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" });
+            const timeStr = d.toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" });
+            const itemCount = Array.isArray(inv.items) ? inv.items.length : 0;
+            return (
+              <div key={inv.id} style={{
+                background: "rgba(255,255,255,0.03)",
+                border: `1px solid ${theme.border.default}`,
+                borderRadius: 10, padding: "12px 14px",
+                display: "flex", flexDirection: "column", gap: 8,
+              }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div style={{
+                      fontSize: 12, fontFamily: theme.font.mono, fontWeight: 700,
+                      color: theme.accent.gold,
+                      overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    }}>{inv.invoice_number}</div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                      {dateStr} · {timeStr}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right", flexShrink: 0 }}>
+                    <div style={{ fontSize: 14, fontFamily: theme.font.display, fontWeight: 800, color: theme.accent.green, lineHeight: 1 }}>
+                      {fmt(inv.total || 0)}
+                    </div>
+                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 3 }}>
+                      {itemCount} item{itemCount === 1 ? "" : "s"}
+                    </div>
+                  </div>
+                </div>
+
+                {(inv.customer_name || inv.customer_phone || inv.payment_method) && (
+                  <div style={{
+                    fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary,
+                    display: "flex", gap: 10, flexWrap: "wrap",
+                  }}>
+                    {inv.customer_name  && <span>👤 {inv.customer_name}</span>}
+                    {inv.customer_phone && <span>📞 {inv.customer_phone}</span>}
+                    {inv.payment_method && <span style={{ textTransform: "capitalize" }}>💳 {inv.payment_method}</span>}
+                  </div>
+                )}
+
+                <div style={{
+                  display: "flex", gap: 6, justifyContent: "flex-end",
+                  borderTop: `1px solid ${theme.border.default}`, paddingTop: 8,
+                }}>
+                  <button
+                    onClick={() => handleRedownloadInvoice(inv)}
+                    style={{
+                      background: "rgba(6,182,212,0.1)",
+                      border: "1px solid rgba(6,182,212,0.25)",
+                      borderRadius: 7, padding: "6px 12px",
+                      color: theme.accent.cyan, fontFamily: theme.font.mono,
+                      fontSize: 11, cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}
+                  >
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                      stroke="currentColor" strokeWidth="2.2"
+                      strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="7 10 12 15 17 10" />
+                      <line x1="12" y1="15" x2="12" y2="3" />
+                    </svg>
+                    Download
+                  </button>
+
+                  <button
+                    onClick={() => { setConfirmDeleteInvoice(inv); setDeleteInvoiceError(null); }}
+                    style={{
+                      background: "rgba(248,113,113,0.08)",
+                      border: "1px solid rgba(248,113,113,0.2)",
+                      borderRadius: 7, padding: "6px 12px",
+                      color: theme.accent.red, fontFamily: theme.font.mono,
+                      fontSize: 11, cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}
+                  >
+                    <Trash2 size={11} /> Delete
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {invoiceHistoryTotal > INVOICES_PAGE_SIZE && (
+          <div style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            gap: 8, marginTop: 12, paddingTop: 12,
+            borderTop: `1px solid ${theme.border.default}`,
+          }}>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, whiteSpace: "nowrap" }}>
+              {((invoiceHistoryPage - 1) * INVOICES_PAGE_SIZE) + 1}–
+              {Math.min(invoiceHistoryPage * INVOICES_PAGE_SIZE, invoiceHistoryTotal)} of {invoiceHistoryTotal}
+            </div>
+            <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+              <button
+                onClick={() => setInvoiceHistoryPage(p => Math.max(1, p - 1))}
+                disabled={invoiceHistoryPage === 1}
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: `1px solid ${theme.border.default}`,
+                  borderRadius: 7, padding: "6px 12px",
+                  color: invoiceHistoryPage === 1 ? theme.text.muted : theme.text.primary,
+                  fontFamily: theme.font.mono, fontSize: 11,
+                  cursor: invoiceHistoryPage === 1 ? "not-allowed" : "pointer",
+                  opacity: invoiceHistoryPage === 1 ? 0.4 : 1,
+                }}
+              >← Prev</button>
+              <span style={{ padding: "5px 8px", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, whiteSpace: "nowrap" }}>
+                {invoiceHistoryPage}/{Math.max(1, Math.ceil(invoiceHistoryTotal / INVOICES_PAGE_SIZE))}
+              </span>
+              <button
+                onClick={() => setInvoiceHistoryPage(p => p + 1)}
+                disabled={invoiceHistoryPage >= Math.ceil(invoiceHistoryTotal / INVOICES_PAGE_SIZE)}
+                style={{
+                  background: "rgba(255,255,255,0.04)",
+                  border: `1px solid ${theme.border.default}`,
+                  borderRadius: 7, padding: "6px 12px",
+                  color: invoiceHistoryPage >= Math.ceil(invoiceHistoryTotal / INVOICES_PAGE_SIZE)
+                    ? theme.text.muted : theme.text.primary,
+                  fontFamily: theme.font.mono, fontSize: 11,
+                  cursor: invoiceHistoryPage >= Math.ceil(invoiceHistoryTotal / INVOICES_PAGE_SIZE)
+                    ? "not-allowed" : "pointer",
+                  opacity: invoiceHistoryPage >= Math.ceil(invoiceHistoryTotal / INVOICES_PAGE_SIZE) ? 0.4 : 1,
+                }}
+              >Next →</button>
+            </div>
+          </div>
+        )}
+      </>
+    )}
+  </div>
+)}
+
+{confirmDeleteInvoice && (
+  <div
+    style={{
+      position: "fixed", inset: 0, zIndex: 1600,
+      background: "rgba(0,0,0,0.82)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      padding: 16,
+    }}
+    onClick={() => {
+      if (!deletingInvoice) {
+        setConfirmDeleteInvoice(null);
+        setDeleteInvoiceError(null);
+      }
+    }}
+  >
+    <div
+      onClick={e => e.stopPropagation()}
+      style={{
+        background: theme.bg.card,
+        border: "1.5px solid rgba(239,68,68,0.4)",
+        borderRadius: 18, padding: "26px 24px",
+        maxWidth: 400, width: "100%",
+      }}
+    >
+      <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 36, marginBottom: 8 }}>🗑️</div>
+        <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17, color: theme.text.primary, marginBottom: 8 }}>
+          Delete this invoice?
+        </div>
+        <div style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted, lineHeight: 1.6 }}>
+          <strong style={{ color: theme.text.primary }}>{confirmDeleteInvoice.invoice_number}</strong>
+          <br />will be permanently removed from history.
+        </div>
+      </div>
+      {deleteInvoiceError && (
+        <div style={{ fontSize: 11, color: "#f87171", fontFamily: theme.font.mono, marginBottom: 12 }}>
+          ⚠ {deleteInvoiceError}
+        </div>
+      )}
+      <div style={{ display: "flex", gap: 10 }}>
+        <button
+          onClick={() => { setConfirmDeleteInvoice(null); setDeleteInvoiceError(null); }}
+          disabled={deletingInvoice}
+          style={{
+            flex: 1, background: "none",
+            border: `1px solid ${theme.border.default}`,
+            borderRadius: 10, padding: 12, color: theme.text.muted,
+            fontFamily: theme.font.mono, fontSize: 13,
+            cursor: deletingInvoice ? "not-allowed" : "pointer",
+          }}
+        >Cancel</button>
+        <button
+          onClick={handleDeleteInvoice}
+          disabled={deletingInvoice}
+          style={{
+            flex: 1.4,
+            background: deletingInvoice ? "rgba(239,68,68,0.35)" : "linear-gradient(135deg,#b91c1c,#ef4444)",
+            border: "none", borderRadius: 10, padding: 12,
+            color: "#fff", fontFamily: theme.font.display, fontWeight: 700, fontSize: 14,
+            cursor: deletingInvoice ? "not-allowed" : "pointer",
+          }}
+        >{deletingInvoice ? "Deleting…" : "Yes, delete"}</button>
+      </div>
     </div>
   </div>
 )}
+    </div>
+  </div>
+)}
+
+
+
     </div>
   );
 }
