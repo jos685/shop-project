@@ -1079,8 +1079,7 @@ function ConfirmModal({
 }
 
 // ── Shared cart items editor ──────────────────────────────────────────
-// Used by (a) the mobile pay modal body and (b) the desktop CartRail.
-// Renders the sticky column headers + one editable row per cart item.
+// Desktop: sticky-header table. Mobile: card-per-row so names aren't cut off.
 function CartItemsList({
   cart,
   theme,
@@ -1096,6 +1095,162 @@ function CartItemsList({
   onRemove: (key: string) => void;
   maxHeight?: number | string;
 }) {
+  // Anything narrower than the desktop cart column gets the card layout.
+  const [isNarrow, setIsNarrow] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 640 : false
+  );
+  useEffect(() => {
+    const onResize = () => setIsNarrow(window.innerWidth < 640);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, []);
+
+  // ── MOBILE / narrow: card per item ─────────────────────────────
+  if (isNarrow) {
+    return (
+      <div style={{
+        maxHeight: maxHeight ?? "min(260px, 40vh)",
+        overflowY: "auto",
+        overflowX: "hidden",
+        paddingRight: 4,
+        WebkitOverflowScrolling: "touch",
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+      }}>
+        {cart.map(item => {
+          const isListed  = item.kind === "listed";
+          const remaining = isListed ? item.allocation.remaining : 9999;
+          const minPrice  = isListed ? item.allocation.product.price : 0;
+
+          return (
+            <div
+              key={item.key}
+              style={{
+                background: "rgba(255,255,255,0.03)",
+                border: `1px solid ${theme.border.default}`,
+                borderRadius: 10,
+                padding: "10px 12px",
+                display: "flex",
+                flexDirection: "column",
+                gap: 8,
+              }}
+            >
+              {/* Row 1: image + full product name + remove */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <ProductImage
+                  imageUrl={cartItemImage(item)}
+                  productName={cartItemName(item)}
+                  size={32}
+                />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{
+                    fontSize: 13.5,
+                    fontWeight: 600,
+                    color: theme.text.primary,
+                    lineHeight: 1.35,
+                    wordBreak: "break-word",
+                  }}>
+                    {cartItemName(item)}
+                  </div>
+                  <div style={{
+                    fontSize: 10,
+                    fontFamily: theme.font.mono,
+                    color: theme.text.muted,
+                    marginTop: 2,
+                  }}>
+                    {isListed
+                      ? <>base {fmt(minPrice)}</>
+                      : <span style={{ color: "#c084fc" }}>unlisted</span>}
+                  </div>
+                </div>
+                <button
+                  onClick={() => onRemove(item.key)}
+                  aria-label="Remove item"
+                  style={{
+                    width: 28,
+                    height: 28,
+                    padding: 0,
+                    lineHeight: 1,
+                    border: "1px solid rgba(248,113,113,0.3)",
+                    background: "rgba(248,113,113,0.08)",
+                    borderRadius: 8,
+                    color: "#f87171",
+                    cursor: "pointer",
+                    fontSize: 14,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    flexShrink: 0,
+                  }}
+                >✕</button>
+              </div>
+
+              {/* Row 2: Qty · Price · Total */}
+              <div style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr 1fr",
+                gap: 8,
+              }}>
+                <div>
+                  <div style={{
+                    fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                    textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3,
+                  }}>Qty</div>
+                  <EditableNumber
+                    value={item.quantity}
+                    min={1}
+                    max={remaining}
+                    onCommit={v => onUpdateQty(item.key, v)}
+                    theme={theme}
+                    width={999}
+                    textAlign="center"
+                    ariaLabel="Quantity"
+                  />
+                </div>
+                <div>
+                  <div style={{
+                    fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                    textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3,
+                  }}>Price</div>
+                  <EditableNumber
+                    value={item.sellPrice}
+                    min={minPrice}
+                    onCommit={v => onUpdatePrice(item.key, v)}
+                    theme={theme}
+                    width={999}
+                    textAlign="center"
+                    ariaLabel="Price"
+                  />
+                </div>
+                <div>
+                  <div style={{
+                    fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+                    textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3,
+                  }}>Total</div>
+                  <div style={{
+                    fontFamily: theme.font.mono,
+                    fontSize: 13,
+                    fontWeight: 700,
+                    color: theme.accent.gold,
+                    textAlign: "right",
+                    padding: "5px 0",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    whiteSpace: "nowrap",
+                  }}>
+                    {fmt(item.sellPrice * item.quantity)}
+                  </div>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  }
+
+  // ── DESKTOP / wide: original sticky-table layout ────────────────
   return (
     <div style={{
       maxHeight: maxHeight ?? "min(260px, 40vh)",

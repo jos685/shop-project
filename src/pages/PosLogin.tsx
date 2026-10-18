@@ -104,22 +104,25 @@ export default function PosLogin() {
 
         .est-page {
           min-height: 100vh;
+          min-height: 100dvh;
           display: flex;
           align-items: center;
           justify-content: center;
-          padding: 32px 20px;
+          padding: 16px;
           font-family: 'Inter', system-ui, sans-serif;
         }
 
-        .est-root {
-          width: 100%;
-          max-width: 920px;
-          display: grid;
-          grid-template-columns: 46% 54%;
-          border-radius: 24px;
-          overflow: hidden;
-          box-shadow: 0 24px 80px rgba(194,65,12,0.14), 0 4px 20px rgba(0,0,0,0.08);
-        }
+           .est-root {
+            width: 100%;
+            max-width: 900px;
+            max-height: calc(100vh - 32px);
+            max-height: calc(100dvh - 32px);
+            display: grid;
+            grid-template-columns: 44% 56%;
+            border-radius: 22px;
+            overflow: hidden;
+            box-shadow: 0 24px 80px rgba(194,65,12,0.14), 0 4px 20px rgba(0,0,0,0.08);
+          }
 
         /* ── LEFT WARM PANEL ── */
         .est-panel {
@@ -128,7 +131,7 @@ export default function PosLogin() {
           display: flex;
           flex-direction: column;
           justify-content: center;
-          padding: 52px 44px;
+          padding: 32px 32px;
           overflow: hidden;
         }
 
@@ -155,31 +158,32 @@ export default function PosLogin() {
         }
 
         .est-panel-logo {
-          width: 120px; height: 80px;
+          width: 96px; height: 64px;
           background: rgba(255,255,255,0.2);
           backdrop-filter: blur(8px);
           border: 2px solid rgba(255,255,255,0.35);
           border-radius: 50%;
           display: flex; align-items: center; justify-content: center;
           overflow: hidden;
-          margin-bottom: 28px;
+          margin-bottom: 20px;
           position: relative; z-index: 1;
         }
+
         .est-panel-logo img {
           width: 100%; height: 100%; object-fit: contain;
         }
 
         .est-panel-tagline {
-          font-size: 15px;
+          font-size: 13px;
           color: rgba(255,255,255,0.82);
-          line-height: 1.6;
+          line-height: 1.5;
           position: relative; z-index: 1;
-          margin-bottom: 40px;
-          max-width: 280px;
+          margin-bottom: 24px;
+          max-width: 260px;
         }
 
         .est-features {
-          display: flex; flex-direction: column; gap: 16px;
+          display: flex; flex-direction: column; gap: 10px;
           position: relative; z-index: 1;
         }
 
@@ -188,10 +192,10 @@ export default function PosLogin() {
         }
 
         .est-feature-icon {
-          width: 34px; height: 34px; border-radius: 10px;
+          width: 30px; height: 30px; border-radius: 9px;
           background: rgba(255,255,255,0.18);
           display: flex; align-items: center; justify-content: center;
-          font-size: 16px; flex-shrink: 0;
+          font-size: 14px; flex-shrink: 0;
         }
 
         .est-feature-text strong {
@@ -210,8 +214,8 @@ export default function PosLogin() {
         }
 
         .est-panel-footer {
-          margin-top: 40px;
-          font-size: 11px;
+          margin-top: 20px;
+          font-size: 10px;
           color: rgba(255,255,255,0.45);
           letter-spacing: 0.06em;
           text-transform: uppercase;
@@ -224,41 +228,44 @@ export default function PosLogin() {
           display: flex;
           flex-direction: column;
           justify-content: center;
-          padding: 48px 52px;
+          padding: 28px 36px;
           overflow-y: auto;
+          scrollbar-width: thin;
         }
 
         .est-greeting-icon {
-          font-size: 36px;
-          margin-bottom: 8px;
+          font-size: 26px;
+          margin-bottom: 2px;
           display: block;
+          line-height: 1;
         }
 
         .est-greeting-text {
           font-family: 'Plus Jakarta Sans', sans-serif;
           font-weight: 900;
-          font-size: 28px;
+          font-size: 22px;
           color: #1c1917;
           letter-spacing: -0.02em;
-          margin-bottom: 4px;
+          margin-bottom: 2px;
+          line-height: 1.15;
         }
 
         .est-greeting-sub {
-          font-size: 14px;
+          font-size: 13px;
           color: #78716c;
-          margin-bottom: 36px;
-          line-height: 1.5;
+          margin-bottom: 20px;
+          line-height: 1.45;
         }
 
         .est-field {
           display: flex;
           flex-direction: column;
-          gap: 6px;
-          margin-bottom: 18px;
+          gap: 4px;
+          margin-bottom: 10px;
         }
 
         .est-label {
-          font-size: 13px;
+          font-size: 12px;
           font-weight: 600;
           color: #44403c;
           font-family: 'Inter', system-ui, sans-serif;
@@ -266,8 +273,8 @@ export default function PosLogin() {
 
         .est-input {
           width: 100%;
-          padding: 13px 16px;
-          border-radius: 12px;
+          padding: 10px 14px;
+          border-radius: 10px;
           border-style: solid;
           border-width: 1.5px;
           font-size: 15px;
@@ -291,8 +298,8 @@ export default function PosLogin() {
           box-shadow: 0 0 0 3px ${dk ? "rgba(249,115,22,0.22)" : "rgba(249,115,22,0.12)"};
         }
         .est-prefix-badge {
-          padding: 13px 12px 13px 16px;
-          font-size: 15px;
+          padding: 10px 10px 10px 14px;
+          font-size: 14px;
           font-family: 'Inter', system-ui, sans-serif;
           font-weight: 600;
           color: ${dk ? "#8b8699" : "#78716c"};
@@ -305,10 +312,10 @@ export default function PosLogin() {
         }
         .est-prefix-input {
           flex: 1;
-          padding: 13px 16px;
+          padding: 10px 14px;
           border: none;
           outline: none;
-          font-size: 15px;
+          font-size: 14px;
           font-family: 'Inter', system-ui, sans-serif;
           background: transparent;
           color: ${dk ? "#f1f0f5" : "#1c1917"};
@@ -337,8 +344,8 @@ export default function PosLogin() {
           display: flex; align-items: flex-start; gap: 10px;
           background: #fff5f5;
           border: 1.5px solid #fecaca;
-          border-radius: 12px;
-          padding: 13px 15px;
+          border-radius: 10px;
+          padding: 10px 12px;
           margin-bottom: 6px;
         }
         .est-error-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
@@ -359,16 +366,16 @@ export default function PosLogin() {
 
         .est-btn {
           width: 100%;
-          padding: 15px;
+          padding: 12px;
           border: none;
-          border-radius: 14px;
+          border-radius: 12px;
           font-family: 'Plus Jakarta Sans', sans-serif;
           font-weight: 800;
-          font-size: 16px;
+          font-size: 15px;
           cursor: pointer;
           transition: transform 0.1s, box-shadow 0.15s, background 0.15s;
           display: flex; align-items: center; justify-content: center; gap: 10px;
-          margin-top: 8px;
+          margin-top: 6px;
           letter-spacing: 0.01em;
         }
         .est-btn:not(:disabled):hover {
@@ -379,8 +386,8 @@ export default function PosLogin() {
         .est-btn:disabled { cursor: not-allowed; opacity: 0.7; }
 
         .est-form-footer {
-          margin-top: 32px;
-          padding-top: 20px;
+          margin-top: 18px;
+          padding-top: 14px;
           border-top: 1px solid #f5f5f4;
           display: flex;
           align-items: center;
@@ -403,58 +410,58 @@ export default function PosLogin() {
 
         /* ── MOBILE ── */
         @media (max-width: 760px) {
-          .est-page {
-            padding: 16px;
-            align-items: flex-start;
-          }
-
-          .est-root {
-            grid-template-columns: 1fr;
-            border-radius: 20px;
-          }
-
-          .est-panel {
-            padding: 28px 24px;
-            flex-direction: row;
-            align-items: center;
-            gap: 16px;
-          }
-
-          .est-panel-logo {
-            width: 90px; height: 60px;
-            font-size: 26px;
-            margin-bottom: 0;
-            border-radius: 50%;
-            flex-shrink: 0;
-          }
-
-          .est-panel-content-mobile {
-            flex: 1;
-          }
-
-          .est-panel-title {
-            font-size: 22px;
-            margin-bottom: 4px;
-          }
-
-          .est-panel-tagline {
-            font-size: 13px;
-            margin-bottom: 0;
-          }
-
-          .est-features { display: none; }
-          .est-panel-footer { display: none; }
-          .est-blob1 { width: 180px; height: 180px; top: -40px; right: -40px; }
-          .est-blob2 { display: none; }
-          .est-blob3 { display: none; }
-
-          .est-form-side {
-            padding: 32px 24px 56px;
-          }
-
-          .est-greeting-text { font-size: 24px; }
-          .est-greeting-icon { font-size: 30px; }
+        .est-page {
+          padding: 10px;
+          align-items: center;
         }
+
+        .est-root {
+          grid-template-columns: 1fr;
+          border-radius: 18px;
+          max-height: calc(100dvh - 20px);
+        }
+
+        .est-panel {
+          padding: 18px 20px;
+          flex-direction: row;
+          align-items: center;
+          gap: 14px;
+        }
+
+        .est-panel-logo {
+          width: 72px; height: 48px;
+          margin-bottom: 0;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+
+        .est-panel-content-mobile { flex: 1; }
+        .est-panel-tagline        { font-size: 12px; margin-bottom: 0; line-height: 1.4; }
+        .est-features,
+        .est-panel-footer         { display: none; }
+
+        .est-blob1 { width: 150px; height: 150px; top: -30px; right: -30px; }
+        .est-blob2, .est-blob3 { display: none; }
+
+        .est-form-side { padding: 22px 18px 22px; }
+
+        .est-greeting-icon { font-size: 22px; }
+        .est-greeting-text { font-size: 20px; }
+        .est-greeting-sub  { font-size: 12px; margin-bottom: 14px; }
+
+        .est-input,
+        .est-prefix-input,
+        .est-prefix-badge  { padding: 9px 12px; font-size: 14px; }
+
+        .est-btn           { padding: 11px; font-size: 14px; margin-top: 4px; }
+
+        .est-form-footer   { margin-top: 14px; padding-top: 10px; }
+      }
+
+      @media (max-width: 420px) {
+        .est-panel      { padding: 14px 16px; }
+        .est-form-side  { padding: 18px 16px 18px; }
+      }
 
         @media (max-width: 420px) {
           .est-panel { padding: 28px 20px 24px; }
@@ -484,8 +491,8 @@ export default function PosLogin() {
         .est-form-footer-text   { color: ${dk ? "#5a5669" : "#a8a29e"}; }
         .est-theme-btn {
           position: absolute;
-          top: 18px; right: 18px;
-          width: 36px; height: 36px;
+          top: 14px; right: 14px;
+          width: 32px; height: 32px;
           border-radius: 50%;
           border: 1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"};
           background: ${dk ? "#1e1c26" : "#fff"};
@@ -572,7 +579,7 @@ export default function PosLogin() {
               display: "flex", alignItems: "flex-start", gap: 10,
               background: dk ? "rgba(220,38,38,0.08)" : "#fff5f5",
               border: "1.5px solid rgba(220,38,38,0.25)",
-              borderRadius: 12, padding: "13px 15px", marginBottom: 20,
+              borderRadius: 10, padding: "10px 12px", marginBottom: 14,
             }}>
               <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>📵</span>
               <div>
@@ -664,10 +671,10 @@ export default function PosLogin() {
             {/* Attempt warning — shown after 2+ failures */}
             {security.failures >= 2 && !isLocked && (
               <div style={{
-                display: "flex", alignItems: "flex-start", gap: 10,
+                display: "flex", alignItems: "flex-start", gap: 8,
                 background: dk ? "rgba(234,179,8,0.08)" : "#fffbeb",
                 border: "1.5px solid rgba(234,179,8,0.35)",
-                borderRadius: 12, padding: "11px 14px", marginBottom: 4,
+                borderRadius: 10, padding: "9px 12px", marginBottom: 4,
               }}>
                 <span style={{ fontSize: 15, flexShrink: 0 }}>⚠️</span>
                 <span style={{ fontSize: 12, color: "#d97706", lineHeight: 1.5 }}>
@@ -752,20 +759,20 @@ export default function PosLogin() {
           </form>
 
                     {!isInstalled && (
-            <div style={{ marginTop: 14 }}>
+            <div style={{ marginTop: 10 }}>
               <button
                 type="button"
                 onClick={handleInstall}
                 style={{
                   width: "100%",
-                  padding: "13px 16px",
-                  borderRadius: 14,
+                  padding: "10px 14px",
+                  borderRadius: 12,
                   background: "transparent",
                   border: `1.5px solid ${dk ? "#2e2b3a" : "#e7e5e4"}`,
                   color: dk ? "#c2bdd1" : "#44403c",
                   fontFamily: "'Inter', system-ui, sans-serif",
                   fontWeight: 600,
-                  fontSize: 14,
+                  fontSize: 13,
                   cursor: "pointer",
                   display: "flex",
                   alignItems: "center",
@@ -784,13 +791,13 @@ export default function PosLogin() {
               {showIosHint && (
   <div style={{
     marginTop: 8,
-    padding: "10px 13px",
+    padding: "9px 12px",
     background: dk ? "rgba(249,115,22,0.08)" : "#fff7ed",
     border: "1px solid rgba(249,115,22,0.3)",
     borderRadius: 10,
-    fontSize: 11.5,
+    fontSize: 11,
     color: dk ? "#fdba74" : "#c2410c",
-    lineHeight: 1.6,
+    lineHeight: 1.55,
     fontFamily: "'Inter', sans-serif",
   }}>
     {isIos ? (
