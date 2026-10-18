@@ -102,24 +102,28 @@ export function PwaUpdatePrompt() {
   const [countdown, setCountdown] = useState(10);
 
   const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
-    onRegisteredSW(_swUrl, r) {
-      if (!r) return;
-      const poll = setInterval(() => r.update(), 60 * 1000);
-      const onVisible = () => { if (document.visibilityState === "visible") r.update(); };
-      const onOnline = () => r.update();
-      window.addEventListener("online", onOnline);
-      document.addEventListener("visibilitychange", onVisible);
-      return () => {
-        clearInterval(poll);
-        document.removeEventListener("visibilitychange", onVisible);
-        window.removeEventListener("online", onOnline);
-      };
-    },
-    onOfflineReady() {
-      setOfflineReady(true);
-      setTimeout(() => setOfflineReady(false), 4000);
-    },
-  });
+  onOfflineReady() {
+    setOfflineReady(true);
+    setTimeout(() => setOfflineReady(false), 4000);
+  },
+});
+
+useEffect(() => {
+  if (!("serviceWorker" in navigator)) return;
+  const check = () => navigator.serviceWorker.getRegistration().then((r) => r?.update());
+  const onVisible = () => { if (document.visibilityState === "visible") check(); };
+  const onOnline  = () => check();
+
+  window.addEventListener("online", onOnline);
+  document.addEventListener("visibilitychange", onVisible);
+  const poll = setInterval(check, 60_000);
+
+  return () => {
+    clearInterval(poll);
+    document.removeEventListener("visibilitychange", onVisible);
+    window.removeEventListener("online", onOnline);
+  };
+}, []);
 
   const handleReload = () => { setReloading(true); updateServiceWorker(true); };
 

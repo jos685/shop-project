@@ -6,7 +6,8 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
+      injectRegister: false,
       includeAssets: ['Qash.png'],
       manifest: {
         id: '/pos/',
@@ -27,8 +28,6 @@ export default defineConfig({
       },
       workbox: {
         disableDevLogs: true,
-        skipWaiting: true,                    // ← NEW: new SW activates instantly
-        clientsClaim: true,                   // ← NEW: claims existing tabs
         cleanupOutdatedCaches: true,          // ← NEW: sweeps old precache entries
         navigateFallback: '/pos/index.html',
         navigateFallbackAllowlist: [/^\/pos/],
@@ -61,7 +60,7 @@ export default defineConfig({
         ],
       },
       devOptions: {
-        enabled: true,
+        enabled: false,
         type: 'module',
       },
     }),
