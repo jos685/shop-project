@@ -62,6 +62,7 @@ interface TransactionReturn {
   refund_method?: string | null;
   refund_cash_amount?: number;
   refund_mpesa_amount?: number;
+  exchange_of_transaction_id?: string | null;
 }
 
 interface ReturnItem {
@@ -179,6 +180,8 @@ export default function PosTransactionsPage() {
   const [resendingId, setResendingId]   = useState<string | null>(null);
   const [resendModal,  setResendModal]  = useState<LocalTransaction | null>(null);
   const [resendPhone,  setResendPhone]  = useState("");
+  const [resendGroupModal, setResendGroupModal] = useState<SaleGroup | null>(null);
+  const [resendGroupPhone, setResendGroupPhone] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [returnsMap,       setReturnsMap]       = useState<Record<string, TransactionReturn[]>>({});
   const [returnModal,        setReturnModal]        = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
@@ -189,6 +192,26 @@ export default function PosTransactionsPage() {
   const [returnError,        setReturnError]        = useState("");
   const [returnSuccess,    setReturnSuccess]    = useState(false);
   const [returnMethod, setReturnMethod] = useState<"cash" | "mpesa" | "split" | null>(null);
+
+    // ── Replace (exchange) flow ──────────────────────────────
+  const [replaceModal, setReplaceModal] = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
+  const [replaceStock, setReplaceStock] = useState<{
+    product_id: string; name: string; sku: string; price: number;
+    unit: string; remaining: number; image_url: string | null;
+  }[]>([]);
+  const [replaceOutgoing, setReplaceOutgoing] = useState<{
+    product_id: string; name: string; sku: string; price: number;
+    unit: string; remaining: number; qty: number;
+  }[]>([]);
+  const [replacePickerOpen, setReplacePickerOpen]     = useState(false);
+  const [replacePickerQuery, setReplacePickerQuery]   = useState("");
+  const [replaceReason, setReplaceReason]             = useState("");
+  const [replaceMethod, setReplaceMethod]             = useState<"cash" | "mpesa" | "split" | null>(null);
+  const [replaceCash, setReplaceCash]                 = useState("");
+  const [replaceMpesa, setReplaceMpesa]               = useState("");
+  const [replaceProcessing, setReplaceProcessing]     = useState(false);
+  const [replaceError, setReplaceError]               = useState("");
+  const [replaceSuccess, setReplaceSuccess]           = useState(false);
 
   // Reload queued sales whenever the queue changes
   useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
@@ -241,20 +264,259 @@ export default function PosTransactionsPage() {
   }, [shop, transactions]);
 
   // ── Return helpers ───────────────────────────────────────────────────
-  function getReturnStatus(group: SaleGroup): "none" | "partial" | "full" {
-    const returnable = group.items.filter(t => t.product_id && t.unit_price != null);
-    if (returnable.length === 0) return "none";
-    let fullyReturned = 0;
-    let hasAny = false;
-    for (const tx of returnable) {
-      const rets = returnsMap[tx.id] ?? [];
-      const total = rets.reduce((s, r) => s + r.quantity_returned, 0);
-      if (total > 0) hasAny = true;
-      if (total >= tx.quantity) fullyReturned++;
-    }
-    if (!hasAny) return "none";
-    return fullyReturned === returnable.length ? "full" : "partial";
+  type ReturnStatus =
+  | "none" | "partial" | "full" | "exchanged" | "partial_exchange";
+
+function getReturnStatus(group: SaleGroup): ReturnStatus {
+  const returnable = group.items.filter(t => t.product_id && t.unit_price != null);
+  if (returnable.length === 0) return "none";
+
+  let fullyReturned = 0;
+  let hasAny = false;
+  let hasExchangeItem = false;
+
+  for (const tx of returnable) {
+    const rets = returnsMap[tx.id] ?? [];
+    const total = rets.reduce((s, r) => s + r.quantity_returned, 0);
+    const isExchange = rets.some(r => !!r.exchange_of_transaction_id);
+
+    if (total > 0) hasAny = true;
+    if (isExchange) hasExchangeItem = true;
+    if (total >= tx.quantity) fullyReturned++;
   }
+
+  if (!hasAny) return "none";
+  const fully = fullyReturned === returnable.length;
+
+  if (hasExchangeItem) return fully ? "exchanged" : "partial_exchange";
+  return fully ? "full" : "partial";
+}
+
+function returnStatusBadge(status: ReturnStatus) {
+  if (status === "exchanged")
+    return { label: "🔁 Exchanged",        color: "#a78bfa", bg: "rgba(167,139,250,0.10)", border: "rgba(167,139,250,0.30)" };
+  if (status === "partial_exchange")
+    return { label: "🔁 Partial Exchange", color: "#a78bfa", bg: "rgba(167,139,250,0.10)", border: "rgba(167,139,250,0.30)" };
+  if (status === "full")
+    return { label: "↩ Returned",          color: "#f87171", bg: "rgba(248,113,113,0.10)", border: "rgba(248,113,113,0.30)" };
+  if (status === "partial")
+    return { label: "↩ Partial Return",    color: "#f87171", bg: "rgba(248,113,113,0.10)", border: "rgba(248,113,113,0.30)" };
+  return null;
+}
+
+
+  const loadReplaceStock = useCallback(async () => {
+  if (!shop) return [];
+  const { data } = await supabase
+    .from("shop_allocations")
+    .select("id, remaining, product_id, product_name, product_sku, product_price, product_unit")
+    .eq("shop_id", shop.id);
+
+  const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
+  const productsMap: Record<string, any> = {};
+  if (productIds.length > 0) {
+    const { data: prods } = await supabase
+      .from("products")
+      .select("id, name, sku, price, unit, image_url")
+      .in("id", productIds);
+    for (const p of prods || []) productsMap[p.id] = p;
+  }
+
+  return (data || [])
+    .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
+    .map((a: any) => ({
+      product_id: a.product_id,
+      name:       productsMap[a.product_id]?.name  || a.product_name  || "—",
+      sku:        productsMap[a.product_id]?.sku   || a.product_sku   || "",
+      price:      Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
+      unit:       productsMap[a.product_id]?.unit  || a.product_unit  || "units",
+      remaining:  Math.max(0, a.remaining ?? 0),
+      image_url:  productImageUrl(productsMap[a.product_id]?.image_url),
+    }));
+}, [shop]);
+
+async function openReplaceModal(group: SaleGroup) {
+  // Reuse the return-item prep exactly
+  const txnIds = group.items.map(t => t.id);
+  const { data } = await supabase.rpc("get_transaction_returns", { p_transaction_ids: txnIds });
+  const existing = (data ?? []) as TransactionReturn[];
+
+  const items: ReturnItem[] = group.items
+    .filter(tx => tx.product_id && tx.unit_price != null)
+    .map(tx => {
+      const alreadyReturned = existing
+        .filter(r => r.original_transaction_id === tx.id)
+        .reduce((s, r) => s + r.quantity_returned, 0);
+      return {
+        txn_id: tx.id,
+        product_id: tx.product_id,
+        product_name: tx.product_name ?? "Product",
+        original_qty: tx.quantity,
+        already_returned: alreadyReturned,
+        unit_price: tx.unit_price!,
+        tx_amount: tx.amount,
+        status: tx.status,
+        credit_sale_id: tx.credit_sale_id ?? null,
+        outstanding: null,
+        amount_paid_for_sale: null,
+        return_qty: 0,
+      };
+    })
+    .filter(item => item.original_qty - item.already_returned > 0);
+
+  if (items.length === 0) {
+    // Nothing returnable — bail cleanly
+    return;
+  }
+
+  const stock = await loadReplaceStock();
+
+  setReplaceStock(stock);
+  setReplaceOutgoing([]);
+  setReplaceModal({ group, items });
+  setReplaceReason("");
+  setReplaceMethod(null);
+  setReplaceCash("");
+  setReplaceMpesa("");
+  setReplaceError("");
+  setReplaceSuccess(false);
+  setReplacePickerQuery("");
+}
+
+async function handleReplace() {
+  if (!replaceModal || !shop) return;
+
+  const toReturn = replaceModal.items.filter(i => i.return_qty > 0);
+  if (toReturn.length === 0) { setReplaceError("Select at least one item to return."); return; }
+  if (replaceOutgoing.length === 0) { setReplaceError("Add at least one replacement item."); return; }
+
+  // Stock sanity
+  for (const out of replaceOutgoing) {
+    const s = replaceStock.find(x => x.product_id === out.product_id);
+    if (!s || s.remaining < out.qty) {
+      setReplaceError(`Not enough stock for ${out.name} — only ${s?.remaining ?? 0} left.`);
+      return;
+    }
+  }
+
+  const returnedValue = toReturn.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
+  const outgoingValue = replaceOutgoing.reduce((s, o) => s + o.qty * o.price, 0);
+  const delta = outgoingValue - returnedValue;          // >0 owes, <0 refund, 0 even
+  const absDelta = Math.abs(delta);
+
+  // Money validation
+  const cashAmt  = Math.round(Number(replaceCash)  || 0);
+  const mpesaAmt = Math.round(Number(replaceMpesa) || 0);
+
+  if (delta !== 0 && !replaceMethod) {
+    setReplaceError(delta > 0
+      ? "Customer must pay the difference — pick a payment method."
+      : "Shop must refund the difference — pick a refund method.");
+    return;
+  }
+  if (replaceMethod === "cash"  && cashAmt  !== absDelta) { setReplaceError(`Cash must equal ${fmt(absDelta)}.`); return; }
+  if (replaceMethod === "mpesa" && mpesaAmt !== absDelta) { setReplaceError(`M-Pesa must equal ${fmt(absDelta)}.`); return; }
+  if (replaceMethod === "split" && cashAmt + mpesaAmt !== absDelta) { setReplaceError(`Split total must equal ${fmt(absDelta)}.`); return; }
+
+  setReplaceProcessing(true);
+  setReplaceError("");
+
+ try {
+  const firstItem = replaceModal.group.items[0];
+  const now = new Date().toISOString();
+  const sourceTxnId = firstItem.id;
+
+  const isRefund = delta < 0;
+  const returnRows = toReturn.map(it => {
+    const itemValue = it.return_qty * it.unit_price;
+    const share = returnedValue > 0 ? itemValue / returnedValue : 0;
+    return {
+      owner_id: shop.owner_id,
+      source: "shop",
+      original_transaction_id: it.txn_id,
+      shop_id: shop.id,
+      agent_id: firstItem.seller_agent_id ?? null,
+      product_id: it.product_id,
+      product_name: it.product_name,
+      quantity_returned: it.return_qty,
+      unit_price: it.unit_price,
+      amount_refunded: itemValue,
+      reason: replaceReason.trim() || "Replaced with different item",
+      actor_name: firstItem.seller_name ?? null,
+      actor_code: firstItem.seller_code ?? null,
+      refund_method: isRefund ? replaceMethod : "exchange",
+      refund_payment_method: isRefund ? replaceMethod : "exchange",
+      refund_cash_amount:  isRefund ? Math.round(cashAmt  * share) : 0,
+      refund_mpesa_amount: isRefund ? Math.round(mpesaAmt * share) : 0,
+      exchange_of_transaction_id: sourceTxnId,
+    };
+  });
+
+  // 1) Return rows — has error check
+  const { error: retErr } = await supabase.rpc("insert_transaction_returns", { p_rows: returnRows });
+  if (retErr) { setReplaceError(retErr.message); return; }
+
+  // 2) New sale rows — go through the RPC, same as handleSubmitSale
+  const newSaleRows = replaceOutgoing.map(o => ({
+    owner_id: shop.owner_id,
+    shop_id: shop.id,
+    seller_agent_id: firstItem.seller_agent_id ?? null,
+    product_id: o.product_id,
+    custom_item_id: null,
+    product_name: o.name,                                          // ← added
+    is_unlisted: false,                                            // ← added for parity
+    quantity: o.qty,
+    unit_price: o.price,
+    base_price: o.price,                                           // ← added for parity
+    amount: o.qty * o.price,
+    payment_method: delta > 0 ? (replaceMethod ?? "cash") : "exchange",
+    cash_amount:  delta > 0 ? cashAmt  : 0,
+    mpesa_amount: delta > 0 ? mpesaAmt : 0,
+    mpesa_ref: null,
+    customer_phone: firstItem.customer_phone ?? null,
+    status: "ok",                                                  // ← was "completed"
+    created_at: now,
+    exchange_of_transaction_id: sourceTxnId,
+  }));
+
+  const { error: saleErr } = await supabase.rpc("insert_shop_transaction", {
+    p_rows: newSaleRows,
+  });
+  if (saleErr) { setReplaceError(saleErr.message); return; }
+
+  // 3) Only now touch stock — both inserts succeeded
+  const stockErrors: string[] = [];
+  for (const item of toReturn) {
+    if (!item.product_id) continue;
+    const { error } = await supabase.rpc("update_shop_allocation", {
+      p_shop_id: shop.id, p_product_id: item.product_id, p_quantity: item.return_qty,
+    });
+    if (error) stockErrors.push(`restore ${item.product_name}: ${error.message}`);
+  }
+  for (const out of replaceOutgoing) {
+    const { error } = await supabase.rpc("update_shop_allocation", {
+      p_shop_id: shop.id, p_product_id: out.product_id, p_quantity: -out.qty,
+    });
+    if (error) stockErrors.push(`deduct ${out.name}: ${error.message}`);
+  }
+  if (stockErrors.length > 0) console.warn("[handleReplace] stock update errors:", stockErrors);
+
+  // 4) Notify listeners
+  window.dispatchEvent(new CustomEvent("shop:stock_changed", { detail: { shopId: shop.id, timestamp: Date.now() } }));
+  window.dispatchEvent(new CustomEvent("shop:new_sale",     { detail: { shopId: shop.id } }));
+
+  setReplaceSuccess(true);
+  setTimeout(() => {
+    setReplaceModal(null);
+    setReplaceSuccess(false);
+    fetchTransactions(true);
+  }, 1400);
+} catch (e: any) {
+  setReplaceError(e.message ?? "Unknown error");
+} finally {
+  setReplaceProcessing(false);
+}
+}
 
   async function openReturnModal(group: SaleGroup) {
     const txnIds = group.items.map(t => t.id);
@@ -320,6 +582,20 @@ if (creditSaleIds.length > 0) {
     setReturnSuccess(false);
     setReturnMethod(null); 
   }
+
+  function updateReplaceReturnQty(txn_id: string, qty: number) {
+  setReplaceModal(prev => {
+    if (!prev) return prev;
+    return {
+      ...prev,
+      items: prev.items.map(item =>
+        item.txn_id === txn_id
+          ? { ...item, return_qty: Math.max(0, Math.min(qty, item.original_qty - item.already_returned)) }
+          : item
+      ),
+    };
+  });
+}
 
   function updateReturnQty(txn_id: string, qty: number) {
     setReturnModal(prev => {
@@ -865,12 +1141,53 @@ if (creditSaleIds.length > 0) {
     }
   }
 
+  async function handleResendGroup(group: SaleGroup, phoneOverride?: string) {
+  const firstTx = group.items[0];
+  const phone = phoneOverride ?? firstTx.receipt_phone ?? firstTx.customer_phone ?? "";
+  if (!phone) return;
+
+  const groupId = `group-${group.key}`;
+  setResendingId(groupId);
+  try {
+    const { data } = await supabase.functions.invoke("send-receipt", {
+      body: {
+        phone,
+        business_name: businessName || shop?.name || "Business",
+        agent_name:    firstTx.seller_name ?? "Agent",
+        items: group.items.map(tx => ({
+          name:       tx.product_name ?? "Product",
+          quantity:   tx.quantity,
+          unit_price: tx.unit_price ?? (tx.quantity > 0 ? Math.round(tx.amount / tx.quantity) : 0),
+          total:      tx.amount,
+        })),
+        total_amount:   group.total,
+        payment_method: group.payment_method ?? "cash",
+        mpesa_ref:      firstTx.mpesa_ref ?? undefined,
+      },
+    });
+    const sent = !!data?.sent;
+    const txIds = group.items.map(t => t.id);
+
+    await supabase
+      .from("shop_transactions")
+      .update({ receipt_sent: sent, receipt_phone: phone })
+      .in("id", txIds);
+
+    setTransactions(prev => prev.map(t =>
+      txIds.includes(t.id) ? { ...t, receipt_sent: sent, receipt_phone: phone } : t
+    ));
+  } finally {
+    setResendingId(null);
+  }
+}
+
   const methodBadge = (method: string, status?: string | null) => {
-    if (status === "credit" || status === "credit_partial") return { icon: "📝", color: "#c084fc", label: "Credit" };
-    if (method === "cash")  return { icon: "💵", color: "#34d399", label: "Cash"   };
-    if (method === "mpesa") return { icon: "📱", color: "#60a5fa", label: "M-Pesa" };
-    return                         { icon: "⚡", color: "#fbbf24", label: "Split"  };
-  };
+  if (status === "credit" || status === "credit_partial") return { icon: "📝", color: "#c084fc", label: "Credit" };
+  if (method === "exchange") return { icon: "🔁", color: "#a78bfa", label: "Exchange" };
+  if (method === "cash")  return { icon: "💵", color: "#34d399", label: "Cash"   };
+  if (method === "mpesa") return { icon: "📱", color: "#60a5fa", label: "M-Pesa" };
+  return                         { icon: "⚡", color: "#fbbf24", label: "Split"  };
+};
 
   const flaggedCount = transactions.filter(t => t.status === "review").length;
 
@@ -953,40 +1270,47 @@ if (creditSaleIds.length > 0) {
     };
 
   const totalRefunded = transactions.reduce((s, t) => s + effectiveRefund(t), 0);
+
+  const exchangeReturnsValue = transactions.reduce((s, t) => {
+  for (const r of (returnsMap[t.id] ?? [])) {
+    if (r.exchange_of_transaction_id) {
+      s += Math.min(r.amount_refunded, t.amount);
+    }
+  }
+  return s;
+}, 0);
+const cashReturnsValue = totalRefunded - exchangeReturnsValue;
+
   const cashRefunded = Math.round(transactions.reduce((s, t) => {
-    for (const r of (returnsMap[t.id] ?? [])) {
-      const method = r.refund_method ?? t.payment_method;
-      if (r.refund_method === "cash") {
-        s += r.amount_refunded;
-      } else if (method === "split") {
-        const ca = r.refund_cash_amount ?? 0;
-        const ma = r.refund_mpesa_amount ?? 0;
-        if (ca > 0 || ma > 0) {
-          s += ca; // use stored exact value
-        } else if (t.amount > 0) {
-          s += r.amount_refunded * ((t.cash_amount ?? 0) / t.amount); // proportional fallback for old records
-        }
-      }
+  for (const r of (returnsMap[t.id] ?? [])) {
+    const ca = r.refund_cash_amount ?? 0;
+    const ma = r.refund_mpesa_amount ?? 0;
+    // Prefer the stored exact amounts (present on both standalone and exchange rows)
+    if (ca > 0 || ma > 0) {
+      s += ca;
+    } else if (r.refund_method === "cash") {
+      s += r.amount_refunded;           // legacy fallback
+    } else if (r.refund_method === "split" && t.amount > 0) {
+      s += r.amount_refunded * ((t.cash_amount ?? 0) / t.amount);
     }
-    return s;
-  }, 0));
-  const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
-    for (const r of (returnsMap[t.id] ?? [])) {
-      const method = r.refund_method ?? t.payment_method;
-      if (r.refund_method === "mpesa") {
-        s += r.amount_refunded;
-      } else if (method === "split") {
-        const ca = r.refund_cash_amount ?? 0;
-        const ma = r.refund_mpesa_amount ?? 0;
-        if (ca > 0 || ma > 0) {
-          s += ma; // use stored exact value
-        } else if (t.amount > 0) {
-          s += r.amount_refunded * ((t.mpesa_amount ?? 0) / t.amount); // proportional fallback for old records
-        }
-      }
+  }
+  return s;
+}, 0));
+
+const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
+  for (const r of (returnsMap[t.id] ?? [])) {
+    const ca = r.refund_cash_amount ?? 0;
+    const ma = r.refund_mpesa_amount ?? 0;
+    if (ca > 0 || ma > 0) {
+      s += ma;
+    } else if (r.refund_method === "mpesa") {
+      s += r.amount_refunded;
+    } else if (r.refund_method === "split" && t.amount > 0) {
+      s += r.amount_refunded * ((t.mpesa_amount ?? 0) / t.amount);
     }
-    return s;
-  }, 0));
+  }
+  return s;
+}, 0));
 
   // Derive clawback from return qty vs original commission — no DB column needed
   const calcClawback = (t: LocalTransaction) => {
@@ -1503,17 +1827,31 @@ if (creditSaleIds.length > 0) {
           ))}
         </div>
         {totalRefunded > 0 && (
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(248,113,113,0.06)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <span style={{ fontSize: 14 }}>↩</span>
-              <div>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", textTransform: "uppercase", letterSpacing: "0.07em" }}>Returns Deducted</div>
-                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(248,113,113,0.6)", marginTop: 1 }}>Gross sales: {fmt(totalRevenue)}</div>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          padding: "10px 14px", background: "rgba(248,113,113,0.06)",
+          border: "1px solid rgba(248,113,113,0.2)", borderRadius: 12,
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 14 }}>↩</span>
+            <div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171",
+                textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                Returns / Exchanges
+              </div>
+              <div style={{ fontSize: 9, fontFamily: theme.font.mono,
+                color: "rgba(248,113,113,0.6)", marginTop: 1 }}>
+                {exchangeReturnsValue > 0
+                  ? `${fmt(cashReturnsValue)} refunded · ${fmt(exchangeReturnsValue)} exchanged`
+                  : `Gross sales: ${fmt(totalRevenue)}`}
               </div>
             </div>
-            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#f87171" }}>-{fmt(totalRefunded)}</div>
           </div>
-        )}
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#f87171" }}>
+            -{fmt(totalRefunded)}
+          </div>
+        </div>
+      )}
         {totalCommissionClawed > 0 && (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(251,146,60,0.05)", border: "1px solid rgba(251,146,60,0.2)", borderRadius: 12 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
@@ -1750,11 +2088,20 @@ if (creditSaleIds.length > 0) {
                                     {group.items.some(t => t.status === "credit_partial") ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
                                   </span>
                                 )}
-                                {returnStatus !== "none" && (
-                                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 8px" }}>
-                                    {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
-                                  </span>
-                                )}
+                                {(() => {
+                                  const b = returnStatusBadge(returnStatus);
+                                  if (!b) return null;
+                                  return (
+                                    <div style={{ marginTop: 5 }}>
+                                      <span style={{
+                                        fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700,
+                                        color: b.color, background: b.bg,
+                                        border: `1px solid ${b.border}`,
+                                        borderRadius: 20, padding: "2px 8px",
+                                      }}>{b.label}</span>
+                                    </div>
+                                  );
+                                })()}
                                 {group.items.some(t => t.status === "review") && (
                                   <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 20, padding: "2px 8px" }}>
                                     🚩 Flagged for Review
@@ -1862,13 +2209,92 @@ if (creditSaleIds.length > 0) {
                                   </div>
                                 );
                               })()}
-                              {returnStatus !== "full" && (
+
+                              {/* Send Receipt — always available on group sales */}
+                              {(() => {
+                                const phone     = group.items[0].receipt_phone ?? group.items[0].customer_phone;
+                                const allSent   = group.items.every(t => t.receipt_sent === true);
+                                const anyFailed = group.items.some(t => t.receipt_sent === false);
+                                
+
+                                if (allSent && phone) {
+                                  return (
+                                    <div style={{
+                                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                                      padding: "10px 14px", background: "rgba(52,211,153,0.06)",
+                                      border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10,
+                                    }}>
+                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                        <span>📱</span>
+                                        <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>
+                                          Sent to <strong>{phone}</strong>
+                                        </span>
+                                      </div>
+                                      <button
+                                        onClick={e => { e.stopPropagation(); setResendGroupModal(group); setResendGroupPhone(phone); }}
+                                        style={{
+                                          padding: "5px 14px", background: "rgba(52,211,153,0.12)",
+                                          border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8,
+                                          color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
+                                          cursor: "pointer",
+                                        }}>
+                                        Resend
+                                      </button>
+                                    </div>
+                                  );
+                                }
+
+                                return (
+                                  <button
+                                    onClick={e => { e.stopPropagation(); setResendGroupModal(group); setResendGroupPhone(phone ?? ""); }}
+                                    style={{
+                                      width: "100%", padding: "12px 16px",
+                                      background: anyFailed ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
+                                      border: `1px solid ${anyFailed ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
+                                      borderRadius: 10,
+                                      color: anyFailed ? "#fbbf24" : theme.accent.cyan,
+                                      fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
+                                      cursor: "pointer", display: "flex", alignItems: "center",
+                                      justifyContent: "center", gap: 8,
+                                    }}>
+                                    {anyFailed ? "📵 Retry Receipt" : `📄 Send Receipt (${group.items.length} items)`}
+                                  </button>
+                                );
+                              })()}
+                              
+
+                              {returnStatus !== "full" && group.items[0]?.product_id && (
+                              <>
                                 <button
                                   onClick={e => { e.stopPropagation(); openReturnModal(group); }}
-                                  style={{ width: "100%", padding: "11px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                                  ↩ Return Products
+                                  style={{
+                                    width: "100%", padding: "11px 16px",
+                                    background: "rgba(248,113,113,0.08)",
+                                    border: "1px solid rgba(248,113,113,0.3)",
+                                    borderRadius: 10, color: "#f87171",
+                                    fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center",
+                                    justifyContent: "center", gap: 6, marginBottom: 8,
+                                  }}
+                                >
+                                  ↩ {returnStatus === "partial" ? "Return More" : "Return Products"}
                                 </button>
-                              )}
+                                <button
+                                  onClick={e => { e.stopPropagation(); openReplaceModal(group); }}
+                                  style={{
+                                    width: "100%", padding: "11px 16px",
+                                    background: "rgba(167,139,250,0.08)",
+                                    border: "1px solid rgba(167,139,250,0.35)",
+                                    borderRadius: 10, color: "#a78bfa",
+                                    fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center",
+                                    justifyContent: "center", gap: 6,
+                                  }}
+                                >
+                                  🔁 Replace with another item
+                                </button>
+                              </>
+                            )}
                             </div>
                           )}
                         </div>
@@ -1908,13 +2334,20 @@ if (creditSaleIds.length > 0) {
                                 </span>
                               </div>
                             )}
-                            {returnStatus !== "none" && (
-                              <div style={{ marginTop: 5 }}>
-                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#f87171", background: "rgba(248,113,113,0.10)", border: "1px solid rgba(248,113,113,0.30)", borderRadius: 20, padding: "2px 8px" }}>
-                                  {returnStatus === "full" ? "↩ Returned" : "↩ Partial Return"}
-                                </span>
-                              </div>
-                            )}
+                            {(() => {
+                              const b = returnStatusBadge(returnStatus);
+                              if (!b) return null;
+                              return (
+                                <div style={{ marginTop: 5 }}>
+                                  <span style={{
+                                    fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700,
+                                    color: b.color, background: b.bg,
+                                    border: `1px solid ${b.border}`,
+                                    borderRadius: 20, padding: "2px 8px",
+                                  }}>{b.label}</span>
+                                </div>
+                              );
+                            })()}
                             {tx.status === "review" && (
                               <div style={{ marginTop: 5 }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: "#fbbf24", background: "rgba(251,191,36,0.10)", border: "1px solid rgba(251,191,36,0.35)", borderRadius: 20, padding: "2px 8px" }}>
@@ -2012,12 +2445,37 @@ if (creditSaleIds.length > 0) {
                               </button>
                             )}
                             {returnStatus !== "full" && tx.product_id && (
-                              <button
-                                onClick={e => { e.stopPropagation(); openReturnModal(group); }}
-                                style={{ width: "100%", padding: "11px 16px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
-                                ↩ {returnStatus === "partial" ? "Return More" : "Return Product"}
-                              </button>
-                            )}
+                                <>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); openReturnModal(group); }}
+                                    style={{
+                                      width: "100%", padding: "11px 16px",
+                                      background: "rgba(248,113,113,0.08)",
+                                      border: "1px solid rgba(248,113,113,0.3)",
+                                      borderRadius: 10, color: "#f87171",
+                                      fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                      cursor: "pointer", display: "flex", alignItems: "center",
+                                      justifyContent: "center", gap: 6, marginBottom: 8,
+                                    }}
+                                  >
+                                    ↩ {returnStatus === "partial" ? "Return More" : "Return Product"}
+                                  </button>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); openReplaceModal(group); }}
+                                    style={{
+                                      width: "100%", padding: "11px 16px",
+                                      background: "rgba(167,139,250,0.08)",
+                                      border: "1px solid rgba(167,139,250,0.35)",
+                                      borderRadius: 10, color: "#a78bfa",
+                                      fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                      cursor: "pointer", display: "flex", alignItems: "center",
+                                      justifyContent: "center", gap: 6,
+                                    }}
+                                  >
+                                    🔁 Replace with another item
+                                  </button>
+                                </>
+                              )}
                           </div>
                         )}
                       </div>
@@ -2075,9 +2533,9 @@ if (creditSaleIds.length > 0) {
 
       {/* ── Resend / Send Receipt Modal ──────────────────────────────────── */}
       {resendModal && (
-  <div
-    onClick={e => { if (e.target === e.currentTarget) setResendModal(null); }}
-    style={{
+      <div
+     onClick={e => { if (e.target === e.currentTarget) setResendModal(null); }}
+     style={{
       position: "fixed", inset: 0, zIndex: 100,
       display: "flex",
       alignItems: "center",        // ← was flex-end
@@ -2143,6 +2601,393 @@ if (creditSaleIds.length > 0) {
         </div>
       </div>
     )}
+
+    {resendGroupModal && (
+  <div
+    onClick={e => { if (e.target === e.currentTarget) setResendGroupModal(null); }}
+    style={{
+      position: "fixed", inset: 0, zIndex: 100,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 16,
+      background: "rgba(0,0,0,0.7)",
+      backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+    }}
+  >
+    <div style={{
+      width: "min(420px, 100%)", background: theme.bg.card,
+      borderRadius: 20, border: `1px solid ${theme.border.default}`,
+      padding: "20px 18px 22px", display: "flex", flexDirection: "column", gap: 16,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>📄 Send Receipt</div>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+            {resendGroupModal.items.length} items · {fmt(resendGroupModal.total)}
+          </div>
+        </div>
+        <button onClick={() => setResendGroupModal(null)}
+          style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          ×
+        </button>
+      </div>
+
+      <div>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+          Phone Number
+        </div>
+        <input
+          type="tel" value={resendGroupPhone}
+          onChange={e => setResendGroupPhone(e.target.value)}
+          placeholder="e.g. 0712345678"
+          style={{ width: "100%", boxSizing: "border-box", padding: "12px 14px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 12, color: theme.text.primary, fontSize: 15, fontFamily: theme.font.mono, outline: "none" }}
+        />
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 5 }}>
+          You can edit this number before sending
+        </div>
+      </div>
+
+      <button
+        onClick={async () => {
+          if (!resendGroupPhone.trim()) return;
+          await handleResendGroup(resendGroupModal, resendGroupPhone.trim());
+          setResendGroupModal(null);
+        }}
+        disabled={!resendGroupPhone.trim() || resendingId === `group-${resendGroupModal.key}`}
+        style={{
+          padding: "14px 20px",
+          background: "linear-gradient(135deg,#0891b2,#06b6d4)",
+          border: "none", borderRadius: 14, color: "#fff",
+          fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700,
+          cursor: (!resendGroupPhone.trim() || resendingId === `group-${resendGroupModal.key}`) ? "not-allowed" : "pointer",
+          opacity: (!resendGroupPhone.trim() || resendingId === `group-${resendGroupModal.key}`) ? 0.6 : 1,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}>
+        {resendingId === `group-${resendGroupModal.key}`
+          ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Sending...</>
+          : `📱 Send ${resendGroupModal.items.length} items to ${resendGroupPhone.trim() || "..."}`}
+      </button>
+    </div>
+  </div>
+)}
+
+    {replaceModal && (() => {
+  const returnedValue = replaceModal.items.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
+  const outgoingValue = replaceOutgoing.reduce((s, o) => s + o.qty * o.price, 0);
+  const delta = outgoingValue - returnedValue;
+  const absDelta = Math.abs(delta);
+
+  const filteredStock = replaceStock.filter(s => {
+    const q = replacePickerQuery.trim().toLowerCase();
+    if (!q) return true;
+    return s.name.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q);
+  });
+
+  return (
+    <div
+      onClick={e => { if (e.target === e.currentTarget) setReplaceModal(null); }}
+      style={{ position: "fixed", inset: 0, zIndex: 110, background: "rgba(0,0,0,0.75)",
+        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+        display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}
+    >
+      <div style={{ width: "min(560px, 100%)", maxHeight: "calc(100vh - 32px)", overflowY: "auto",
+        background: theme.bg.card, borderRadius: 20, border: `1px solid ${theme.border.default}`,
+        padding: "20px 18px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
+
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: "#a78bfa" }}>
+              🔁 Replace Products
+            </div>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+              {replaceModal.group.seller_name} ·{" "}
+              {new Date(replaceModal.group.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+            </div>
+          </div>
+          <button onClick={() => setReplaceModal(null)}
+            style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
+              borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted,
+              fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+            ×
+          </button>
+        </div>
+
+        {/* Returning section */}
+        <div>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+            Customer is returning
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {replaceModal.items.map(item => {
+              const max = item.original_qty - item.already_returned;
+              return (
+                <div key={item.txn_id} style={{ background: theme.bg.input, borderRadius: 12,
+                  padding: "10px 12px", border: item.return_qty > 0
+                    ? "1px solid rgba(167,139,250,0.4)" : `1px solid ${theme.border.default}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.product_name}</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                        {fmt(item.unit_price)}/unit · Sold: {item.original_qty} · Max: {max}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button onClick={() => updateReplaceReturnQty(item.txn_id, item.return_qty - 1)}
+                        style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)",
+                          border: `1px solid ${theme.border.default}`, color: theme.text.primary,
+                          fontSize: 15, cursor: "pointer" }}>−</button>
+                      <input
+                        type="text" inputMode="numeric" value={item.return_qty}
+                        onChange={e => updateReplaceReturnQty(item.txn_id, parseInt(e.target.value) || 0)}
+                        style={{ width: 46, textAlign: "center", padding: "5px 6px",
+                          background: theme.bg.base, border: `1px solid ${theme.border.default}`,
+                          borderRadius: 7, color: theme.text.primary,
+                          fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+                      <button onClick={() => updateReplaceReturnQty(item.txn_id, item.return_qty + 1)}
+                        style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)",
+                          border: `1px solid ${theme.border.default}`, color: theme.text.primary,
+                          fontSize: 15, cursor: "pointer" }}>+</button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Replacing with section */}
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+              textTransform: "uppercase", letterSpacing: "0.06em" }}>
+              Customer is receiving
+            </div>
+            <button onClick={() => setReplacePickerOpen(v => !v)}
+              style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.35)",
+                borderRadius: 8, padding: "5px 12px", color: "#a78bfa",
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+              {replacePickerOpen ? "✕ Close" : "+ Add item"}
+            </button>
+          </div>
+
+          {/* Picker */}
+          {replacePickerOpen && (
+            <div style={{ background: theme.bg.input, border: `1px solid ${theme.border.default}`,
+              borderRadius: 12, padding: 10, marginBottom: 10, display: "flex", flexDirection: "column", gap: 8 }}>
+              <input placeholder="Search stock…" value={replacePickerQuery}
+                onChange={e => setReplacePickerQuery(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", background: theme.bg.base,
+                  border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "9px 12px",
+                  color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+              <div style={{ maxHeight: 220, overflowY: "auto", display: "flex", flexDirection: "column", gap: 4 }}>
+                {filteredStock.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 14, color: theme.text.muted,
+                    fontFamily: theme.font.mono, fontSize: 12 }}>
+                    {replaceStock.length === 0 ? "No stock available" : "No matches"}
+                  </div>
+                ) : filteredStock.map(s => {
+                  const alreadyPicked = replaceOutgoing.some(o => o.product_id === s.product_id);
+                  return (
+                    <button key={s.product_id} disabled={alreadyPicked}
+                      onClick={() => {
+                        setReplaceOutgoing(prev => [...prev, {
+                          product_id: s.product_id, name: s.name, sku: s.sku,
+                          price: s.price, unit: s.unit, remaining: s.remaining, qty: 1,
+                        }]);
+                        setReplacePickerOpen(false);
+                      }}
+                      style={{ display: "flex", alignItems: "center", gap: 10,
+                        padding: "9px 10px", border: "none", background: alreadyPicked ? "transparent" : theme.bg.base,
+                        borderRadius: 8, cursor: alreadyPicked ? "not-allowed" : "pointer",
+                        opacity: alreadyPicked ? 0.4 : 1, textAlign: "left" }}>
+                      <span style={{ flex: 1, fontSize: 12, color: theme.text.primary }}>{s.name}</span>
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                        {fmt(s.price)} · {s.remaining} left
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Picked outgoing items */}
+          {replaceOutgoing.length === 0 ? (
+            <div style={{ textAlign: "center", padding: 14, color: theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 11, background: theme.bg.input,
+              borderRadius: 12, border: `1px dashed ${theme.border.default}` }}>
+              Add at least one item the customer is receiving
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {replaceOutgoing.map((o, idx) => (
+                <div key={o.product_id} style={{ background: theme.bg.input, borderRadius: 12,
+                  padding: "10px 12px", border: `1px solid ${theme.border.default}` }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
+                        textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
+                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                        {fmt(o.price)}/unit · {o.remaining} left
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
+                        i === idx ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}
+                        style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)",
+                          border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer" }}>−</button>
+                      <input type="text" inputMode="numeric" value={o.qty}
+                        onChange={e => {
+                          const v = Math.max(1, Math.min(o.remaining, parseInt(e.target.value) || 1));
+                          setReplaceOutgoing(prev => prev.map((x, i) => i === idx ? { ...x, qty: v } : x));
+                        }}
+                        style={{ width: 46, textAlign: "center", padding: "5px 6px",
+                          background: theme.bg.base, border: `1px solid ${theme.border.default}`,
+                          borderRadius: 7, color: theme.text.primary,
+                          fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+                      <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
+                        i === idx ? { ...x, qty: Math.min(x.remaining, x.qty + 1) } : x))}
+                        style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(255,255,255,0.06)",
+                          border: `1px solid ${theme.border.default}`, color: theme.text.primary, fontSize: 15, cursor: "pointer" }}>+</button>
+                      <button onClick={() => setReplaceOutgoing(prev => prev.filter((_, i) => i !== idx))}
+                        style={{ width: 28, height: 28, borderRadius: 7, background: "rgba(248,113,113,0.1)",
+                          border: "1px solid rgba(248,113,113,0.3)", color: "#f87171", fontSize: 14, cursor: "pointer" }}>✕</button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Price comparison */}
+        <div style={{ padding: "12px 14px", background: "rgba(167,139,250,0.06)",
+          border: "1px solid rgba(167,139,250,0.25)", borderRadius: 12,
+          display: "flex", flexDirection: "column", gap: 6,
+          fontFamily: theme.font.mono, fontSize: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", color: theme.text.muted }}>
+            <span>Returning</span>
+            <span style={{ color: "#f87171" }}>−{fmt(returnedValue)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", color: theme.text.muted }}>
+            <span>Receiving</span>
+            <span style={{ color: "#34d399" }}>+{fmt(outgoingValue)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between",
+            borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, fontWeight: 800 }}>
+            <span style={{ color: theme.text.primary }}>
+              {delta > 0 ? "Customer owes" : delta < 0 ? "Refund customer" : "Even exchange"}
+            </span>
+            <span style={{ color: delta > 0 ? "#fbbf24" : delta < 0 ? "#f87171" : "#34d399" }}>
+              {delta === 0 ? "KSh 0" : fmt(absDelta)}
+            </span>
+          </div>
+        </div>
+
+        {/* Money handling — only shown when delta ≠ 0 */}
+        {delta !== 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+              textTransform: "uppercase", letterSpacing: "0.07em" }}>
+              {delta > 0 ? "Payment method" : "Refund method"}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              {([
+                { key: "cash"  as const, icon: "💵", label: "Cash",   color: "#34d399" },
+                { key: "mpesa" as const, icon: "📱", label: "M-Pesa", color: theme.accent.cyan },
+                { key: "split" as const, icon: "⚡", label: "Split",  color: "#fbbf24" },
+              ]).map(({ key, icon, label, color }) => {
+                const active = replaceMethod === key;
+                return (
+                  <button key={key}
+                    onClick={() => {
+                      setReplaceMethod(key);
+                      setReplaceError("");
+                      if (key === "cash")  { setReplaceCash(String(absDelta)); setReplaceMpesa(""); }
+                      if (key === "mpesa") { setReplaceMpesa(String(absDelta)); setReplaceCash(""); }
+                      if (key === "split") { setReplaceCash(""); setReplaceMpesa(""); }
+                    }}
+                    style={{ flex: 1, padding: "10px 0", borderRadius: 10,
+                      background: active ? `${color}22` : "transparent",
+                      border: `1px solid ${active ? color : theme.border.default}`,
+                      color: active ? color : theme.text.muted,
+                      fontFamily: theme.font.mono, fontSize: 12, fontWeight: active ? 700 : 500,
+                      cursor: "pointer" }}>
+                    {icon} {label}
+                  </button>
+                );
+              })}
+            </div>
+
+            {(replaceMethod === "cash" || replaceMethod === "split") && (
+              <input type="text" inputMode="numeric" value={replaceCash}
+                onChange={e => { setReplaceCash(e.target.value.replace(/[^0-9]/g, "")); setReplaceError(""); }}
+                placeholder="Cash amount"
+                style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input,
+                  border: "1px solid rgba(52,211,153,0.4)", borderRadius: 10, padding: "11px 14px",
+                  color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14,
+                  fontWeight: 700, outline: "none" }} />
+            )}
+            {(replaceMethod === "mpesa" || replaceMethod === "split") && (
+              <input type="text" inputMode="numeric" value={replaceMpesa}
+                onChange={e => { setReplaceMpesa(e.target.value.replace(/[^0-9]/g, "")); setReplaceError(""); }}
+                placeholder="M-Pesa amount"
+                style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input,
+                  border: `1px solid rgba(6,182,212,0.4)`, borderRadius: 10, padding: "11px 14px",
+                  color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 14,
+                  fontWeight: 700, outline: "none" }} />
+            )}
+          </div>
+        )}
+
+        {/* Reason */}
+        <div>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+            textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Reason (optional)
+          </div>
+          <input value={replaceReason} onChange={e => setReplaceReason(e.target.value)}
+            placeholder="e.g. Wrong size, changed mind, defective…"
+            style={{ width: "100%", boxSizing: "border-box", background: theme.bg.input,
+              border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "11px 14px",
+              color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }} />
+        </div>
+
+        {replaceError && (
+          <div style={{ padding: "10px 14px", background: "rgba(248,113,113,0.08)",
+            border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
+            fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>
+            {replaceError}
+          </div>
+        )}
+        {replaceSuccess && (
+          <div style={{ padding: "10px 14px", background: "rgba(52,211,153,0.08)",
+            border: "1px solid rgba(52,211,153,0.3)", borderRadius: 10,
+            fontSize: 12, fontFamily: theme.font.mono, color: "#34d399", textAlign: "center" }}>
+            ✓ Exchange recorded successfully
+          </div>
+        )}
+
+        <button onClick={handleReplace} disabled={replaceProcessing || replaceSuccess}
+          style={{ padding: "14px 20px",
+            background: replaceSuccess ? "rgba(52,211,153,0.15)" : "rgba(167,139,250,0.15)",
+            border: `1px solid ${replaceSuccess ? "rgba(52,211,153,0.4)" : "rgba(167,139,250,0.4)"}`,
+            borderRadius: 14, color: replaceSuccess ? "#34d399" : "#a78bfa",
+            fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700,
+            cursor: replaceProcessing || replaceSuccess ? "not-allowed" : "pointer",
+            opacity: replaceProcessing ? 0.7 : 1,
+            display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+          {replaceProcessing
+            ? <><span style={{ width: 14, height: 14, border: "2px solid rgba(167,139,250,0.3)",
+                borderTopColor: "#a78bfa", borderRadius: "50%",
+                display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Processing…</>
+            : replaceSuccess ? "✓ Done" : "🔁 Confirm Exchange"}
+        </button>
+      </div>
+    </div>
+  );
+})()}
 
       {/* ── Return Modal ─────────────────────────────────────────────────── */}
       {returnModal && (
@@ -2713,9 +3558,7 @@ if (creditSaleIds.length > 0) {
       </div>
     </div>
   </div>
-)}
-
-    
-    </div>
+)} 
+  </div>
   );
 }
