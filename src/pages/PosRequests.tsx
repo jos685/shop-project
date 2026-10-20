@@ -309,6 +309,49 @@ function statusBadge(status: RequestStatus) {
     const needsProduct = type === "stock_request" || type === "damage_report" || type === "demand_report";
     const needsQty     = type === "stock_request" || type === "damage_report";
 
+
+    // ── Replace (exchange) for credit sales ───────────────────
+    const [replaceTarget,   setReplaceTarget]   = useState<CreditSale | null>(null);
+    const [replaceItems,    setReplaceItems]    = useState<{
+      product_id: string;
+      product_name: string;
+      original_qty: number;
+      remaining_qty: number;
+      unit_price: number;
+      return_qty: number;
+    }[]>([]);
+    const [replaceOutgoing, setReplaceOutgoing] = useState<{
+      product_id: string;
+      name: string;
+      sku: string;
+      price: number;
+      unit: string;
+      remaining: number;
+      qty: number;
+    }[]>([]);
+    const [replaceStock,    setReplaceStock]    = useState<{
+      product_id: string;
+      name: string;
+      sku: string;
+      price: number;
+      unit: string;
+      remaining: number;
+    }[]>([]);
+    const [replacePickerOpen,  setReplacePickerOpen]  = useState(false);
+    const [replacePickerQuery, setReplacePickerQuery] = useState("");
+    const [replaceReason,      setReplaceReason]      = useState("");
+    const [replaceMethod,      setReplaceMethod]      = useState<"cash" | "mpesa" | "split" | null>(null);
+    const [replaceCash,        setReplaceCash]        = useState("");
+    const [replaceMpesa,       setReplaceMpesa]       = useState("");
+    const [replaceMpesaRef,    setReplaceMpesaRef]    = useState("");
+    const [replaceAgent,       setReplaceAgent]       = useState<ShopAgent | null>(null);
+    const [replacePin,         setReplacePin]         = useState("");
+    const [replacePinError,    setReplacePinError]    = useState("");
+    const [replacePinShake,    setReplacePinShake]    = useState(false);
+    const [replaceProcessing,  setReplaceProcessing]  = useState(false);
+    const [replaceError,       setReplaceError]       = useState("");
+    const [replaceSuccess,     setReplaceSuccess]     = useState(false);
+
     // ── Agents state ──────────────────────────────────────────────────────
     const [agents, setAgents] = useState<ShopAgent[]>([]);
 
@@ -415,9 +458,9 @@ function statusBadge(status: RequestStatus) {
         }
       }
   
-    // Build item list with remaining quantities
-    const items = cs.items
-  .map(item => {
+     // Build item list with remaining quantities
+     const items = cs.items
+    .map(item => {
     const alreadyReturned = returnedMap[item.product_id] || 0;
     const remaining = item.quantity - alreadyReturned;
     if (remaining <= 0) return null;
@@ -986,6 +1029,188 @@ useEffect(() => {
     }
   };
 
+  // ── Load stock for the replacement picker ─────────────────
+const loadReplaceStock = useCallback(async () => {
+  if (!shop) return [];
+  const { data } = await supabase
+    .from("shop_allocations")
+    .select("id, remaining, product_id, product_name, product_sku, product_price, product_unit")
+    .eq("shop_id", shop.id);
+
+  const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
+  const productsMap: Record<string, any> = {};
+  if (productIds.length > 0) {
+    const { data: prods } = await supabase
+      .from("products").select("id, name, sku, price, unit").in("id", productIds);
+    for (const p of prods || []) productsMap[p.id] = p;
+  }
+
+  return (data || [])
+    .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
+    .map((a: any) => ({
+      product_id: a.product_id,
+      name:       productsMap[a.product_id]?.name  || a.product_name  || "—",
+      sku:        productsMap[a.product_id]?.sku   || a.product_sku   || "",
+      price:      Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
+      unit:       productsMap[a.product_id]?.unit  || a.product_unit  || "units",
+      remaining:  Math.max(0, a.remaining ?? 0),
+    }));
+}, [shop]);
+
+// ── Open the replace modal ────────────────────────────────
+const openReplaceModal = async (cs: CreditSale) => {
+  const { data: returnsData } = await supabase.rpc("get_transaction_returns", {
+    p_transaction_ids: [cs.id],
+  });
+
+  const returnedMap: Record<string, number> = {};
+  for (const ret of (returnsData || []) as any[]) {
+    if (ret.product_id) {
+      returnedMap[ret.product_id] =
+        (returnedMap[ret.product_id] || 0) + Number(ret.quantity_returned);
+    }
+  }
+
+  const items = cs.items
+    .map(item => {
+      const remaining = item.quantity - (returnedMap[item.product_id] || 0);
+      if (remaining <= 0) return null;
+      const soldPrice = item.quantity > 0
+        ? Math.round(item.subtotal / item.quantity)
+        : item.unit_price;
+      return {
+        product_id:    item.product_id,
+        product_name:  item.product_name,
+        original_qty:  item.quantity,
+        remaining_qty: remaining,
+        unit_price:    soldPrice || item.unit_price,
+        return_qty:    0,
+      };
+    })
+    .filter((x): x is NonNullable<typeof x> => x !== null);
+
+  const stock = await loadReplaceStock();
+
+  setReplaceTarget(cs);
+  setReplaceItems(items);
+  setReplaceStock(stock);
+  setReplaceOutgoing([]);
+  setReplacePickerOpen(false);
+  setReplacePickerQuery("");
+  setReplaceReason("");
+  setReplaceMethod(null);
+  setReplaceCash("");
+  setReplaceMpesa("");
+  setReplaceMpesaRef("");
+  setReplaceAgent(null);
+  setReplacePin("");
+  setReplacePinError("");
+  setReplaceError("");
+  setReplaceSuccess(false);
+};
+
+// ── Submit ────────────────────────────────────────────────
+const handleReplace = async (agent: ShopAgent) => {
+  if (!replaceTarget || !shop) return;
+
+  const itemsToReturn = replaceItems.filter(it => it.return_qty > 0);
+  if (itemsToReturn.length === 0) { setReplaceError("Select at least one item to return."); return; }
+  if (replaceOutgoing.length  === 0) { setReplaceError("Add at least one replacement item."); return; }
+
+  for (const out of replaceOutgoing) {
+    const s = replaceStock.find(x => x.product_id === out.product_id);
+    if (!s || s.remaining < out.qty) {
+      setReplaceError(`Not enough stock for ${out.name} — only ${s?.remaining ?? 0} left.`);
+      return;
+    }
+  }
+
+  const returnValue   = itemsToReturn.reduce((s, it) => s + it.return_qty * it.unit_price, 0);
+  const exchangeValue = replaceOutgoing.reduce((s, o)  => s + o.qty * o.price, 0);
+  const delta    = exchangeValue - returnValue;
+  const absDelta = Math.abs(delta);
+  const cash     = Math.round(Number(replaceCash)  || 0);
+  const mpesa    = Math.round(Number(replaceMpesa) || 0);
+
+  if (delta !== 0 && !replaceMethod) {
+    setReplaceError(delta > 0
+      ? "Customer must pay the difference — pick a payment method."
+      : "Shop must refund the difference — pick a refund method.");
+    return;
+  }
+  if (replaceMethod === "cash"  && cash  !== absDelta) { setReplaceError(`Cash must equal ${fmt(absDelta)}.`);  return; }
+  if (replaceMethod === "mpesa" && mpesa !== absDelta) { setReplaceError(`M-Pesa must equal ${fmt(absDelta)}.`); return; }
+  if (replaceMethod === "split" && cash + mpesa !== absDelta) { setReplaceError(`Split must equal ${fmt(absDelta)}.`); return; }
+
+  setReplaceProcessing(true);
+  setReplaceError("");
+
+  try {
+    const { data: result, error } = await supabase.rpc("record_credit_exchange", {
+      p_credit_sale_id: replaceTarget.id,
+      p_shop_id:        shop.id,
+      p_owner_id:       shop.owner_id,
+      p_return_items:   itemsToReturn.map(it => ({
+        product_id:        it.product_id,
+        product_name:      it.product_name,
+        quantity_returned: it.return_qty,
+        unit_price:        it.unit_price,
+      })),
+      p_exchange_items: replaceOutgoing.map(o => ({
+        product_id:    o.product_id,
+        product_name:  o.name,
+        quantity:      o.qty,
+        unit_price:    o.price,
+      })),
+      p_actor_name:   agent.agent.name,
+      p_actor_code:   agent.agent.agent_id,
+      p_actor_id:     agent.agent.id,
+      p_reason:       replaceReason.trim() || "Exchanged",
+      p_delta_method: delta !== 0 ? replaceMethod : null,
+      p_delta_cash:   delta > 0 ? cash  : (delta < 0 ? cash  : 0),
+      p_delta_mpesa:  delta > 0 ? mpesa : (delta < 0 ? mpesa : 0),
+      p_delta_mpesa_ref: mpesa > 0 ? (replaceMpesaRef.trim() || null) : null,
+      p_customer_name:   replaceTarget.customer_name,
+    });
+
+    if (error || !result?.success) {
+      setReplaceError(result?.error || error?.message || "Failed to process exchange.");
+      setReplaceProcessing(false);
+      return;
+    }
+
+    setReplaceSuccess(true);
+    setTimeout(() => {
+      resetReplaceModal();
+      fetchCreditSales();
+    }, 1500);
+  } catch (e: any) {
+    setReplaceError(e?.message || "Unexpected error.");
+    setReplaceProcessing(false);
+  }
+};
+
+const resetReplaceModal = () => {
+  setReplaceTarget(null);
+  setReplaceItems([]);
+  setReplaceOutgoing([]);
+  setReplaceStock([]);
+  setReplacePickerOpen(false);
+  setReplacePickerQuery("");
+  setReplaceReason("");
+  setReplaceMethod(null);
+  setReplaceCash("");
+  setReplaceMpesa("");
+  setReplaceMpesaRef("");
+  setReplaceAgent(null);
+  setReplacePin("");
+  setReplacePinError("");
+  setReplaceError("");
+  setReplaceSuccess(false);
+  setReplaceProcessing(false);
+  resetPinLockout();
+};
+
   const handleMarkReturned = async (_agent: ShopAgent) => {
     if (!returnTarget || !shop) return;
     if (!isOnline) {
@@ -1524,10 +1749,13 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
   height: 100dvh;          /* ignored by old browsers, wins on new */
 }
 .return-modal-shell {
-  max-height: 90vh;
+  max-height: 90vh;                                          /* fallback for old browsers */
+  max-height: calc(100vh - clamp(32px, 12vh, 144px));        /* reserves space for top bar */
 }
 @supports (height: 100dvh) {
-  .return-modal-shell { max-height: 90dvh; }
+  .return-modal-shell {
+    max-height: calc(100dvh - clamp(32px, 12vh, 144px));     /* uses true visible viewport */
+  }
 }
 @media (max-width: 640px) {
   .return-modal-shell {
@@ -2119,10 +2347,7 @@ ${theme.kiCss}
                                           </span>
                                         )}
                                         
-                                        {(() => {
-                                      // Show the return button whenever at least one item still has
-                                      // un-returned quantity — regardless of whether the sale is
-                                      // pending, partial, or fully paid.
+                                    {(() => {
                                       const returnsForSale = creditReturns[cs.id] || [];
                                       const returnedMap: Record<string, number> = {};
                                       for (const ret of returnsForSale) {
@@ -2137,35 +2362,32 @@ ${theme.kiCss}
                                       if (!hasReturnable) return null;
 
                                       return (
-                                        <button
-                                          onClick={e => { e.stopPropagation(); openReturnModal(cs); }}
-                                          style={{
-                                            fontSize: 10,
-                                            fontFamily: theme.font.mono,
-                                            fontWeight: 700,
-                                            color: "#f87171",
-                                            background: "rgba(248,113,113,0.1)",
-                                            border: "1px solid rgba(248,113,113,0.4)",
-                                            borderRadius: 6,
-                                            padding: "4px 10px",
-                                            cursor: "pointer",
-                                            display: "flex",
-                                            alignItems: "center",
-                                            gap: 4,
-                                            whiteSpace: "nowrap" as const,
-                                            transition: "background 0.15s, border-color 0.15s",
-                                          }}
-                                          onMouseEnter={e => {
-                                            e.currentTarget.style.background = "rgba(248,113,113,0.2)";
-                                            e.currentTarget.style.borderColor = "rgba(248,113,113,0.6)";
-                                          }}
-                                          onMouseLeave={e => {
-                                            e.currentTarget.style.background = "rgba(248,113,113,0.1)";
-                                            e.currentTarget.style.borderColor = "rgba(248,113,113,0.4)";
-                                          }}
-                                        >
-                                          ↩ Return Items
-                                        </button>
+                                        <>
+                                          <button
+                                            onClick={e => { e.stopPropagation(); openReturnModal(cs); }}
+                                            style={{
+                                              fontSize: 10, fontFamily: theme.font.mono, fontWeight: 700,
+                                              color: "#f87171", background: "rgba(248,113,113,0.1)",
+                                              border: "1px solid rgba(248,113,113,0.4)",
+                                              borderRadius: 6, padding: "4px 10px",
+                                              cursor: "pointer", display: "flex", alignItems: "center",
+                                              gap: 4, whiteSpace: "nowrap",
+                                            }}>
+                                            ↩ Return Items
+                                          </button>
+                                          <button
+                                            onClick={e => { e.stopPropagation(); openReplaceModal(cs); }}
+                                            style={{
+                                              fontSize: 10, fontFamily: theme.font.mono, fontWeight: 700,
+                                              color: "#a78bfa", background: "rgba(167,139,250,0.1)",
+                                              border: "1px solid rgba(167,139,250,0.4)",
+                                              borderRadius: 6, padding: "4px 10px",
+                                              cursor: "pointer", display: "flex", alignItems: "center",
+                                              gap: 4, whiteSpace: "nowrap",
+                                            }}>
+                                            🔁 Replace
+                                          </button>
+                                        </>
                                       );
                                     })()}
                                       </div>
@@ -3116,40 +3338,35 @@ ${theme.kiCss}
   const returnValue = returnItems.reduce((sum, it) => sum + it.return_qty * it.unit_price, 0);
   const refundable  = Math.min(returnValue, returnTarget.amount_paid);   // ← the cap
   return (
-    <div
-  className="return-modal-overlay"
-  style={{
-    position: "fixed",
-    top: 0, right: 0, left: 0,     // ← drop bottom: 0; height does the work
-    background: theme.bg.overlay,
-    zIndex: 50,
-    display: "flex",
-    alignItems: isMobile ? "flex-end" : "center",
-    justifyContent: "center",
-    padding: isMobile ? 0 : "0 16px",
-    boxSizing: "border-box",
-  }}
-  onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}
->
-            <div
+ <div
+    className="return-modal-overlay"
+    style={{
+      position: "fixed",
+      top: 0, right: 0, left: 0,
+      background: theme.bg.overlay,
+      zIndex: 1000,                                          // ← bumped from 50
+      display: "flex",
+      alignItems: isMobile ? "flex-end" : "center",
+      justifyContent: "center",
+      padding: isMobile
+        ? 0
+        : "clamp(16px, 6vh, 72px) clamp(12px, 3vw, 24px)",   // ← real air top & sides
+      boxSizing: "border-box",
+    }}
+    onClick={e => { if (e.target === e.currentTarget) resetReturnModal(); }}
+  >
+      <div
         className="return-modal-shell"
         style={{
           background: theme.bg.card,
           border: isMobile ? "none" : `1px solid ${theme.border.default}`,
           borderRadius: isMobile ? "20px 20px 0 0" : 20,
           width: "100%",
-          maxWidth: isMobile ? "100%" : 460,
-
-          // Modal itself never scrolls — the body inside does. This is what
-          // lets the header stay put and the body scroll cleanly, without any
-          // sticky tricks that fight iOS Safari.
+          maxWidth: isMobile ? "100%" : "min(460px, calc(100vw - 32px))",  // ← responsive cap
           display: "flex",
           flexDirection: "column",
           boxSizing: "border-box",
           overflow: "hidden",
-
-          // Height is set by the .return-modal-shell class in the <style> block,
-          // which uses a vh → dvh fallback via @supports.
         }}
       >
         {/* ── Fixed header — never scrolls ── */}
@@ -3423,6 +3640,412 @@ ${theme.kiCss}
   );
 })()}
 
+
+{/* ══ REPLACE MODAL ══ */}
+{replaceTarget && (() => {
+  const returnValue   = replaceItems.reduce((s, it) => s + it.return_qty * it.unit_price, 0);
+  const exchangeValue = replaceOutgoing.reduce((s, o) => s + o.qty * o.price, 0);
+  const delta         = exchangeValue - returnValue;
+  const absDelta      = Math.abs(delta);
+
+  const paidSoFar  = replaceTarget.amount_paid;
+  const newAmount  = replaceTarget.amount + delta;
+  // What we'd owe the customer if we settled today
+  const refundCap  = Math.max(0, paidSoFar - newAmount);
+  // What the customer owes on the *new* item beyond their existing payment
+  const paymentCap = Math.max(0, delta);
+
+  const cash  = Math.round(Number(replaceCash)  || 0);
+  const mpesa = Math.round(Number(replaceMpesa) || 0);
+  const money = cash + mpesa;
+
+  const filteredStock = replaceStock.filter(s => {
+    const q = replacePickerQuery.trim().toLowerCase();
+    if (!q) return true;
+    return s.name.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q);
+  });
+
+  const needsPayment = paymentCap > 0;
+  const needsRefund  = refundCap   > 0;
+
+  return (
+  <div
+    onClick={e => { if (e.target === e.currentTarget && !replaceProcessing) resetReplaceModal(); }}
+    style={{
+      position: "fixed",
+      inset: 0,
+      background: theme.bg.overlay,
+      zIndex: 1000,                              // ← above the top bar / bottom nav
+      display: "flex",
+      alignItems: isMobile ? "flex-end" : "center",
+      justifyContent: "center",
+      // Horizontal padding scales with viewport so a 320px phone and a
+      // 1400px laptop both get sensible side gutters. Vertical padding
+      // reserves clear space for the top bar (~clamp 16-72px).
+      padding: isMobile
+        ? 0
+        : "clamp(16px, 6vh, 72px) clamp(12px, 3vw, 24px)",
+      boxSizing: "border-box",
+    }}
+  >
+    <div style={{
+      background: theme.bg.card,
+      border: isMobile ? "none" : `1px solid ${theme.border.default}`,
+      borderRadius: isMobile ? "20px 20px 0 0" : 20,
+      width: "100%",
+      // Tighter cap than before: 480px reads calmer at ~1024px.
+      // On very narrow desktops it also respects the 24px gutter so it
+      // never touches the edges.
+      maxWidth: isMobile ? "100%" : "min(480px, calc(100vw - 32px))",
+      // On mobile it's a bottom sheet; on desktop it must fit inside
+      // the reserved padding, so cap by the *real* remaining space.
+      maxHeight: isMobile
+        ? "92dvh"
+        : "calc(100dvh - clamp(32px, 12vh, 144px))",
+      display: "flex", flexDirection: "column",
+      overflow: "hidden",
+    }}>
+        {/* Header */}
+        <div style={{
+          padding: isMobile ? "14px 16px 10px" : "16px 16px 12px",
+          borderBottom: `1px solid ${theme.border.default}`,
+          display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8,
+          flexShrink: 0,
+        }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17, color: "#a78bfa" }}>
+              🔁 Replace Items
+            </div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+              {replaceTarget.customer_name} · was owed {fmt(owedByCustomer(replaceTarget, creditReturns[replaceTarget.id] || []))}
+            </div>
+          </div>
+          <button onClick={resetReplaceModal} disabled={replaceProcessing}
+            style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px", opacity: replaceProcessing ? 0.4 : 1 }}>
+            ✕
+          </button>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{
+          flex: 1, minHeight: 0, overflowY: "auto",
+          padding: isMobile ? "12px 14px 16px" : "14px 16px 16px",
+          display: "flex", flexDirection: "column", gap: isMobile ? 10 : 12,
+        }}>
+          {/* Returning section */}
+          <div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+              textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+              Customer is returning
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {replaceItems.map(item => {
+                const max = item.remaining_qty;
+                return (
+                  <div key={item.product_id} style={{
+                    background: theme.bg.input, borderRadius: 10,
+                    padding: "10px 12px",
+                    border: item.return_qty > 0
+                      ? "1px solid rgba(167,139,250,0.4)"
+                      : `1px solid ${theme.border.default}`,
+                  }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                          {item.product_name}
+                        </div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                          {fmt(item.unit_price)}/unit · Max {max}
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <button
+                          onClick={() => setReplaceItems(prev => prev.map(x =>
+                            x.product_id === item.product_id
+                              ? { ...x, return_qty: Math.max(0, x.return_qty - 1) } : x))}
+                          style={{ width: 26, height: 26, borderRadius: 6,
+                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
+                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>−</button>
+                        <input type="text" inputMode="numeric" value={item.return_qty}
+                          onChange={e => {
+                            const v = Math.max(0, Math.min(max, parseInt(e.target.value) || 0));
+                            setReplaceItems(prev => prev.map(x =>
+                              x.product_id === item.product_id ? { ...x, return_qty: v } : x));
+                          }}
+                          style={{ width: 42, textAlign: "center", padding: "4px 6px",
+                            background: theme.bg.base, border: `1px solid ${theme.border.default}`,
+                            borderRadius: 6, color: theme.text.primary,
+                            fontFamily: theme.font.mono, fontSize: 12, outline: "none" }} />
+                        <button
+                          onClick={() => setReplaceItems(prev => prev.map(x =>
+                            x.product_id === item.product_id
+                              ? { ...x, return_qty: Math.min(max, x.return_qty + 1) } : x))}
+                          style={{ width: 26, height: 26, borderRadius: 6,
+                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
+                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>+</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Receiving section */}
+          <div>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                Customer is receiving
+              </div>
+              <button type="button" onClick={() => setReplacePickerOpen(v => !v)}
+                style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.35)",
+                  borderRadius: 7, padding: "4px 10px", color: "#a78bfa",
+                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                {replacePickerOpen ? "✕ Close" : "+ Add item"}
+              </button>
+            </div>
+
+            {replacePickerOpen && (
+              <div style={{ background: theme.bg.input, border: `1px solid ${theme.border.default}`,
+                borderRadius: 10, padding: 8, marginBottom: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                <input placeholder="Search stock…" value={replacePickerQuery}
+                  onChange={e => setReplacePickerQuery(e.target.value)}
+                  style={{ width: "100%", boxSizing: "border-box", background: theme.bg.base,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 7,
+                    padding: "8px 10px", color: theme.text.primary,
+                    fontFamily: theme.font.mono, fontSize: 12, outline: "none" }} />
+                <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
+                  {filteredStock.length === 0 ? (
+                    <div style={{ padding: 12, textAlign: "center",
+                      color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>
+                      {replaceStock.length === 0 ? "No stock available" : "No matches"}
+                    </div>
+                  ) : filteredStock.map(s => {
+                    const alreadyPicked = replaceOutgoing.some(o => o.product_id === s.product_id);
+                    return (
+                      <button key={s.product_id} type="button" disabled={alreadyPicked}
+                        onClick={() => {
+                          setReplaceOutgoing(prev => [...prev, {
+                            product_id: s.product_id, name: s.name, sku: s.sku,
+                            price: s.price, unit: s.unit, remaining: s.remaining, qty: 1,
+                          }]);
+                          setReplacePickerOpen(false);
+                        }}
+                        style={{ display: "flex", alignItems: "center", gap: 8,
+                          padding: "8px 10px", border: "none",
+                          background: alreadyPicked ? "transparent" : theme.bg.base,
+                          borderRadius: 7, cursor: alreadyPicked ? "not-allowed" : "pointer",
+                          opacity: alreadyPicked ? 0.4 : 1, textAlign: "left" }}>
+                        <span style={{ flex: 1, fontSize: 12, color: theme.text.primary }}>{s.name}</span>
+                        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                          {fmt(s.price)} · {s.remaining} left
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {replaceOutgoing.length === 0 ? (
+              <div style={{ textAlign: "center", padding: 12, color: theme.text.muted,
+                fontFamily: theme.font.mono, fontSize: 11, background: theme.bg.input,
+                borderRadius: 10, border: `1px dashed ${theme.border.default}` }}>
+                Add at least one item the customer is receiving
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {replaceOutgoing.map((o, idx) => (
+                  <div key={o.product_id} style={{ background: theme.bg.input, borderRadius: 10,
+                    padding: "10px 12px", border: `1px solid ${theme.border.default}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
+                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
+                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                          {fmt(o.price)}/unit · {o.remaining} left
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
+                          i === idx ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}
+                          style={{ width: 26, height: 26, borderRadius: 6,
+                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
+                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>−</button>
+                        <input type="text" inputMode="numeric" value={o.qty}
+                          onChange={e => {
+                            const v = Math.max(1, Math.min(o.remaining, parseInt(e.target.value) || 1));
+                            setReplaceOutgoing(prev => prev.map((x, i) =>
+                              i === idx ? { ...x, qty: v } : x));
+                          }}
+                          style={{ width: 42, textAlign: "center", padding: "4px 6px",
+                            background: theme.bg.base, border: `1px solid ${theme.border.default}`,
+                            borderRadius: 6, color: theme.text.primary,
+                            fontFamily: theme.font.mono, fontSize: 12, outline: "none" }} />
+                        <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
+                          i === idx ? { ...x, qty: Math.min(x.remaining, x.qty + 1) } : x))}
+                          style={{ width: 26, height: 26, borderRadius: 6,
+                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
+                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>+</button>
+                        <button onClick={() => setReplaceOutgoing(prev => prev.filter((_, i) => i !== idx))}
+                          style={{ width: 26, height: 26, borderRadius: 6,
+                            background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)",
+                            color: "#f87171", fontSize: 13, cursor: "pointer" }}>✕</button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Price comparison */}
+          <div style={{ padding: "12px 14px", background: "rgba(167,139,250,0.06)",
+            border: "1px solid rgba(167,139,250,0.25)", borderRadius: 12,
+            display: "flex", flexDirection: "column", gap: 6,
+            fontFamily: theme.font.mono, fontSize: 12 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", color: theme.text.muted }}>
+              <span>Returning</span>
+              <span style={{ color: "#f87171" }}>−{fmt(returnValue)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between", color: theme.text.muted }}>
+              <span>Receiving</span>
+              <span style={{ color: "#34d399" }}>+{fmt(exchangeValue)}</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "space-between",
+              borderTop: `1px solid ${theme.border.default}`, paddingTop: 6, fontWeight: 800 }}>
+              <span style={{ color: theme.text.primary }}>
+                {delta > 0 ? "Customer owes difference" : delta < 0 ? "Shop owes difference" : "Even swap"}
+              </span>
+              <span style={{ color: delta > 0 ? "#fbbf24" : delta < 0 ? "#f87171" : "#34d399" }}>
+                {delta === 0 ? "KSh 0" : fmt(absDelta)}
+              </span>
+            </div>
+          </div>
+
+          {/* Payment section — only when customer owes more AND wants to pay now */}
+          {needsPayment && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                Collect payment now (optional)
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input className="ki" type="text" inputMode="numeric" value={replaceCash}
+                  onChange={e => { setReplaceCash(sanitizeAmount(e.target.value)); setReplaceError(""); }}
+                  placeholder="💵 Cash" />
+                <input className="ki" type="text" inputMode="numeric" value={replaceMpesa}
+                  onChange={e => { setReplaceMpesa(sanitizeAmount(e.target.value)); setReplaceError(""); }}
+                  placeholder="📱 M-Pesa" />
+              </div>
+              {mpesa > 0 && (
+                <input className="ki" type="text" value={replaceMpesaRef}
+                  onChange={e => setReplaceMpesaRef(sanitizeCode(e.target.value, 20))}
+                  placeholder="M-Pesa ref (optional)" maxLength={20} />
+              )}
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                background: "rgba(251,191,36,0.06)", border: "1px solid rgba(251,191,36,0.25)",
+                borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
+                💡 Leave both fields empty to record the swap without collecting money.
+                Customer's balance rises by <strong>{fmt(absDelta)}</strong> and stays on credit.
+              </div>
+              {money > paymentCap + 0.5 && (
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171" }}>
+                  ⚠ Payment exceeds the difference ({fmt(paymentCap)}). Use Record Payment for extra.
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Refund section — only when the customer has overpaid */}
+          {needsRefund && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                textTransform: "uppercase", letterSpacing: "0.07em" }}>
+                Refund to customer (up to {fmt(refundCap)})
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                <input className="ki" type="text" inputMode="numeric" value={replaceCash}
+                  onChange={e => { setReplaceCash(sanitizeAmount(e.target.value)); setReplaceError(""); }}
+                  placeholder="💵 Cash" />
+                <input className="ki" type="text" inputMode="numeric" value={replaceMpesa}
+                  onChange={e => { setReplaceMpesa(sanitizeAmount(e.target.value)); setReplaceError(""); }}
+                  placeholder="📱 M-Pesa" />
+              </div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+                background: "rgba(192,132,252,0.06)", border: "1px solid rgba(192,132,252,0.25)",
+                borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
+                💸 Leave empty to skip the refund — the shop will show
+                "we owe customer <strong>{fmt(refundCap - money)}</strong>" until you pay it out later.
+              </div>
+            </div>
+          )}
+
+          {/* No money flow — info banner */}
+          {!needsPayment && !needsRefund && (returnValue > 0 || exchangeValue > 0) && (
+            <div style={{ background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.25)",
+              borderRadius: 10, padding: "10px 12px", fontSize: 11,
+              fontFamily: theme.font.mono, color: theme.accent.cyan, lineHeight: 1.5 }}>
+              ℹ️ No money changes hands — the customer's balance simply{" "}
+              {delta < 0 ? `drops by ${fmt(absDelta)}` : delta > 0 ? `rises by ${fmt(absDelta)}` : "stays the same"}.
+            </div>
+          )}
+
+          {/* Reason */}
+          <div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+              textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+              Reason (optional)
+            </div>
+            <input className="ki" type="text" value={replaceReason}
+              onChange={e => setReplaceReason(sanitizeText(e.target.value, 120))}
+              placeholder="e.g. Wrong size, changed mind, defective…" maxLength={120} />
+          </div>
+
+          {replaceError && (
+            <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono,
+              background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)",
+              borderRadius: 8, padding: "8px 12px" }}>
+              ⚠ {replaceError}
+            </div>
+          )}
+          {replaceSuccess && (
+            <div style={{ color: "#34d399", fontSize: 11, fontFamily: theme.font.mono,
+              background: "rgba(52,211,153,0.08)", border: "1px solid rgba(52,211,153,0.3)",
+              borderRadius: 8, padding: "8px 12px", textAlign: "center" }}>
+              ✓ Exchange recorded — sale updated
+            </div>
+          )}
+
+          {/* Agent picker → PIN */}
+          {!replaceAgent ? (
+            <div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.secondary,
+                textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}>
+                Confirm your identity
+              </div>
+              <AgentList onSelect={sa => { setReplaceAgent(sa); setReplacePin(""); setReplacePinError(""); }} />
+            </div>
+          ) : (
+            <PinModal
+              agent={replaceAgent}
+              pin={replacePin} setPin={setReplacePin}
+              pinError={replacePinError} setPinError={setReplacePinError}
+              pinShake={replacePinShake} setPinShake={setReplacePinShake}
+              processing={replaceProcessing}
+              onVerify={handleReplace}
+              onClose={() => { setReplaceAgent(null); setReplacePin(""); setReplacePinError(""); }}
+              title="Confirm Exchange"
+              subtitle={`${replaceTarget.customer_name} · Swap ${fmt(returnValue)} → ${fmt(exchangeValue)}`}
+            />
+          )}
+        </div>
+      </div>
+    </div>
+  );
+})()}
 
     </div>
   );

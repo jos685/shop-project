@@ -2586,6 +2586,7 @@ const exactSkuMatch = useMemo(() => {
     unit: string;
     quantity: number;
     sellPrice: number;
+    buyingPrice?: number | null;
   }) => {
     setChargeError("");
     if (editingUnlistedKey) {
@@ -2599,6 +2600,7 @@ const exactSkuMatch = useMemo(() => {
               unit: input.unit || "pc",
               quantity: Math.max(1, input.quantity),
               sellPrice: Math.max(0, input.sellPrice),
+              buyingPrice: input.buyingPrice ?? null,
             }
           : i
       ));
@@ -2615,6 +2617,7 @@ const exactSkuMatch = useMemo(() => {
           unit: input.unit || "pc",
           quantity: Math.max(1, input.quantity),
           sellPrice: Math.max(0, input.sellPrice),
+          buyingPrice: input.buyingPrice ?? null,
         },
       ]);
     }
@@ -2675,7 +2678,9 @@ const exactSkuMatch = useMemo(() => {
               unit:        item.unit,
               quantity:    item.quantity,
               sellPrice:   item.sellPrice,
-              basePrice:   impliedBasePrice(item.sellPrice),  // ← was item.sellPrice
+              basePrice:   item.buyingPrice && item.buyingPrice > 0
+                  ? item.buyingPrice
+                  : impliedBasePrice(item.sellPrice),               
               commissionRate: commissionConfig.enabled ? commissionConfig.rate : 0, 
             }
           : {
@@ -2795,7 +2800,9 @@ const exactSkuMatch = useMemo(() => {
           is_unlisted:    true,
           quantity:       item.quantity,
           unit_price:     item.sellPrice,
-          base_price:      impliedBasePrice(item.sellPrice),
+          base_price:      item.buyingPrice && item.buyingPrice > 0
+            ? item.buyingPrice
+            : impliedBasePrice(item.sellPrice),                      // ← HERE
           subtotal:       item.sellPrice * item.quantity,
         }
       : {
@@ -2923,7 +2930,9 @@ const exactSkuMatch = useMemo(() => {
       if (item.kind === "unlisted") {
         const itemTotal  = item.sellPrice * item.quantity;
         const ratio      = grandTotal > 0 ? itemTotal / grandTotal : 0;
-        const basePrice  = impliedBasePrice(item.sellPrice);     // ← new
+        const basePrice = item.buyingPrice && item.buyingPrice > 0
+            ? item.buyingPrice
+            : impliedBasePrice(item.sellPrice);                     
         const markup     = Math.max(0, item.sellPrice - basePrice);
         const commEarned = Math.round(markup * item.quantity * commRate / 100);
       
@@ -4084,6 +4093,7 @@ const renderVerifyStep = () => (
             unit: item.unit,
             quantity: item.quantity,
             sellPrice: item.sellPrice,
+            buyingPrice: item.buyingPrice ?? null,
           };
         })()
       : null

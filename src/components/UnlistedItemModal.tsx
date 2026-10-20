@@ -14,6 +14,7 @@ interface Props {
     unit: string;
     quantity: number;
     sellPrice: number;
+    buyingPrice?: number | null;
   }) => void;
   initialItem?: {
     customItemId: string | null;
@@ -21,12 +22,15 @@ interface Props {
     unit: string;
     quantity: number;
     sellPrice: number;
+    buyingPrice?: number | null;
   } | null;
 }
 
 const UNITS = ["pc", "kg", "g", "L", "ml", "plate", "cup", "service", "pack", "box"];
 
 const SUGGESTIONS_PER_PAGE = 5;
+
+
 
 export default function UnlistedItemModal({
   open, onClose, customItems, theme, isMobile, onSaveCustomItem, onAdd,
@@ -62,6 +66,27 @@ export default function UnlistedItemModal({
   // on an out-of-range page after a filter narrows the list.
   useEffect(() => { setSugPage(1); }, [name]);
 
+  const [buyPrice, setBuyPrice] = useState("");
+
+useEffect(() => {
+  if (!open) return;
+
+  if (initialItem) {
+    setName(initialItem.name);
+    setUnit(initialItem.unit || "pc");
+    setQty(String(initialItem.quantity));
+    setPrice(String(initialItem.sellPrice));
+    setBuyPrice(initialItem.buyingPrice != null ? String(initialItem.buyingPrice) : "");
+  } else {
+    setName(""); setUnit("pc"); setQty(""); setPrice(""); setBuyPrice("");
+  }
+
+  setShowSug(false); setError(""); setSaving(false); setSugPage(1);
+  setTimeout(() => nameRef.current?.focus(), 100);
+}, [open, initialItem]);
+
+
+
   // All matching items, before pagination
   const allSuggestions = useMemo(() => {
     const q = name.trim().toLowerCase();
@@ -88,17 +113,42 @@ export default function UnlistedItemModal({
     setName(c.name);
     setUnit(c.unit || "pc");
     setPrice(String(c.default_price || ""));
+    setBuyPrice("");
     setShowSug(false);
   };
 
   const submit = async () => {
-    setError("");
-    const trimmed = name.trim();
-    if (trimmed.length < 2) return setError("Enter a product name (at least 2 characters).");
-    const quantity = parseInt(qty, 10) || 0;
-    if (quantity < 1) return setError("Enter a quantity of at least 1.");
-    const sellPrice = Number(price) || 0;
-    if (sellPrice <= 0) return setError("Enter a sell price greater than 0.");
+  setError("");
+  const trimmed = name.trim();
+  if (trimmed.length < 2) return setError("Enter a product name (at least 2 characters).");
+
+  const quantity = parseInt(qty, 10) || 0;
+  if (quantity < 1) return setError("Enter a quantity of at least 1.");
+
+  const sellPrice = Number(price) || 0;
+
+  // Parse optional buy price — empty string means "not provided"
+  const buyPriceNum =
+    buyPrice.trim() === "" ? null : Number(buyPrice);
+  if (buyPriceNum !== null && (isNaN(buyPriceNum) || buyPriceNum < 0)) {
+    return setError("Enter a valid buying price, or leave it empty.");
+  }
+
+  // ── THE GUARD ──────────────────────────────────────────────────
+  // Buy price entered but no sell price → almost always a
+  // "typed it into the wrong field" mistake. Refuse and name the
+  // number so the user can spot it immediately.
+  if (buyPriceNum !== null && buyPriceNum > 0 && sellPrice <= 0) {
+    return setError(
+      `You entered KSh ${buyPriceNum.toLocaleString()} as the buying price, ` +
+      `but no selling price. Enter the price you're selling it to the customer ` +
+      `(that number looks like a purchase cost, not a sale price).`
+    );
+  }
+  // ───────────────────────────────────────────────────────────────
+
+  if (sellPrice <= 0) return setError("Enter a sell price greater than 0.");
+
 
     if (initialItem) {
       onAdd({
@@ -107,6 +157,7 @@ export default function UnlistedItemModal({
         unit,
         quantity,
         sellPrice,
+        buyingPrice: buyPriceNum && buyPriceNum > 0 ? buyPriceNum : null,
       });
       return;
     }
@@ -120,7 +171,7 @@ export default function UnlistedItemModal({
       customItemId = created?.id ?? null;
     }
 
-    onAdd({ customItemId, name: trimmed, unit, quantity, sellPrice });
+    onAdd({ customItemId, name: trimmed, unit, quantity, sellPrice,  buyingPrice: buyPriceNum && buyPriceNum > 0 ? buyPriceNum : null, });
   };
 
   if (!open) return null;
@@ -197,7 +248,7 @@ export default function UnlistedItemModal({
                   e.preventDefault(); submit();
                 }
               }}
-              placeholder="e.g. Bread, Phone repair, Airtime"
+              placeholder="e.g. Oraimo Header, Type C, Airtime"
               maxLength={60}
               spellCheck={false}
               autoComplete="off"
@@ -379,30 +430,123 @@ export default function UnlistedItemModal({
           </div>
         </div>
 
-        {/* Sell price */}
-        <div>
-          <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>
-            Sell Price (KSh) <span style={{ color: theme.accent.red }}>*</span>
-          </label>
-          <input className="ki" type="text" inputMode="numeric" value={price}
-            onChange={e => { setPrice(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }}
-            placeholder="0" />
+        {/* Buying + Selling price */}
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div>
+            <label style={{
+              color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+              textTransform: "uppercase", letterSpacing: "0.07em",
+              display: "block", marginBottom: 6,
+            }}>
+              Buying Price (KSh)
+              <span style={{ color: theme.text.muted, textTransform: "none", marginLeft: 4, fontWeight: 400 }}>
+                — optional
+              </span>
+            </label>
+            <input
+              className="ki"
+              type="text"
+              inputMode="numeric"
+              value={buyPrice}
+              onChange={e => { setBuyPrice(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }}
+              placeholder="cost per unit"
+              style={{
+                // visually de-emphasised — sell price is the field that matters
+                borderColor: buyPrice && !price ? "rgba(251,191,36,0.6)" : undefined,
+              }}
+            />
+          </div>
+          <div>
+            <label style={{
+              color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+              textTransform: "uppercase", letterSpacing: "0.07em",
+              display: "block", marginBottom: 6,
+            }}>
+              Sell Price (KSh) <span style={{ color: theme.accent.red }}>*</span>
+            </label>
+            <input
+              className="ki"
+              type="text"
+              inputMode="numeric"
+              value={price}
+              onChange={e => { setPrice(e.target.value.replace(/[^0-9.]/g, "")); setError(""); }}
+              placeholder="0"
+              style={{
+                borderColor: buyPrice && !price ? "rgba(251,191,36,0.6)" : undefined,
+              }}
+            />
+          </div>
         </div>
 
-        {/* Subtotal preview */}
+        {/* Hint when buy price is filled but sell price is empty — pre-empts the submit error */}
+        {buyPrice.trim() !== "" && Number(buyPrice) > 0 && Number(price) <= 0 && (
+          <div style={{
+            display: "flex", alignItems: "flex-start", gap: 8,
+            background: "rgba(251,191,36,0.08)",
+            border: "1px solid rgba(251,191,36,0.3)",
+            borderRadius: 10, padding: "10px 12px",
+            fontSize: 11, fontFamily: theme.font.mono, color: "#fbbf24", lineHeight: 1.5,
+          }}>
+            <span style={{ fontSize: 13, lineHeight: 1 }}>⚠</span>
+            <span>
+              You entered a <strong>buying price</strong> but not a <strong>selling price</strong>.
+              </span>
+          </div>
+        )}
+
+        {/* Soft warning if selling below cost */}
         {(() => {
-          const q = parseInt(qty, 10) || 0;
-          const p = Number(price) || 0;
-          if (p <= 0 || q <= 0) return null;
+          const sp = Number(price) || 0;
+          const bp = buyPrice.trim() === "" ? null : Number(buyPrice);
+          if (bp === null || bp <= 0 || sp <= 0 || sp >= bp) return null;
           return (
-            <div style={{ background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
-              <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>
-                KSh {(q * p).toLocaleString()}
+            <div style={{
+              display: "flex", alignItems: "center", justifyContent: "space-between",
+              background: "rgba(248,113,113,0.06)",
+              border: "1px solid rgba(248,113,113,0.25)",
+              borderRadius: 10, padding: "9px 12px",
+              fontSize: 11, fontFamily: theme.font.mono, color: "#f87171",
+            }}>
+              <span>⚠ Selling below cost</span>
+              <span style={{ fontWeight: 700 }}>
+                −KSh {(bp - sp).toLocaleString()}
               </span>
             </div>
           );
         })()}
+
+        {/* Subtotal preview */}
+        {(() => {
+            const q = parseInt(qty, 10) || 0;
+            const p = Number(price) || 0;
+            if (p <= 0 || q <= 0) return null;
+
+            const bp = buyPrice.trim() === "" ? null : Number(buyPrice);
+            const profit = bp !== null && bp > 0 ? (p - bp) * q : null;
+
+            return (
+              <div style={{
+                background: "rgba(255,255,255,0.03)", border: `1px solid ${theme.border.default}`,
+                borderRadius: 10, padding: "10px 14px",
+                display: "flex", justifyContent: "space-between", alignItems: "center",
+              }}>
+                <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>Subtotal</span>
+                <div style={{ textAlign: "right" }}>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 18, color: theme.accent.gold }}>
+                    KSh {(q * p).toLocaleString()}
+                  </div>
+                  {profit !== null && (
+                    <div style={{
+                      fontSize: 10, fontFamily: theme.font.mono, marginTop: 2,
+                      color: profit < 0 ? "#f87171" : "#34d399",
+                    }}>
+                      {profit >= 0 ? "Profit" : "Loss"} KSh {Math.abs(profit).toLocaleString()}
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
 
         {error && (
           <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px" }}>

@@ -41,6 +41,7 @@ export interface CustomItem {
     unit: string;
     quantity: number;
     sellPrice: number;
+    buyingPrice?: number | null;
   }
   
   export type CartItem = ListedCartItem | UnlistedCartItem;

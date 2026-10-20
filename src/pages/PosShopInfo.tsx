@@ -498,10 +498,12 @@ const addCustomItem = () => {
   }, [pendingCount]);
 
   // Today's stats
-  const [todaySales,   setTodaySales]   = useState(0);
-  const [todayCash,    setTodayCash]    = useState(0);
-  const [todayMpesa,   setTodayMpesa]   = useState(0);
-  const [statsLoading, setStatsLoading] = useState(true);
+  const [todaySales,          setTodaySales]          = useState(0);
+  const [todayCash,           setTodayCash]           = useState(0);
+  const [todayMpesa,          setTodayMpesa]          = useState(0);
+  const [todayCashRefunded,   setTodayCashRefunded]   = useState(0);   
+  const [todayMpesaRefunded,  setTodayMpesaRefunded]  = useState(0);   
+  const [statsLoading,        setStatsLoading]        = useState(true);
 
   // ── fetch stock + agents ──────────────────────────────────────────────
   const cacheKey = shop ? `pos_cache_${shop.id}` : null;
@@ -693,6 +695,8 @@ useEffect(() => {
   };
 }, [shop, fetchInfo]);
 
+
+
 // ── Realtime stock updates from database ──
 useEffect(() => {
   if (!shop) return;
@@ -723,36 +727,133 @@ useEffect(() => {
 }, [shop, stock.map(item => item.product.id).join(','), fetchInfo]);
 
   // ── fetch today's stats ───────────────────────────────────────────────
-  const fetchStats = useCallback(async () => {
-    if (!shop) return;
-    if (!navigator.onLine) { setStatsLoading(false); return; }
-    const today    = new Date(); today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
-    const { data, error } = await supabase.rpc("get_shop_transactions", {
+const fetchStats = useCallback(async () => {
+  if (!shop) return;
+  if (!navigator.onLine) { setStatsLoading(false); return; }
+
+  const today    = new Date(); today.setHours(0, 0, 0, 0);
+  const tomorrow = new Date(today); tomorrow.setDate(tomorrow.getDate() + 1);
+
+  const [txResult, cpResult, expResult, retResult] = await Promise.allSettled([
+    supabase.rpc("get_shop_transactions", {
       p_shop_id: shop.id,
       p_start:   today.toISOString(),
       p_end:     tomorrow.toISOString(),
       p_limit:   1000,
       p_offset:  0,
-    });
-    if (error) console.error("fetchStats error:", error.message, error.code);
-    if (data) {
-      setTodaySales(data.length);
-      setTodayCash(data.reduce((s: number, t: any) => s + (t.cash_amount  ?? 0), 0));
-      setTodayMpesa(data.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0));
+    }),
+    supabase.rpc("get_shop_credit_payments_all", { p_shop_id: shop.id }),
+    supabase.rpc("get_shop_expenses",            { p_shop_id: shop.id }),
+    // ← NEW: today's returns for this shop
+    supabase
+      .from("transaction_returns")
+      .select("refund_method, refund_cash_amount, refund_mpesa_amount, amount_refunded, source, exchange_of_transaction_id")
+      .eq("shop_id", shop.id)
+      .gte("created_at", today.toISOString())
+      .lt("created_at", tomorrow.toISOString()),
+  ]);
+
+  const data  = txResult.status  === "fulfilled" ? txResult.value.data  : null;
+  const txErr = txResult.status  === "fulfilled" ? txResult.value.error : null;
+  if (txErr) console.error("fetchStats tx error:", txErr.message, txErr.code);
+
+  const cpData  = cpResult.status  === "fulfilled" ? cpResult.value.data  : null;
+  const expData = expResult.status === "fulfilled" ? expResult.value.data : null;
+
+  const retData  = retResult.status === "fulfilled" ? retResult.value.data  : null;
+  const retErr   = retResult.status === "fulfilled" ? retResult.value.error : null;
+  if (retErr) {
+    console.warn(
+      "fetchStats returns error — refunds will NOT be deducted from cards:",
+      retErr.message
+    );
+  }
+
+  // Filter credit payments and expenses down to "today"
+  const cpToday = (cpData || []).filter((c: any) => {
+    const d = new Date(c.created_at);
+    return d >= today && d < tomorrow;
+  });
+
+  const expToday = (expData || []).filter((e: any) => {
+    const d = new Date(e.created_at);
+    return d >= today && d < tomorrow;
+  });
+
+  // ── Compute today's refunds ────────────────────────────────────────
+  // Use the exact stored cash/mpesa split when present. Fall back to
+  // refund_method + amount_refunded for legacy rows that predate the
+  // refund_*_amount columns.
+  let cashRefundedToday  = 0;
+  let mpesaRefundedToday = 0;
+
+  for (const r of (retData || []) as any[]) {
+    const ca = Number(r.refund_cash_amount)  || 0;
+    const ma = Number(r.refund_mpesa_amount) || 0;
+
+    if (ca > 0 || ma > 0) {
+      cashRefundedToday  += ca;
+      mpesaRefundedToday += ma;
+      continue;
     }
-    setStatsLoading(false);
-  }, [shop]);
+
+    // Legacy fallback — pure exchanges have refund_method="exchange"
+    // and contribute nothing here (no money moved).
+    const amt = Number(r.amount_refunded) || 0;
+    if (r.refund_method === "cash")       cashRefundedToday  += amt;
+    else if (r.refund_method === "mpesa") mpesaRefundedToday += amt;
+  }
+  // ───────────────────────────────────────────────────────────────────
+
+  if (data) {
+    const txCash  = data.reduce((s: number, t: any) => s + (t.cash_amount  ?? 0), 0);
+    const txMpesa = data.reduce((s: number, t: any) => s + (t.mpesa_amount ?? 0), 0);
+
+    const cpCash  = cpToday.reduce((s: number, c: any) => s + (Number(c.cash_amount)  || 0), 0);
+    const cpMpesa = cpToday.reduce((s: number, c: any) => s + (Number(c.mpesa_amount) || 0), 0);
+
+    const cashExpenses  = expToday.reduce((s: number, e: any) =>
+      s + (Number(e.cash_amount)  || (e.payment_method === "cash"  ? Number(e.amount) || 0 : 0)), 0);
+    const mpesaExpenses = expToday.reduce((s: number, e: any) =>
+      s + (Number(e.mpesa_amount) || (e.payment_method === "mpesa" ? Number(e.amount) || 0 : 0)), 0);
+
+    setTodaySales(data.length);
+    setTodayCash(Math.max(0, txCash  + cpCash  - cashExpenses  - cashRefundedToday));
+    setTodayMpesa(Math.max(0, txMpesa + cpMpesa - mpesaExpenses - mpesaRefundedToday));
+    setTodayCashRefunded(cashRefundedToday);
+    setTodayMpesaRefunded(mpesaRefundedToday);
+  }
+  setStatsLoading(false);
+}, [shop]);
 
   useEffect(() => { fetchStats(); }, [fetchStats]);
 
-  useEffect(() => {
-    if (!shop) return;
-    const ch = supabase.channel("shop-info-stats-live")
-      .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` }, fetchStats)
-      .subscribe();
-    return () => { supabase.removeChannel(ch); };
-  }, [shop, fetchStats]);
+useEffect(() => {
+  if (!shop) return;
+  const ch = supabase.channel("shop-info-stats-live")
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "shop_transactions", filter: `shop_id=eq.${shop.id}` },
+      fetchStats
+    )
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "credit_payments", filter: `shop_id=eq.${shop.id}` },
+      fetchStats
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "shop_expenses", filter: `shop_id=eq.${shop.id}` },
+      fetchStats
+    )
+    .on(
+      "postgres_changes",
+      { event: "*", schema: "public", table: "transaction_returns", filter: `shop_id=eq.${shop.id}` },   // ← ADD
+      fetchStats
+    )
+    .subscribe();
+  return () => { supabase.removeChannel(ch); };
+}, [shop, fetchStats]);
 
   const loadProductTx = useCallback(async (productId: string) => {
     if (!shop || txHistory[productId]) return;
@@ -1384,8 +1485,10 @@ const handleShareInvoice = async () => {
           <div style={{ display: "grid", gridTemplateColumns: queuedCount > 0 ? `repeat(${isMobile ? 2 : 5},1fr)` : "repeat(4,1fr)", gap: 8 }}>
             {[
               { label: "Sales",   value: String(todaySales), color: theme.text.primary, icon: "🧾", sub: "transactions", queued: false },
-              { label: "Cash",    value: fmt(todayCash),     color: "#34d399",           icon: "💵", sub: "cash",          queued: false },
-              { label: "M-Pesa",  value: fmt(todayMpesa),    color: "#60a5fa",           icon: "📱", sub: "mobile",        queued: false },
+              { label: "Cash",    value: fmt(todayCash),     color: "#34d399",           icon: "💵",
+                sub: todayCashRefunded > 0 ? `−${fmt(todayCashRefunded)} refunded` : "cash",          queued: false },
+              { label: "M-Pesa",  value: fmt(todayMpesa),    color: "#60a5fa",           icon: "📱",
+                sub: todayMpesaRefunded > 0 ? `−${fmt(todayMpesaRefunded)} refunded` : "mobile",       queued: false },
               ...(queuedCount > 0
                 ? [{ label: "Queued", value: String(queuedCount), color: "#fbbf24", icon: "⏳", sub: fmt(queuedTotal), queued: true }]
                 : []),

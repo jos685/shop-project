@@ -196,13 +196,16 @@ export default function PosTransactionsPage() {
     // ── Replace (exchange) flow ──────────────────────────────
   const [replaceModal, setReplaceModal] = useState<{ group: SaleGroup; items: ReturnItem[] } | null>(null);
   const [replaceStock, setReplaceStock] = useState<{
-    product_id: string; name: string; sku: string; price: number;
-    unit: string; remaining: number; image_url: string | null;
-  }[]>([]);
+  product_id: string; name: string; sku: string; price: number;
+  unit: string; remaining: number; image_url: string | null;
+  buying_price: number | null;                              // ← ADD
+    }[]>([]);
   const [replaceOutgoing, setReplaceOutgoing] = useState<{
-    product_id: string; name: string; sku: string; price: number;
-    unit: string; remaining: number; qty: number;
-  }[]>([]);
+  product_id: string | null;        // ← nullable — null = unlisted / custom
+  name: string; sku: string; price: number;
+  unit: string; remaining: number; qty: number;
+  buying_price: number | null;
+   }[]>([]);
   const [replacePickerOpen, setReplacePickerOpen]     = useState(false);
   const [replacePickerQuery, setReplacePickerQuery]   = useState("");
   const [replaceReason, setReplaceReason]             = useState("");
@@ -212,6 +215,12 @@ export default function PosTransactionsPage() {
   const [replaceProcessing, setReplaceProcessing]     = useState(false);
   const [replaceError, setReplaceError]               = useState("");
   const [replaceSuccess, setReplaceSuccess]           = useState(false);
+  // ── Custom (unlisted) item in the replace flow ──
+  const [replaceCustomOpen,  setReplaceCustomOpen]  = useState(false);
+  const [replaceCustomName,  setReplaceCustomName]  = useState("");
+  const [replaceCustomPrice, setReplaceCustomPrice] = useState("");
+  const [replaceCustomQty,   setReplaceCustomQty]   = useState("1");
+  const [replaceCustomUnit,  setReplaceCustomUnit]  = useState("pc");
 
   // Reload queued sales whenever the queue changes
   useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
@@ -268,7 +277,9 @@ export default function PosTransactionsPage() {
   | "none" | "partial" | "full" | "exchanged" | "partial_exchange";
 
 function getReturnStatus(group: SaleGroup): ReturnStatus {
-  const returnable = group.items.filter(t => t.product_id && t.unit_price != null);
+  const returnable = group.items.filter(
+    t => t.unit_price != null && (t.product_id || t.custom_item_id)
+  );
   if (returnable.length === 0) return "none";
 
   let fullyReturned = 0;
@@ -317,7 +328,7 @@ function returnStatusBadge(status: ReturnStatus) {
   if (productIds.length > 0) {
     const { data: prods } = await supabase
       .from("products")
-      .select("id, name, sku, price, unit, image_url")
+      .select("id, name, sku, price, unit, image_url, buying_price")
       .in("id", productIds);
     for (const p of prods || []) productsMap[p.id] = p;
   }
@@ -332,6 +343,7 @@ function returnStatusBadge(status: ReturnStatus) {
       unit:       productsMap[a.product_id]?.unit  || a.product_unit  || "units",
       remaining:  Math.max(0, a.remaining ?? 0),
       image_url:  productImageUrl(productsMap[a.product_id]?.image_url),
+       buying_price: Number(productsMap[a.product_id]?.buying_price ?? 0) || null,
     }));
 }, [shop]);
 
@@ -342,7 +354,7 @@ async function openReplaceModal(group: SaleGroup) {
   const existing = (data ?? []) as TransactionReturn[];
 
   const items: ReturnItem[] = group.items
-    .filter(tx => tx.product_id && tx.unit_price != null)
+  .filter(tx => tx.unit_price != null && (tx.product_id || tx.custom_item_id))
     .map(tx => {
       const alreadyReturned = existing
         .filter(r => r.original_transaction_id === tx.id)
@@ -381,6 +393,43 @@ async function openReplaceModal(group: SaleGroup) {
   setReplaceError("");
   setReplaceSuccess(false);
   setReplacePickerQuery("");
+  setReplaceCustomOpen(false);
+  setReplaceCustomName("");
+  setReplaceCustomPrice("");
+  setReplaceCustomQty("1");
+  setReplaceCustomUnit("pc");
+
+}
+
+function addReplaceCustomItem() {
+  const name  = replaceCustomName.trim();
+  const price = Number(replaceCustomPrice);
+  const qty   = parseInt(replaceCustomQty, 10) || 0;
+  const unit  = replaceCustomUnit.trim() || "pc";
+
+  if (!name)                          { setReplaceError("Enter an item name."); return; }
+  if (!Number.isFinite(price) || price < 0) { setReplaceError("Enter a valid price."); return; }
+  if (qty < 1)                        { setReplaceError("Quantity must be at least 1."); return; }
+
+  setReplaceOutgoing(prev => [
+    ...prev,
+    {
+      product_id: null,               // unlisted — not tied to shop_allocations
+      name,
+      sku: `custom-${Date.now()}`,    // used only as a React key, not persisted
+      price,
+      unit,
+      remaining: 0,                   // no allocation to draw down
+      qty,
+      buying_price: null,             // unknown cost — reports fall back to 80% simulation
+    },
+  ]);
+
+  setReplaceError("");
+  setReplaceCustomName("");
+  setReplaceCustomPrice("");
+  setReplaceCustomQty("1");
+  setReplaceCustomOpen(false);
 }
 
 async function handleReplace() {
@@ -392,12 +441,13 @@ async function handleReplace() {
 
   // Stock sanity
   for (const out of replaceOutgoing) {
-    const s = replaceStock.find(x => x.product_id === out.product_id);
-    if (!s || s.remaining < out.qty) {
-      setReplaceError(`Not enough stock for ${out.name} — only ${s?.remaining ?? 0} left.`);
-      return;
-    }
+  if (!out.product_id) continue;   // unlisted — no shop stock to check
+  const s = replaceStock.find(x => x.product_id === out.product_id);
+  if (!s || s.remaining < out.qty) {
+    setReplaceError(`Not enough stock for ${out.name} — only ${s?.remaining ?? 0} left.`);
+    return;
   }
+}
 
   const returnedValue = toReturn.reduce((s, i) => s + i.return_qty * i.unit_price, 0);
   const outgoingValue = replaceOutgoing.reduce((s, o) => s + o.qty * o.price, 0);
@@ -457,27 +507,33 @@ async function handleReplace() {
   if (retErr) { setReplaceError(retErr.message); return; }
 
   // 2) New sale rows — go through the RPC, same as handleSubmitSale
-  const newSaleRows = replaceOutgoing.map(o => ({
+  const totalOutgoing = replaceOutgoing.reduce((s, o) => s + o.qty * o.price, 0);
+const newSaleRows = replaceOutgoing.map(o => {
+  const itemTotal = o.qty * o.price;
+  const ratio     = totalOutgoing > 0 ? itemTotal / totalOutgoing : 0;
+  return {
     owner_id: shop.owner_id,
     shop_id: shop.id,
     seller_agent_id: firstItem.seller_agent_id ?? null,
     product_id: o.product_id,
     custom_item_id: null,
-    product_name: o.name,                                          // ← added
-    is_unlisted: false,                                            // ← added for parity
+    product_name: o.name,
+    is_unlisted: !o.product_id,                                   // ← dynamic
     quantity: o.qty,
     unit_price: o.price,
-    base_price: o.price,                                           // ← added for parity
-    amount: o.qty * o.price,
+    selling_price: o.price,
+    base_price: o.buying_price && o.buying_price > 0 ? o.buying_price : null,
+    amount: itemTotal,
     payment_method: delta > 0 ? (replaceMethod ?? "cash") : "exchange",
-    cash_amount:  delta > 0 ? cashAmt  : 0,
-    mpesa_amount: delta > 0 ? mpesaAmt : 0,
+    cash_amount:  delta > 0 ? Math.round(cashAmt  * ratio) : 0,    // ← split, not full
+    mpesa_amount: delta > 0 ? Math.round(mpesaAmt * ratio) : 0,    // ← split, not full
     mpesa_ref: null,
     customer_phone: firstItem.customer_phone ?? null,
-    status: "ok",                                                  // ← was "completed"
+    status: "ok",
     created_at: now,
     exchange_of_transaction_id: sourceTxnId,
-  }));
+  };
+});
 
   const { error: saleErr } = await supabase.rpc("insert_shop_transaction", {
     p_rows: newSaleRows,
@@ -494,10 +550,11 @@ async function handleReplace() {
     if (error) stockErrors.push(`restore ${item.product_name}: ${error.message}`);
   }
   for (const out of replaceOutgoing) {
-    const { error } = await supabase.rpc("update_shop_allocation", {
-      p_shop_id: shop.id, p_product_id: out.product_id, p_quantity: -out.qty,
-    });
-    if (error) stockErrors.push(`deduct ${out.name}: ${error.message}`);
+  if (!out.product_id) continue;   // unlisted — nothing to deduct
+  const { error } = await supabase.rpc("update_shop_allocation", {
+    p_shop_id: shop.id, p_product_id: out.product_id, p_quantity: -out.qty,
+  });
+  if (error) stockErrors.push(`deduct ${out.name}: ${error.message}`);
   }
   if (stockErrors.length > 0) console.warn("[handleReplace] stock update errors:", stockErrors);
 
@@ -524,7 +581,7 @@ async function handleReplace() {
     const existing = (data ?? []) as TransactionReturn[];
 
     let items: ReturnItem[] = group.items
-      .filter(tx => tx.product_id && tx.unit_price != null)
+     .filter(tx => tx.unit_price != null && (tx.product_id || tx.custom_item_id))
       .map(tx => {
         const alreadyReturned = existing
           .filter(r => r.original_transaction_id === tx.id)
@@ -874,7 +931,7 @@ if (creditSaleIds.length > 0) {
         product_name:
           t.status === "credit_partial" ? "Credit Sale (Partial Payment)"
           : t.status === "credit"       ? "Credit Sale (Unpaid)"
-          : resolved?.name              ?? "—",
+          : resolved?.name              ?? t.product_name ?? "—",
         product_sku:       resolved?.sku       ?? "",
         product_image_url: resolved?.image_url ?? null,
         product_id:        t.product_id        ?? null,
@@ -1264,10 +1321,10 @@ if (creditSaleIds.length > 0) {
   
     // Is the whole transaction returned? (all returnable qty fully returned)
     const isFullyReturned = (t: LocalTransaction) => {
-      if (!t.product_id || t.unit_price == null) return false;
-      const returned = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
-      return returned >= t.quantity && t.quantity > 0;
-    };
+        if ((!t.product_id && !t.custom_item_id) || t.unit_price == null) return false;
+        const returned = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
+        return returned >= t.quantity && t.quantity > 0;
+        };
 
   const totalRefunded = transactions.reduce((s, t) => s + effectiveRefund(t), 0);
 
@@ -1984,7 +2041,11 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                 const txnsForDate = items.filter(i => i.kind === "tx").map(i => i.data as LocalTransaction);
                 const expsForDate = items.filter(i => i.kind === "exp").map(i => i.data as typeof shopExpenses[number]);
                 const cpsForDate  = items.filter(i => i.kind === "cp").map(i => i.data as CreditPaymentRow);
-                const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0) + cpsForDate.reduce((s, c) => s + c.amount, 0) - expsForDate.reduce((s, e) => s + e.amount, 0);
+                const dayReturned = txnsForDate.reduce((s, t) => s + txReturnedValue(t), 0);
+                const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0)
+                  + cpsForDate.reduce((s, c) => s + c.amount, 0)
+                  - expsForDate.reduce((s, e) => s + e.amount, 0)
+                  - dayReturned; 
                 // Merge all item types into one time-sorted list so the render order matches real time
                 type DayItem =
                   | { kind: "exp";   data: typeof expsForDate[number] }
@@ -2263,10 +2324,10 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                               })()}
                               
 
-                              {returnStatus !== "full" && group.items[0]?.product_id && (
-                              <>
-                                <button
-                                  onClick={e => { e.stopPropagation(); openReturnModal(group); }}
+                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) && (
+                                <>
+                                  <button
+                                    onClick={e => { e.stopPropagation(); openReturnModal(group); }}
                                   style={{
                                     width: "100%", padding: "11px 16px",
                                     background: "rgba(248,113,113,0.08)",
@@ -2444,10 +2505,10 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                                 📄 Send Receipt (enter number)
                               </button>
                             )}
-                            {returnStatus !== "full" && tx.product_id && (
-                                <>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); openReturnModal(group); }}
+                            {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) && (
+                              <>
+                                <button
+                                  onClick={e => { e.stopPropagation(); openReturnModal(group); }}
                                     style={{
                                       width: "100%", padding: "11px 16px",
                                       background: "rgba(248,113,113,0.08)",
@@ -2758,18 +2819,26 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
 
         {/* Replacing with section */}
         <div>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
-              textTransform: "uppercase", letterSpacing: "0.06em" }}>
-              Customer is receiving
-            </div>
-            <button onClick={() => setReplacePickerOpen(v => !v)}
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8, flexWrap: "wrap", gap: 6 }}>
+          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
+            textTransform: "uppercase", letterSpacing: "0.06em" }}>
+            Customer is receiving
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={() => { setReplacePickerOpen(v => !v); setReplaceCustomOpen(false); }}
               style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.35)",
                 borderRadius: 8, padding: "5px 12px", color: "#a78bfa",
                 fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-              {replacePickerOpen ? "✕ Close" : "+ Add item"}
+              {replacePickerOpen ? "✕ Close" : "+ From stock"}
+            </button>
+            <button onClick={() => { setReplaceCustomOpen(v => !v); setReplacePickerOpen(false); }}
+              style={{ background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.35)",
+                borderRadius: 8, padding: "5px 12px", color: "#c084fc",
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+              {replaceCustomOpen ? "✕ Close" : "+ Custom"}
             </button>
           </div>
+        </div>
 
           {/* Picker */}
           {replacePickerOpen && (
@@ -2794,6 +2863,7 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                         setReplaceOutgoing(prev => [...prev, {
                           product_id: s.product_id, name: s.name, sku: s.sku,
                           price: s.price, unit: s.unit, remaining: s.remaining, qty: 1,
+                          buying_price: s.buying_price,
                         }]);
                         setReplacePickerOpen(false);
                       }}
@@ -2812,6 +2882,55 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
             </div>
           )}
 
+          {replaceCustomOpen && (
+            <div style={{
+              background: theme.bg.input, border: `1px solid rgba(192,132,252,0.35)`,
+              borderRadius: 12, padding: 10, marginBottom: 10,
+              display: "flex", flexDirection: "column", gap: 8,
+            }}>
+              <input
+                placeholder="Item name *"
+                value={replaceCustomName}
+                onChange={e => setReplaceCustomName(e.target.value)}
+                style={{ width: "100%", boxSizing: "border-box", background: theme.bg.base,
+                  border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "9px 12px",
+                  color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+              />
+              <div style={{ display: "flex", gap: 6 }}>
+                <input
+                  type="text" inputMode="numeric" placeholder="Price *"
+                  value={replaceCustomPrice}
+                  onChange={e => setReplaceCustomPrice(e.target.value.replace(/[^0-9.]/g, ""))}
+                  style={{ flex: 1, minWidth: 0, background: theme.bg.base,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "9px 12px",
+                    color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+                />
+                <input
+                  type="text" inputMode="numeric" placeholder="Qty"
+                  value={replaceCustomQty}
+                  onChange={e => setReplaceCustomQty(e.target.value.replace(/[^0-9]/g, ""))}
+                  style={{ width: 60, background: theme.bg.base,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "9px 12px",
+                    color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none", textAlign: "center" }}
+                />
+                <input
+                  placeholder="Unit"
+                  value={replaceCustomUnit}
+                  onChange={e => setReplaceCustomUnit(e.target.value)}
+                  style={{ width: 60, background: theme.bg.base,
+                    border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "9px 12px",
+                    color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13, outline: "none" }}
+                />
+              </div>
+              <button onClick={addReplaceCustomItem}
+                style={{ padding: "8px 0", borderRadius: 8, border: "none",
+                  background: "linear-gradient(135deg,#a855f7,#7e22ce)", color: "#fff",
+                  fontFamily: theme.font.display, fontWeight: 700, fontSize: 12, cursor: "pointer" }}>
+                + Add unlisted item
+              </button>
+            </div>
+          )}
+
           {/* Picked outgoing items */}
           {replaceOutgoing.length === 0 ? (
             <div style={{ textAlign: "center", padding: 14, color: theme.text.muted,
@@ -2822,16 +2941,42 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {replaceOutgoing.map((o, idx) => (
-                <div key={o.product_id} style={{ background: theme.bg.input, borderRadius: 12,
-                  padding: "10px 12px", border: `1px solid ${theme.border.default}` }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
-                        textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
-                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                        {fmt(o.price)}/unit · {o.remaining} left
-                      </div>
-                    </div>
+                <div key={o.product_id ?? `custom-${idx}`}
+  style={{ background: theme.bg.input, borderRadius: 12,
+    padding: "10px 12px", border: `1px solid ${theme.border.default}` }}>
+  <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "flex-start" }}>
+    <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
+          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
+        {o.product_id === null && (
+          <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "#c084fc",
+            background: "rgba(192,132,252,0.1)", border: "1px solid rgba(192,132,252,0.3)",
+            borderRadius: 6, padding: "1px 6px", flexShrink: 0 }}>unlisted</span>
+        )}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4, flexWrap: "wrap" }}>
+        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>Price</span>
+        <input
+          type="text" inputMode="numeric"
+          value={String(o.price)}
+          onChange={e => {
+            const v = Number(e.target.value.replace(/[^0-9.]/g, "")) || 0;
+            setReplaceOutgoing(prev => prev.map((x, i) => i === idx ? { ...x, price: v } : x));
+          }}
+          style={{ width: 76, padding: "4px 6px",
+            background: theme.bg.base, border: `1px solid ${theme.border.default}`,
+            borderRadius: 6, color: theme.text.primary,
+            fontFamily: theme.font.mono, fontSize: 12, outline: "none", textAlign: "right" }}
+        />
+        {o.product_id && (
+          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+            / {o.remaining} left
+          </span>
+        )}
+      </div>
+    </div>
+
                     <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                       <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
                         i === idx ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}
