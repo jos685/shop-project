@@ -2214,8 +2214,8 @@ const editUnlistedItem = (key: string) => {
           };
         });
 
-      // Only show items with stock available in the scan UI
-      const products = allProducts.filter(p => p.remaining > 0);
+      // Show all
+      const products = allProducts;
 
       setCommissionConfig(commission);
       setBusinessName(bizName);
@@ -2399,8 +2399,8 @@ const refreshProducts = useCallback(async () => {
         };
       });
 
-    const products = allProducts.filter(p => p.remaining > 0);
-    setMyProducts(products);
+    const products = allProducts;
+      setMyProducts(products);
 
     if (cacheKey) {
       try {
@@ -2722,7 +2722,7 @@ const exactSkuMatch = useMemo(() => {
             const raw = localStorage.getItem(cacheKey);
             if (raw) {
               const cached = JSON.parse(raw);
-              localStorage.setItem(cacheKey, JSON.stringify({ ...cached, products: allUpdated.filter(a => a.remaining > 0) }));
+              localStorage.setItem(cacheKey, JSON.stringify({ ...cached, products: allUpdated }));
             }
           } catch {}
         }
@@ -2742,7 +2742,7 @@ const exactSkuMatch = useMemo(() => {
           } catch {}
         }
         // Return only items with remaining > 0 for the scan UI state
-        return allUpdated.filter(alloc => alloc.remaining > 0);
+        return allUpdated;
       });
 
       refreshPendingCount();
@@ -3400,11 +3400,17 @@ const renderScanStep = () => (
         ) : (
           <div>
             <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-              <span>
-                {searchQuery.trim()
-                  ? `${filteredProducts.length} of ${myProducts.length} products`
-                  : `Available (${myProducts.length})`}
-              </span>
+             <span>
+                  {searchQuery.trim()
+                    ? `${filteredProducts.length} of ${myProducts.length} products`
+                    : (() => {
+                        const inStock  = myProducts.filter(a => a.remaining > 0).length;
+                        const outStock = myProducts.length - inStock;
+                        return outStock > 0
+                          ? `In stock (${inStock}) · Out (${outStock})`
+                          : `Available (${inStock})`;
+                      })()}
+                </span>
               {stockRefreshing && (
                 <button
                   onClick={() => { /* visual only */ }}
@@ -3425,36 +3431,78 @@ const renderScanStep = () => (
             <div style={{ maxHeight: isMobile ? "52vh" : 520, overflowY: "auto", overflowX: "hidden", paddingRight: 2, WebkitOverflowScrolling: "touch", paddingBottom: step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? 80 : 12 }}>
               <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
                 {filteredProducts.map(alloc => {
-                  const sc     = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
-                  const pct    = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
-                  const inCart = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
-                  return (
-                    <button key={alloc.id} onClick={() => handleProductTap(alloc)}
-                      style={{ padding: "8px 10px", border: `1px solid ${inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)"}`, borderRadius: 11, background: inCart ? "rgba(6,182,212,0.05)" : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, textAlign: "left", transition: "border-color 0.15s" }}
-                      onMouseEnter={e => (e.currentTarget.style.borderColor = "rgba(6,182,212,0.3)")}
-                      onMouseLeave={e => (e.currentTarget.style.borderColor = inCart ? "rgba(6,182,212,0.3)" : "rgba(255,255,255,0.08)")}>
-                      <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.name}</div>
-                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
-                        <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
-                          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-                        <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
-                          <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
-                          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
-                        </div>
-                        {inCart && (
-                          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 5, padding: "1px 6px" }}>
-                            ×{inCart.quantity}
-                          </div>
-                        )}
-                      </div>
-                    </button>
-                  );
-                })}
+  const isOOS      = alloc.remaining <= 0;
+  const sc         = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
+  const pct        = alloc.allocated > 0 ? Math.round((alloc.remaining / alloc.allocated) * 100) : 0;
+  const inCart     = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
+  const isCritical = !isOOS && (alloc.remaining <= 3 || (alloc.allocated > 0 && pct <= 20));
+
+  const borderColor = isOOS
+    ? "rgba(248,113,113,0.55)"
+    : isCritical
+      ? "rgba(248,113,113,0.75)"
+      : inCart
+        ? "rgba(6,182,212,0.3)"
+        : "rgba(255,255,255,0.08)";
+  const bgColor = isOOS
+    ? "repeating-linear-gradient(135deg,rgba(248,113,113,0.05),rgba(248,113,113,0.05) 6px,transparent 6px,transparent 12px)"
+    : isCritical
+      ? "linear-gradient(135deg,rgba(248,113,113,0.10),rgba(248,113,113,0.03))"
+      : inCart
+        ? "rgba(6,182,212,0.05)"
+        : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))";
+
+  return (
+    <button key={alloc.id} onClick={() => handleProductTap(alloc)}
+      style={{
+        padding: "8px 10px",
+        border: `${isCritical || isOOS ? 1.5 : 1}px solid ${borderColor}`,
+        borderRadius: 11,
+        background: bgColor,
+        cursor: "pointer",
+        display: "flex", alignItems: "center", gap: 10, textAlign: "left",
+        transition: "border-color 0.15s",
+        opacity: isOOS ? 0.65 : 1,
+      }}
+      onMouseEnter={e => (e.currentTarget.style.borderColor = isCritical || isOOS ? "rgba(248,113,113,0.95)" : "rgba(6,182,212,0.3)")}
+      onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}>
+      <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{
+          fontSize: 13, fontWeight: 600,
+          color: isOOS ? theme.text.muted : theme.text.primary,
+          marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+          textDecoration: isOOS ? "line-through" : "none",
+        }}>{alloc.product.name}</div>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+        <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
+          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
+        </div>
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+        <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
+          <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
+          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
+        </div>
+        {isOOS && (
+          <div style={{ fontSize: 8, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.45)", borderRadius: 5, padding: "1px 6px", letterSpacing: "0.04em" }}>
+            OUT
+          </div>
+        )}
+        {isCritical && (
+          <div style={{ fontSize: 8, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.45)", borderRadius: 5, padding: "1px 6px", letterSpacing: "0.04em" }}>
+            LOW
+          </div>
+        )}
+        {inCart && !isOOS && (
+          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.accent.cyan, background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.2)", borderRadius: 5, padding: "1px 6px" }}>
+            ×{inCart.quantity}
+          </div>
+        )}
+      </div>
+    </button>
+  );
+})}
               </div>
             </div>
           </div>

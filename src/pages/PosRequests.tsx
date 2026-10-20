@@ -14,16 +14,53 @@ import { enqueueRequest, enqueueExpense, getMiscQueue, type QueuedRequest, type 
 //   - pure mpesa (mpesa_amount set, cash_amount 0)
 //   - split      (both set)
 //   - legacy rows where cash_amount/mpesa_amount are null but
-//     payment_method tells us which bucket the whole amount belongs to.
 function sumExpensedByMethod(list: Expense[]): { cash: number; mpesa: number } {
   let cash = 0, mpesa = 0;
   for (const e of list) {
-    const c = e.cash_amount  ?? (e.payment_method === "cash"  ? e.amount : 0);
-    const m = e.mpesa_amount ?? (e.payment_method === "mpesa" ? e.amount : 0);
-    cash  += Number(c) || 0;
-    mpesa += Number(m) || 0;
+    // Use || so a stored 0 (legacy row) falls through to payment_method,
+    // not ?? which would count it as a real 0.
+    const c = Number(e.cash_amount)  || (e.payment_method === "cash"  ? Number(e.amount) : 0);
+    const m = Number(e.mpesa_amount) || (e.payment_method === "mpesa" ? Number(e.amount) : 0);
+    cash  += c;
+    mpesa += m;
   }
   return { cash, mpesa };
+}
+
+// Mirrors the split-routing rules used across the app:
+// prefer the exact refund_cash_amount / refund_mpesa_amount split;
+// fall back to refund_method when the split isn't recorded.
+function sumReturnsByMethod(list: {
+  refund_cash_amount?: number | null;
+  refund_mpesa_amount?: number | null;
+  refund_method?: string | null;
+  amount_refunded?: number | null;
+}[]): { cash: number; mpesa: number } {
+  let cash = 0, mpesa = 0;
+  for (const r of list) {
+    const ca = Number(r.refund_cash_amount)  || 0;
+    const ma = Number(r.refund_mpesa_amount) || 0;
+    if (ca > 0 || ma > 0) {
+      cash  += ca;
+      mpesa += ma;
+    } else {
+      const amt = Number(r.amount_refunded) || 0;
+      if (r.refund_method === "cash")       cash  += amt;
+      else if (r.refund_method === "mpesa") mpesa += amt;
+      // "exchange" / "split with no amounts" → contributes nothing
+    }
+  }
+  return { cash, mpesa };
+}
+
+// Today-only guard — RPC (get_shop_wallet_totals) reports today's activity,
+// so any client-side subtraction must be scoped the same way.
+function isToday(iso: string): boolean {
+  const d = new Date(iso);
+  const n = new Date();
+  return d.getFullYear() === n.getFullYear()
+      && d.getMonth()    === n.getMonth()
+      && d.getDate()     === n.getDate();
 }
 
 // Signed net position for a single sale.
@@ -358,6 +395,37 @@ function statusBadge(status: RequestStatus) {
     // ── Expenses state ────────────────────────────────────────────────────
     const [expenses,      setExpenses]      = useState<Expense[]>([]);
     const [expLoading,    setExpLoading]    = useState(false);
+
+    // Shop-wide returns — used to reduce the wallet totals in the expense modal
+    const [shopReturns, setShopReturns] = useState<{
+      refund_cash_amount: number | null;
+      refund_mpesa_amount: number | null;
+      refund_method: string | null;
+      amount_refunded: number | null;
+      created_at: string;
+    }[]>([]);
+
+    const fetchShopReturns = useCallback(async () => {
+      if (!shop) return;
+      const { data } = await supabase
+        .from("transaction_returns")
+        .select("refund_cash_amount, refund_mpesa_amount, refund_method, amount_refunded, created_at")
+        .eq("shop_id", shop.id);
+      setShopReturns((data || []) as any);
+    }, [shop]);
+
+    useEffect(() => { fetchShopReturns(); }, [fetchShopReturns]);
+
+    // Refresh if another tab (PosTransactions) inserts a return
+    useEffect(() => {
+      if (!shop) return;
+      const ch = supabase.channel("shop-returns-live-req")
+        .on("postgres_changes",
+          { event: "*", schema: "public", table: "transaction_returns", filter: `shop_id=eq.${shop.id}` },
+          fetchShopReturns)
+        .subscribe();
+      return () => { supabase.removeChannel(ch); };
+    }, [shop, fetchShopReturns]);
 
     const [logOpen,        setLogOpen]        = useState(false);
     const [expDesc,        setExpDesc]        = useState("");
@@ -766,9 +834,15 @@ useEffect(() => {
     
     const autoMethod = expCash > 0 && expMpesa > 0 ? "split" : expMpesa > 0 ? "mpesa" : "cash";
 
-    const { cash: cashExpensed, mpesa: mpesaExpensed } = sumExpensedByMethod(expenses);
-    const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
-    const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
+    const { cash: cashExpensed, mpesa: mpesaExpensed } =
+     sumExpensedByMethod(expenses.filter(e => isToday(e.created_at)));
+    const { cash: cashReturned, mpesa: mpesaReturned } =
+    sumReturnsByMethod(shopReturns.filter(r => isToday(r.created_at)));
+
+const cashAvail  = shopCashTotal  !== null
+  ? Math.max(0, shopCashTotal  - cashReturned  - cashExpensed)  : null;
+const mpesaAvail = shopMpesaTotal !== null
+  ? Math.max(0, shopMpesaTotal - mpesaReturned - mpesaExpensed) : null;
     if (cashAvail  !== null && expCash  > cashAvail)  { setExpError(`Cash amount exceeds available (${fmt(cashAvail)}).`);  return; }
     if (mpesaAvail !== null && expMpesa > mpesaAvail) { setExpError(`M-Pesa amount exceeds available (${fmt(mpesaAvail)}).`); return; }
         setExpProcessing(true);
@@ -2829,9 +2903,15 @@ ${theme.kiCss}
 
             {/* Available balance strips */}
               {(() => {
-                const { cash: cashExpensed, mpesa: mpesaExpensed } = sumExpensedByMethod(expenses);
-                const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal  - cashExpensed)  : null;
-                const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal - mpesaExpensed) : null;
+                const { cash: cashExpensed, mpesa: mpesaExpensed } =
+                  sumExpensedByMethod(expenses.filter(e => isToday(e.created_at)));
+                const { cash: cashReturned, mpesa: mpesaReturned } =
+                  sumReturnsByMethod(shopReturns.filter(r => isToday(r.created_at)));
+
+                const cashAvail  = shopCashTotal  !== null
+                  ? Math.max(0, shopCashTotal  - cashReturned  - cashExpensed)  : null;
+                const mpesaAvail = shopMpesaTotal !== null
+                  ? Math.max(0, shopMpesaTotal - mpesaReturned - mpesaExpensed) : null;
                 const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
                 const enteredC   = Math.round(Number(expCashAmount)  || 0);
                 const enteredM   = Math.round(Number(expMpesaAmount) || 0);
@@ -2901,22 +2981,33 @@ ${theme.kiCss}
             {expError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {expError}</div>}
 
             {!expAgent ? (
-              <div>
-                <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>Who is logging this?</label>
-                <AgentList onSelect={sa => {
-                  const c = Math.round(Number(expCashAmount)  || 0);
-                  const m = Math.round(Number(expMpesaAmount) || 0);
-                  if (c + m <= 0) { setExpError("Enter a Cash or M-Pesa amount first."); return; }
-                  setExpError("");
-                  setExpAgent(sa); setExpPin(""); setExpPinError("");
-                }} />
-              </div>
-            ) : (
-              <div>
-                <SelectedAgentRow agent={expAgent} onClear={() => { setExpAgent(null); setExpPin(""); setExpPinError(""); }} />
-                <PinKeypad selectedAgent={expAgent} pin={expPin} setPin={setExpPin} pinError={expPinError} setPinError={setExpPinError} pinShake={expPinShake} setPinShake={setExpPinShake} processing={expProcessing} onVerify={handleLogExpense} />
-              </div>
-            )}
+  <div>
+    <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
+      Who is logging this?
+    </label>
+    <AgentList onSelect={sa => {
+      const c = Math.round(Number(expCashAmount)  || 0);
+      const m = Math.round(Number(expMpesaAmount) || 0);
+      if (c + m <= 0) { setExpError("Enter a Cash or M-Pesa amount first."); return; }
+      setExpError("");
+      setExpAgent(sa); setExpPin(""); setExpPinError("");
+    }} />
+  </div>
+) : (
+  <PinModal
+    agent={expAgent}
+    pin={expPin} setPin={setExpPin}
+    pinError={expPinError} setPinError={setExpPinError}
+    pinShake={expPinShake} setPinShake={setExpPinShake}
+    processing={expProcessing}
+    onVerify={handleLogExpense}
+    onClose={() => { setExpAgent(null); setExpPin(""); setExpPinError(""); }}
+    title="Confirm Expense"
+    subtitle={`${expAgent.agent.name} · ${fmt(
+      Math.round(Number(expCashAmount) || 0) + Math.round(Number(expMpesaAmount) || 0),
+    )}`}
+  />
+)}
           </div>
         </div>
       )}
@@ -2977,11 +3068,20 @@ ${theme.kiCss}
                 </div>
               </div>
             ) : (
-              <div>
-                <SelectedAgentRow agent={editAgent} onClear={() => { setEditAgent(null); setEditPin(""); setEditPinError(""); }} />
-                <PinKeypad selectedAgent={editAgent} pin={editPin} setPin={setEditPin} pinError={editPinError} setPinError={setEditPinError} pinShake={editPinShake} setPinShake={setEditPinShake} processing={editProcessing} onVerify={handleEditExpense} />
-              </div>
-            )}
+                <PinModal
+                  agent={editAgent}
+                  pin={editPin} setPin={setEditPin}
+                  pinError={editPinError} setPinError={setEditPinError}
+                  pinShake={editPinShake} setPinShake={setEditPinShake}
+                  processing={editProcessing}
+                  onVerify={handleEditExpense}
+                  onClose={() => { setEditAgent(null); setEditPin(""); setEditPinError(""); }}
+                  title="Confirm Edit"
+                  subtitle={editTarget?.logged_by_name
+                    ? `Editing ${editTarget.logged_by_name}'s expense`
+                    : "Enter PIN to confirm"}
+                />
+              )}
           </div>
         </div>
       )}
