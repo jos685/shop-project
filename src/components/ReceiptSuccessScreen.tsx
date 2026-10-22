@@ -3,7 +3,7 @@ import type { CartItem } from "../types/pos";
 import type { BusinessInfo } from "../lib/useBusinessInfo";
 import {
   buildReceiptData,
-  receiptToPdf, receiptToText,
+  receiptToPdf,
   receiptToPrintHtml,
   type ReceiptData,
 } from "../lib/receipt";
@@ -92,8 +92,8 @@ export default function ReceiptSuccessScreen({
   const [copied, setCopied]     = useState(false);
   const [actionError, setError] = useState("");
 
-    // ── Helper to generate the perfect PNG image (for the Share button) ──
-  const generateImage = useCallback(async (): Promise<string | null> => {
+     // ── Helper to generate the perfect PNG image ──
+  const generateImage = useCallback(async (): Promise<string> => {
     let logoData: string | null = null;
     const url = biz.logoUrl;
     
@@ -126,23 +126,19 @@ export default function ReceiptSuccessScreen({
       doc.write(html);
       doc.close();
 
-      // 👈 WAIT FOR IFRAME & IMAGES TO ACTUALLY LOAD
+      // Wait for images inside the iframe to load
       await new Promise((resolve) => {
         iframe.onload = async () => {
           const images = Array.from(doc.querySelectorAll("img"));
           await Promise.all(
             images.map((img) => {
               if (img.complete) return Promise.resolve();
-              return new Promise((r) => {
-                img.onload = r;
-                img.onerror = r;
-              });
+              return new Promise((r) => { img.onload = r; img.onerror = r; });
             })
           );
           resolve(null);
         };
-        // Absolute fallback timeout just in case the network hangs
-        setTimeout(resolve, 3000); 
+        setTimeout(resolve, 1500); 
       });
 
       const dataUrl = await toPng(doc.body, {
@@ -154,15 +150,10 @@ export default function ReceiptSuccessScreen({
       });
 
       return dataUrl;
-    } catch (e: any) {
-      console.error("toPng failed to generate image:", e);
-      // 👈 SHOW THE ERROR TO THE USER SO YOU KNOW WHY IT FAILED
-      setError("Image capture failed: " + e.message);
-      return null;
     } finally {
       document.body.removeChild(iframe);
     }
-  }, [data, biz]);  
+  }, [data, biz]); 
 
   // ── Download PDF ──────────────────────────────────────────────────
   const handlePdf = useCallback(async () => {
@@ -244,113 +235,49 @@ export default function ReceiptSuccessScreen({
   }, [data, biz]);
 
     // ── Share (Image → Download Image + Copy Text) ────────────────────
-    // ── Share (Image → Download Image + Copy Text) ────────────────────
-  const handleShare = useCallback(async () => {
+     const handleShare = useCallback(async () => {
     setError("");
     setBusy("share");
-    
-    let text = "";
+
     try {
-      text = receiptToText(data, biz);
-    } catch (e) {
-      console.error("Failed to generate receipt text:", e);
-    }
-     
-    // 1. Generate the image ONCE
-    const dataUrl = await generateImage();
+      // 1. Generate the PNG
+      const dataUrl = await generateImage();
+      
+      // 2. Convert to a File object
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
 
-    // 2. If image exists, try sharing it or downloading it
-    if (dataUrl) {
-      if (navigator.share && navigator.canShare) {
-        try {
-          const res = await fetch(dataUrl);
-          const blob = await res.blob();
-          const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
-
-          if (navigator.canShare({ files: [file] })) {
-            try {
-              await navigator.share({
-                files: [file],
-                title: `${biz.businessName || "Receipt"} · ${ref}`,
-                text: `Receipt from ${biz.businessName}`,
-              });
-              setBusy(null);
-              return; // Success! Image shared natively.
-            } catch (err: any) {
-              if (err.name === "AbortError") { setBusy(null); return; } // User cancelled
-              console.warn("Native image share failed:", err);
-            }
-          }
-        } catch (imgErr) {
-          console.warn("Image processing failed:", imgErr);
-        }
+      // 3. Try Native Share (Works on Phones/Tablets)
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        await navigator.share({
+          files: [file],
+          title: `Receipt · ${ref}`,
+          text: `Receipt from ${biz.businessName}`,
+        });
+        setBusy(null);
+        return;
       }
 
-      // 3. DESKTOP FALLBACK: If native share fails or isn't supported, download the PNG!
+      // 4. Desktop Fallback: Download the image automatically
       const a = document.createElement("a");
       a.href = dataUrl;
       a.download = `receipt-${ref}.png`;
       a.click();
       
-      // Notify user that the image was downloaded
-      setError("Image downloaded! Copying text to clipboard...");
-    }
-
-    // 4. Text Fallback (Share text natively if possible)
-    if (navigator.share && text) {
-      try {
-        const sharePromise = navigator.share({ title: `Receipt · ${ref}`, text });
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Timeout")), 2000)
-        );
-        await Promise.race([sharePromise, timeoutPromise]);
-        setBusy(null);
-        return; 
-      } catch (err: any) {
-        if (err.name === "AbortError") { setBusy(null); return; }
-      }
-    }
-
-    // 5. Final Fallback: Copy to Clipboard
-    let copySuccess = false;
-    if (text) {
-      if (navigator.clipboard && window.isSecureContext) {
-        try {
-          await navigator.clipboard.writeText(text);
-          copySuccess = true;
-        } catch (err) {
-          console.warn("Modern clipboard failed:", err);
-        }
-      }
-
-      if (!copySuccess) {
-        try {
-          const ta = document.createElement("textarea");
-          ta.value = text;
-          ta.style.position = "fixed";
-          ta.style.top = "-9999px";
-          document.body.appendChild(ta);
-          ta.focus();
-          ta.select();
-          copySuccess = document.execCommand("copy");
-          document.body.removeChild(ta);
-        } catch (err) {
-          console.error("Legacy copy failed:", err);
-        }
-      }
-    }
-
-    setBusy(null);
-    if (copySuccess) {
+      // Show a quick success message, then clear it
       setCopied(true);
-      setTimeout(() => setCopied(false), 2200);
-      // If we downloaded the image earlier, clear that error after a few seconds
-      setTimeout(() => setError(""), 4000); 
-    } else if (!copySuccess && !dataUrl) {
-      // Only throw an error if BOTH image generation and text copying failed
-      setError("Could not share. Please download the PDF instead.");
+      setTimeout(() => setCopied(false), 2000);
+
+    } catch (err: any) {
+      console.error("Share failed:", err);
+      if (err.name !== "AbortError") {
+        setError("Could not generate image. Please use the PDF button.");
+      }
+    } finally {
+      setBusy(null);
     }
-  }, [data, biz, ref, generateImage]);
+  }, [generateImage, ref, biz]);
 
   return (
     <div
