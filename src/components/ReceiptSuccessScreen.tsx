@@ -3,7 +3,7 @@ import type { CartItem } from "../types/pos";
 import type { BusinessInfo } from "../lib/useBusinessInfo";
 import {
   buildReceiptData,
-  receiptToPdf,
+  receiptToPdf, receiptToText,
   receiptToPrintHtml,
   type ReceiptData,
 } from "../lib/receipt";
@@ -89,6 +89,7 @@ export default function ReceiptSuccessScreen({
 
   const [waOpen, setWaOpen] = useState(false);
   const [busy, setBusy] = useState<"pdf" | "print" | "share" | null>(null);
+  const [copied, setCopied]     = useState(false);
   const [actionError, setError] = useState("");
 
   // ── Helper to generate the perfect PNG image (for the Share button) ──
@@ -215,29 +216,93 @@ export default function ReceiptSuccessScreen({
     }
   }, [data, biz]);
 
-  // ── Share (Generates PNG on click → Native share sheet) ───────────
+    // ── Share (Web Share API → clipboard fallback) ────────────────────
+     // ── Share (Image → Text → Clipboard) ────────────────────
   const handleShare = useCallback(async () => {
+    setError("");
     setBusy("share");
+    
     try {
+      // 1. Try to generate the receipt image
       const dataUrl = await generateImage();
+      
+      // Convert the dataURL into a File object for the native share API
       const res = await fetch(dataUrl);
       const blob = await res.blob();
       const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
 
-      if (navigator.canShare?.({ files: [file] })) {
-        await navigator.share({ files: [file], title: `Receipt ${ref}` });
-      } else {
-        const a = document.createElement("a");
-        a.href = dataUrl;
-        a.download = `receipt-${ref}.png`;
-        a.click();
+      // 2. Try sharing the image (Supported on iOS/Android and some desktops)
+      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+        try {
+          await navigator.share({
+            files: [file],
+            title: `${biz.businessName || "Receipt"} · ${ref}`,
+            text: `Receipt from ${biz.businessName}`,
+          });
+          return; // Success!
+        } catch (err: any) {
+          if (err.name === "AbortError") return; // User cancelled the share dialog
+          console.warn("Image share failed, falling back to text:", err);
+        }
       }
-    } catch (e: any) {
-      console.error(e);
+
+      // 3. Fallback: Try sharing just the text
+      const text = receiptToText(data, biz);
+      if (navigator.share) {
+        try {
+          const sharePromise = navigator.share({ title: `Receipt · ${ref}`, text });
+          // Timeout if the OS hangs
+          const timeoutPromise = new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("Timeout")), 2000)
+          );
+          await Promise.race([sharePromise, timeoutPromise]);
+          return; // Success!
+        } catch (err: any) {
+          if (err.name === "AbortError") return;
+          console.warn("Text share failed, falling back to clipboard:", err);
+        }
+      }
+
+      // 4. Fallback: Copy to Clipboard
+      let copySuccess = false;
+      if (navigator.clipboard && window.isSecureContext) {
+        try {
+          await navigator.clipboard.writeText(text);
+          copySuccess = true;
+        } catch (err) {
+          console.warn("Modern clipboard failed:", err);
+        }
+      }
+
+      if (!copySuccess) {
+        try {
+          const ta = document.createElement("textarea");
+          ta.value = text;
+          ta.style.position = "fixed";
+          ta.style.top = "-9999px";
+          document.body.appendChild(ta);
+          ta.focus();
+          ta.select();
+          copySuccess = document.execCommand("copy");
+          document.body.removeChild(ta);
+        } catch (err) {
+          console.error("Legacy copy failed:", err);
+        }
+      }
+
+      if (copySuccess) {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2200);
+      } else {
+        setError("Could not share or copy receipt. Please try downloading the PDF instead.");
+      }
+    } catch (e) {
+      console.error("Share failed:", e);
+      setError("Failed to prepare receipt for sharing.");
     } finally {
       setBusy(null);
     }
-  }, [generateImage, ref]);
+  }, [data, biz, ref, generateImage]);
 
   return (
     <div
@@ -382,16 +447,16 @@ export default function ReceiptSuccessScreen({
             disabled={busy !== null}
             accent="#25D366"
           />
-          <ActionButton
+                    <ActionButton
             theme={theme}
-            icon={busy === "share" ? "⏳" : "🔗"}
-            label={busy === "share" ? "Preparing..." : "Share"}
-            shortLabel={busy === "share" ? "..." : "Share"}
+            icon={copied ? "✓" : busy === "share" ? "⏳" : "🔗"}
+            label={copied ? "Copied!" : busy === "share" ? "Preparing..." : "Share"}
+            shortLabel={copied ? "Copied" : busy === "share" ? "..." : "Share"}
             isMobile={isMobile}
-            loading={busy === "share"}
+            loading={busy === "share" && !copied}
             onClick={handleShare}
             disabled={busy !== null}
-            accent="#fbbf24"
+            accent={copied ? "#34d399" : "#fbbf24"} 
           />
         </div>
 
