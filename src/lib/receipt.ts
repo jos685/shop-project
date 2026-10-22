@@ -11,18 +11,18 @@ export interface ReceiptItem {
 }
 
 export interface ReceiptData {
-  ref: string;                 // "TXN-7484796B" or "CR-7484796B"
-  timestamp: string;           // human formatted
+  ref: string;
+  timestamp: string;
   sellerName: string;
   customerName: string;
   customerPhone: string;
   items: ReceiptItem[];
   total: number;
-  paymentMethod: string;       // "Cash" | "M-Pesa" | "Split" | "Pay Later"
+  paymentMethod: string;
   mpesaRef: string;
   isCredit: boolean;
-  amountPaid: number;          // for credit: upfront paid
-  balanceOwed: number;         // for credit: remaining
+  amountPaid: number;
+  balanceOwed: number;
   isQueued: boolean;
   isBackdated: boolean;
 }
@@ -37,7 +37,7 @@ export function buildReceiptData(input: {
   total: number;
   payMethod: string | null;
   mpesaRef: string;
-  initialPayment: number;      // for credit
+  initialPayment: number;
   isQueued: boolean;
   isBackdated: boolean;
 }): ReceiptData {
@@ -74,7 +74,6 @@ export function buildReceiptData(input: {
   };
 }
 
-// ── Filename helper ───────────────────────────────────────────────────
 export function sanitizeFilename(s: string): string {
   return (s || "receipt")
     .trim()
@@ -85,12 +84,11 @@ export function sanitizeFilename(s: string): string {
 
 export function receiptFilename(businessName: string, ref: string): string {
   const shop = sanitizeFilename(businessName);
-  const r    = sanitizeFilename(ref.replace(/^[A-Z]+-/, ""));  // strip TXN-/CR- prefix
+  const r    = sanitizeFilename(ref.replace(/^[A-Z]+-/, ""));
   const prefix = ref.startsWith("CR-") ? "CR" : "TXN";
   return `${shop}-${prefix}-${r}.pdf`;
 }
 
-// ── Money formatter ───────────────────────────────────────────────────
 const ksh = (n: number) => `KSh ${Math.round(n).toLocaleString("en-KE")}`;
 
 // ── Plain-text version (WhatsApp / clipboard) ─────────────────────────
@@ -122,73 +120,166 @@ export function receiptToText(d: ReceiptData, biz: BusinessInfo): string {
   return lines.join("\n");
 }
 
-// ── Print HTML (80mm thermal-friendly) ────────────────────────────────
+// ── Print HTML (Modern design for Screen/PNG/Print) ───────────────────
 export function receiptToPrintHtml(d: ReceiptData, biz: BusinessInfo, logoDataUrl: string | null): string {
   const esc = (s: string) =>
     s.replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
   const rows = d.items.map(it => `
-    <tr>
-      <td class="qty">${it.qty}×</td>
-      <td class="name">${esc(it.name)}</td>
-      <td class="amt">${ksh(it.total)}</td>
-    </tr>`).join("");
+    <div class="row">
+      <div class="name">${it.qty}× ${esc(it.name)}</div>
+      <div class="amt">${ksh(it.total)}</div>
+    </div>`).join("");
 
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>${esc(d.ref)}</title>
 <style>
-  @page { size: 80mm auto; margin: 0; }
-  * { box-sizing: border-box; }
   body {
-    font-family: ui-monospace, "DM Mono", Menlo, Consolas, monospace;
-    color: #000; background: #fff;
-    width: 80mm; padding: 4mm; margin: 0;
-    font-size: 11px; line-height: 1.35;
+    margin: 0;
+    padding: 40px 20px; /* 👈 Fixes top margin */
+    background: #ffffff;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex;
+    justify-content: center; /* 👈 Perfectly centers the PNG */
+    color: #1e293b;
+    -webkit-print-color-adjust: exact;
   }
+
+  .paper {
+    width: 100%;
+    max-width: 320px; /* Standard receipt width */
+  }
+
   .center { text-align: center; }
-  .logo { max-height: 40px; max-width: 60mm; object-fit: contain; display: block; margin: 0 auto 4px; }
-  .biz { font-size: 14px; font-weight: 800; letter-spacing: 0.02em; word-break: break-word; }
-  .phone { font-size: 11px; margin-top: 2px; }
-  hr { border: none; border-top: 1px dashed #000; margin: 6px 0; }
-  table { width: 100%; border-collapse: collapse; }
-  td { vertical-align: top; padding: 1px 0; }
-  td.qty { width: 8mm; }
-  td.name { word-break: break-word; }
-  td.amt { text-align: right; white-space: nowrap; }
-  .row { display: flex; justify-content: space-between; gap: 6px; }
-  .total { font-size: 15px; font-weight: 800; margin-top: 2px; }
-  .credit-box { border: 1px solid #000; padding: 4px 6px; margin: 6px 0; }
-  .credit-title { font-weight: 800; letter-spacing: 0.06em; font-size: 10px; }
-  .thanks { margin-top: 8px; font-size: 11px; }
+  
+  .logo { 
+    max-height: 54px; 
+    max-width: 120px; 
+    object-fit: contain; 
+    display: block; 
+    margin: 0 auto 12px; 
+    border-radius: 8px;
+  }
+  
+  .biz-name { 
+    font-size: 18px; 
+    font-weight: 800; 
+    color: #0f172a;
+    margin-bottom: 4px;
+  }
+  
+  .biz-phone { 
+    font-size: 13px; 
+    color: #64748b; 
+    font-weight: 500;
+  }
+
+  .divider { 
+    border-bottom: 1.5px dashed #cbd5e1; 
+    margin: 16px 0; 
+  }
+
+  .meta-row { 
+    display: flex; 
+    justify-content: space-between; 
+    margin-bottom: 6px; 
+    font-size: 13px;
+  }
+  
+  .meta-label { color: #64748b; }
+  .meta-value { font-weight: 600; color: #0f172a; }
+
+  .row { 
+    display: flex; 
+    justify-content: space-between; 
+    margin-bottom: 8px; 
+    font-size: 14px;
+  }
+  
+  .name { font-weight: 500; color: #334155; }
+  .amt { font-weight: 600; color: #0f172a; font-variant-numeric: tabular-nums; }
+
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 16px;
+  }
+
+  .total-label {
+    font-size: 15px;
+    font-weight: 800;
+    color: #0f172a;
+    text-transform: uppercase;
+  }
+
+  .total-val {
+    font-size: 24px;
+    font-weight: 900;
+    color: #ea580c; /* 👈 Bright Orange Accent */
+    font-variant-numeric: tabular-nums;
+  }
+
+  .credit-box { 
+    border: 1.5px dashed #f87171; 
+    background: #fef2f2;
+    color: #b91c1c;
+    padding: 10px; 
+    border-radius: 8px;
+    margin: 16px 0; 
+    font-size: 13px;
+  }
+  .credit-box .row { margin-bottom: 4px; }
+
+  .thanks { 
+    margin-top: 24px; 
+    font-size: 13px; 
+    color: #64748b;
+    line-height: 1.5;
+  }
 </style></head>
 <body>
-  ${logoDataUrl ? `<img class="logo" src="${logoDataUrl}" alt="" />` : ""}
-  <div class="center">
-    <div class="biz">${esc(biz.businessName || "")}</div>
-    ${biz.phone ? `<div class="phone">${esc(biz.phone)}</div>` : ""}
+  <div class="paper">
+    <div class="center">
+      ${logoDataUrl ? `<img class="logo" src="${logoDataUrl}" alt="" />` : ""}
+      <div class="biz-name">${esc(biz.businessName || "")}</div>
+      ${biz.phone ? `<div class="biz-phone">${esc(biz.phone)}</div>` : ""}
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="meta-row"><span class="meta-label">Receipt</span><span class="meta-value">${esc(d.ref)}</span></div>
+    <div class="meta-row"><span class="meta-label">Date</span><span class="meta-value">${esc(d.timestamp)}</span></div>
+    <div class="meta-row"><span class="meta-label">Served by</span><span class="meta-value">${esc(d.sellerName)}</span></div>
+
+    <div class="divider"></div>
+
+    ${rows}
+
+    <div class="divider"></div>
+
+    <div class="total-row">
+      <span class="total-label">Total</span>
+      <span class="total-val">${ksh(d.total)}</span>
+    </div>
+
+    ${d.isCredit ? `
+      <div class="credit-box">
+        <div style="font-weight:800; text-transform:uppercase; margin-bottom:6px; font-size:11px;">Credit Sale</div>
+        <div class="row"><span>Paid upfront</span><span>${ksh(d.amountPaid)}</span></div>
+        <div class="row"><span>Balance owed</span><span style="font-weight:800;">${ksh(d.balanceOwed)}</span></div>
+      </div>` : ""}
+    
+    <div class="meta-row" style="margin-top:16px;"><span class="meta-label">Payment</span><span class="meta-value">${esc(d.paymentMethod)}</span></div>
+    ${d.mpesaRef ? `<div class="meta-row"><span class="meta-label">M-Pesa Ref</span><span class="meta-value">${esc(d.mpesaRef)}</span></div>` : ""}
+    ${d.customerName ? `<div class="meta-row"><span class="meta-label">Customer</span><span class="meta-value">${esc(d.customerName)}</span></div>` : ""}
+    ${d.customerPhone ? `<div class="meta-row"><span class="meta-label">Phone</span><span class="meta-value">${esc(d.customerPhone)}</span></div>` : ""}
+    
+    <div class="center thanks" style="margin-top: 24px;">
+      Thank you for shopping at<br/>
+      <strong style="color:#0f172a;">${esc(biz.businessName || "")}</strong>
+    </div>
   </div>
-  <hr />
-  <div class="row"><span>${esc(d.ref)}</span></div>
-  <div class="row"><span>${esc(d.timestamp)}</span></div>
-  <div class="row"><span>Served by:</span><span>${esc(d.sellerName)}</span></div>
-  <hr />
-  <table>${rows}</table>
-  <hr />
-  <div class="row"><span>TOTAL</span><span class="total">${ksh(d.total)}</span></div>
-  ${d.isCredit ? `
-    <div class="credit-box">
-      <div class="credit-title">CREDIT SALE</div>
-      <div class="row"><span>Paid upfront</span><span>${ksh(d.amountPaid)}</span></div>
-      <div class="row"><span>Balance owed</span><span><strong>${ksh(d.balanceOwed)}</strong></span></div>
-    </div>` : ""}
-  <hr />
-  <div class="row"><span>Payment</span><span>${esc(d.paymentMethod)}</span></div>
-  ${d.mpesaRef ? `<div class="row"><span>M-Pesa ref</span><span>${esc(d.mpesaRef)}</span></div>` : ""}
-  ${d.customerName  ? `<div class="row"><span>Customer</span><span>${esc(d.customerName)}</span></div>` : ""}
-  ${d.customerPhone ? `<div class="row"><span>Phone</span><span>${esc(d.customerPhone)}</span></div>` : ""}
-  ${d.isQueued ? `<div class="row"><span>Status</span><span>Pending sync</span></div>` : ""}
-  <hr />
-  <div class="center thanks">Thank you for shopping at<br/><strong>${esc(biz.businessName || "")}</strong></div>
 </body></html>`;
 }
 
@@ -203,11 +294,18 @@ export async function receiptToPdf(
   const doc = new jsPDF({ unit: "mm", format: "a5", orientation: "portrait" });
   const PAGE_W = doc.internal.pageSize.getWidth();
   const PAGE_H = doc.internal.pageSize.getHeight();
-  const M = 12;
+  
+  // 👈 Increased margin from 12 to 20 so it doesn't touch the top
+  const M = 20; 
   const W = PAGE_W - M * 2;
   let y = M;
 
-  // ── Logo (skipped silently on SVG / fetch failure) ──
+  // Color Palette
+    const darkSlate: [number, number, number] = [15, 23, 42];   // #0f172a
+  const mutedSlate: [number, number, number] = [100, 116, 139]; // #64748b
+  const accentOrange: [number, number, number] = [234, 88, 12]; // #ea580c
+
+  // ── Logo ──
   let logoDataUrl: string | null = null;
   const logoUrl = biz.logoUrl;
   const isSvg = logoUrl ? /\.svg(\?|$)/i.test(logoUrl) : false;
@@ -231,19 +329,19 @@ export async function receiptToPdf(
 
   if (logoDataUrl) {
     try {
-      // Fit within 60mm wide × 20mm tall, centered
       const img = (doc as any).getImageProperties(logoDataUrl);
       const maxW = 60, maxH = 20;
       const ratio = Math.min(maxW / img.width, maxH / img.height);
       const w = img.width * ratio, h = img.height * ratio;
       doc.addImage(logoDataUrl, "PNG", (PAGE_W - w) / 2, y, w, h, undefined, "FAST");
-      y += h + 3;
+      y += h + 5;
     } catch { /* bad image — skip */ }
   }
 
-  // ── Business header ──
+  // ── Business Header ──
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(15);
+  doc.setFontSize(16);
+  doc.setTextColor(...darkSlate);
   const bizName = biz.businessName || "";
   const bizLines = doc.splitTextToSize(bizName, W) as string[];
   for (const line of bizLines) {
@@ -254,38 +352,44 @@ export async function receiptToPdf(
   if (biz.phone) {
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
+    doc.setTextColor(...mutedSlate);
     doc.text(biz.phone, PAGE_W / 2, y, { align: "center" });
-    y += 5;
+    y += 6;
   }
 
-  y += 1;
-  doc.setDrawColor(180);
+  y += 2;
+  doc.setDrawColor(203, 213, 225); // light slate line
+  doc.setLineDashPattern([1, 1], 0); // dashed line
   doc.line(M, y, PAGE_W - M, y);
-  y += 5;
+  doc.setLineDashPattern([], 0); // reset
+  y += 8;
 
   // ── Meta rows ──
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   const metaRow = (label: string, value: string) => {
-    doc.setTextColor(120);
+    doc.setTextColor(...mutedSlate);
     doc.text(label, M, y);
-    doc.setTextColor(20);
+    doc.setTextColor(...darkSlate);
+    doc.setFont("helvetica", "bold");
     const v = doc.splitTextToSize(value, W - 40) as string[];
     doc.text(v, PAGE_W - M, y, { align: "right" });
-    y += 5.5 * v.length;
+    doc.setFont("helvetica", "normal");
+    y += 6 * v.length;
   };
   metaRow("Receipt", d.ref);
   metaRow("Date", d.timestamp);
   metaRow("Served by", d.sellerName);
 
-  y += 1;
-  doc.setDrawColor(180);
+  y += 4;
+  doc.setDrawColor(203, 213, 225);
+  doc.setLineDashPattern([1, 1], 0);
   doc.line(M, y, PAGE_W - M, y);
-  y += 5;
+  doc.setLineDashPattern([], 0);
+  y += 8;
 
   // ── Items ──
   const colName = M;
-  const colQty  = M + W * 0.62;
   const colAmt  = PAGE_W - M;
 
   const ensureSpace = (need: number) => {
@@ -295,101 +399,99 @@ export async function receiptToPdf(
     }
   };
 
-  doc.setFont("helvetica", "bold");
-  doc.setFontSize(9);
-  doc.setTextColor(120);
-  doc.text("ITEM",  colName, y);
-  doc.text("QTY",   colQty,  y, { align: "right" });
-  doc.text("TOTAL", colAmt,  y, { align: "right" });
-  y += 4;
-  doc.setTextColor(20);
-
   for (const it of d.items) {
-    const nameLines = doc.splitTextToSize(it.name, W * 0.58) as string[];
-    const rowH = Math.max(5.5, nameLines.length * 5);
+    const nameLines = doc.splitTextToSize(`${it.qty}× ${it.name}`, W * 0.7) as string[];
+    const rowH = Math.max(6, nameLines.length * 5);
     ensureSpace(rowH + 2);
 
+    doc.setTextColor(...darkSlate);
     doc.setFont("helvetica", "normal");
-    doc.setFontSize(10);
+    doc.setFontSize(11);
     doc.text(nameLines, colName, y);
-    doc.text(String(it.qty), colQty, y, { align: "right" });
-    doc.text(ksh(it.total),  colAmt, y, { align: "right" });
+    
+    doc.setFont("helvetica", "bold");
+    doc.text(ksh(it.total), colAmt, y, { align: "right" });
     y += rowH;
   }
 
-  y += 1;
-  doc.setDrawColor(180);
+  y += 2;
+  doc.setDrawColor(203, 213, 225);
+  doc.setLineDashPattern([1, 1], 0);
   doc.line(M, y, PAGE_W - M, y);
-  y += 6;
+  doc.setLineDashPattern([], 0);
+  y += 8;
 
   // ── Total ──
-  ensureSpace(12);
+  ensureSpace(15);
   doc.setFont("helvetica", "bold");
-  doc.setFontSize(12);
+  doc.setFontSize(13);
+  doc.setTextColor(...darkSlate);
   doc.text("TOTAL", M, y);
-  doc.setFontSize(16);
+  
+  doc.setFontSize(18);
+  doc.setTextColor(...accentOrange); // 👈 Orange Accent
   doc.text(ksh(d.total), PAGE_W - M, y, { align: "right" });
-  y += 8;
+  y += 10;
 
   // ── Credit block ──
   if (d.isCredit) {
-    ensureSpace(20);
-    doc.setDrawColor(120);
-    doc.roundedRect(M, y, W, 16, 1.5, 1.5);
+    ensureSpace(25);
+    doc.setDrawColor(248, 113, 113); // red border
+    doc.setFillColor(254, 242, 242); // light red bg
+    doc.roundedRect(M, y, W, 18, 2, 2, "FD");
+    
+    doc.setTextColor(185, 28, 28); // red text
     doc.setFontSize(9);
-    doc.setTextColor(120);
-    doc.text("CREDIT SALE", M + 3, y + 4.5);
-    doc.setTextColor(20);
+    doc.text("CREDIT SALE", M + 4, y + 5);
+    
     doc.setFont("helvetica", "normal");
     doc.setFontSize(10);
-    doc.text("Paid upfront", M + 3, y + 10);
-    doc.text(ksh(d.amountPaid), PAGE_W - M - 3, y + 10, { align: "right" });
-    doc.text("Balance owed", M + 3, y + 14);
+    doc.setTextColor(...darkSlate);
+    doc.text("Paid upfront", M + 4, y + 11);
+    doc.text(ksh(d.amountPaid), PAGE_W - M - 4, y + 11, { align: "right" });
+    
     doc.setFont("helvetica", "bold");
-    doc.text(ksh(d.balanceOwed), PAGE_W - M - 3, y + 14, { align: "right" });
-    y += 20;
+    doc.text("Balance owed", M + 4, y + 16);
+    doc.text(ksh(d.balanceOwed), PAGE_W - M - 4, y + 16, { align: "right" });
+    y += 22;
   }
 
-  // ── Payment meta ──
+  // ── Payment Meta ──
   ensureSpace(30);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
-  doc.setTextColor(120);
-  doc.text("Payment", M, y);
-  doc.setTextColor(20);
-  doc.text(d.paymentMethod, PAGE_W - M, y, { align: "right" });
-  y += 5.5;
+  
+  const payRow = (label: string, value: string) => {
+    doc.setTextColor(...mutedSlate);
+    doc.text(label, M, y);
+    doc.setTextColor(...darkSlate);
+    doc.setFont("helvetica", "bold");
+    doc.text(value, PAGE_W - M, y, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    y += 6;
+  };
 
-  if (d.mpesaRef) {
-    doc.setTextColor(120); doc.text("M-Pesa ref", M, y);
-    doc.setTextColor(20);  doc.text(d.mpesaRef, PAGE_W - M, y, { align: "right" });
-    y += 5.5;
-  }
-  if (d.customerName) {
-    doc.setTextColor(120); doc.text("Customer", M, y);
-    doc.setTextColor(20);  doc.text(d.customerName, PAGE_W - M, y, { align: "right" });
-    y += 5.5;
-  }
-  if (d.customerPhone) {
-    doc.setTextColor(120); doc.text("Phone", M, y);
-    doc.setTextColor(20);  doc.text(d.customerPhone, PAGE_W - M, y, { align: "right" });
-    y += 5.5;
-  }
+  payRow("Payment", d.paymentMethod);
+  if (d.mpesaRef) payRow("M-Pesa Ref", d.mpesaRef);
+  if (d.customerName) payRow("Customer", d.customerName);
+  if (d.customerPhone) payRow("Phone", d.customerPhone);
   if (d.isQueued) {
     doc.setTextColor(180, 120, 0);
     doc.text("Status", M, y);
     doc.text("Pending sync", PAGE_W - M, y, { align: "right" });
-    y += 5.5;
+    y += 6;
   }
 
   // ── Footer ──
   y += 4;
-  doc.setDrawColor(180);
+  doc.setDrawColor(203, 213, 225);
+  doc.setLineDashPattern([1, 1], 0);
   doc.line(M, y, PAGE_W - M, y);
-  y += 6;
+  y += 8;
+  
   doc.setFont("helvetica", "italic");
   doc.setFontSize(10);
-  doc.setTextColor(80);
+  doc.setTextColor(...mutedSlate);
   const thanks = `Thank you for shopping at ${biz.businessName || "us"}!`;
   const thanksLines = doc.splitTextToSize(thanks, W) as string[];
   for (const line of thanksLines) {

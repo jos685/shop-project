@@ -1,15 +1,15 @@
-import { useCallback, useState } from "react";
+import { useCallback, useState, useMemo } from "react";
 import type { CartItem } from "../types/pos";
 import type { BusinessInfo } from "../lib/useBusinessInfo";
 import {
   buildReceiptData,
   receiptToPdf,
-  receiptToText,
   receiptToPrintHtml,
   type ReceiptData,
 } from "../lib/receipt";
 import ReceiptCard from "./ReceiptCard";
 import WhatsAppSendModal from "./WhatsAppSendModal";
+import { toPng } from "html-to-image";
 
 export default function ReceiptSuccessScreen({
   cart,
@@ -50,14 +50,11 @@ export default function ReceiptSuccessScreen({
   isMobile: boolean;
   onReset: () => void;
 }) {
-    const isCredit = payMethod === "credit";
+  const isCredit = payMethod === "credit";
   const ref = wasQueued
     ? "PENDING"
     : `${isCredit ? "CR" : "TXN"}-${savedBatchRef || "--------"}`;
 
-  // If this sale was backdated, the receipt shows the backdated date
-  // (not "now"). The date on the receipt is the customer's source of truth
-  // for when the sale actually happened.
   const receiptTimestamp = backdatedISO
     ? new Date(backdatedISO).toLocaleString("en-KE", {
         weekday: "short",
@@ -69,29 +66,80 @@ export default function ReceiptSuccessScreen({
       })
     : saleTimestamp;
 
-  const data: ReceiptData = buildReceiptData({
-    ref,
-    timestamp: receiptTimestamp,
-    sellerName: selectedAgentName || "—",
-    customerName,
-    customerPhone,
-    cart,
-    total: grandTotal,
-    payMethod,
-    mpesaRef,
-    initialPayment,
-    isQueued: wasQueued,
-    isBackdated,
-  });
+  const data: ReceiptData = useMemo(
+    () =>
+      buildReceiptData({
+        ref,
+        timestamp: receiptTimestamp,
+        sellerName: selectedAgentName || "—",
+        customerName,
+        customerPhone,
+        cart,
+        total: grandTotal,
+        payMethod,
+        mpesaRef,
+        initialPayment,
+        isQueued: wasQueued,
+        isBackdated,
+      }),
+    [
+      ref, receiptTimestamp, selectedAgentName, customerName, customerPhone, cart, grandTotal, payMethod, mpesaRef, initialPayment, wasQueued, isBackdated,
+    ]
+  );
 
-  const [waOpen, setWaOpen]     = useState(false);
-  const [busy, setBusy]         = useState<"pdf" | "print" | null>(null);
-  const [copied, setCopied]     = useState(false);
+  const [waOpen, setWaOpen] = useState(false);
+  const [busy, setBusy] = useState<"pdf" | "print" | "share" | null>(null);
   const [actionError, setError] = useState("");
+
+  // ── Helper to generate the perfect PNG image (for the Share button) ──
+  const generateImage = useCallback(async (): Promise<string> => {
+    let logoData: string | null = null;
+    const url = biz.logoUrl;
+    if (url && !/\.svg(\?|$)/i.test(url)) {
+      try {
+        const res = await fetch(url);
+        if (res.ok) {
+          const blob = await res.blob();
+          logoData = await new Promise<string>((resolve) => {
+            const r = new FileReader();
+            r.onloadend = () => resolve(String(r.result));
+            r.readAsDataURL(blob);
+          });
+        }
+      } catch {}
+    }
+
+    const html = receiptToPrintHtml(data, biz, logoData);
+    const iframe = document.createElement("iframe");
+    iframe.style.position = "fixed";
+    iframe.style.left = "-9999px";
+    iframe.style.width = "400px";
+    iframe.style.height = "1200px";
+    document.body.appendChild(iframe);
+
+    const doc = iframe.contentDocument || iframe.contentWindow?.document;
+    if (!doc) throw new Error("Could not create iframe");
+    doc.open();
+    doc.write(html);
+    doc.close();
+
+    await new Promise((resolve) => setTimeout(resolve, 500));
+
+    const dataUrl = await toPng(doc.body, {
+      pixelRatio: 2,
+      backgroundColor: "#ffffff",
+      width: 400,
+      height: doc.body.scrollHeight,
+    });
+
+    document.body.removeChild(iframe);
+    return dataUrl;
+  }, [data, biz]);
 
   // ── Download PDF ──────────────────────────────────────────────────
   const handlePdf = useCallback(async () => {
-    setBusy("pdf"); setError("");
+    setBusy("pdf");
+    setError("");
     try {
       await receiptToPdf(data, biz, { save: true });
     } catch (e: any) {
@@ -103,10 +151,9 @@ export default function ReceiptSuccessScreen({
 
   // ── Print (80mm iframe) ───────────────────────────────────────────
   const handlePrint = useCallback(async () => {
-    setBusy("print"); setError("");
+    setBusy("print");
+    setError("");
     try {
-      // Pull the logo as base64 for the print sheet (browsers handle plain URLs
-      // fine, but a same-origin blob avoids a race during the iframe print).
       let logoData: string | null = null;
       const url = biz.logoUrl;
       const isSvg = url ? /\.svg(\?|$)/i.test(url) : false;
@@ -125,11 +172,12 @@ export default function ReceiptSuccessScreen({
               r.readAsDataURL(blob);
             });
           }
-        } catch { logoData = null; }
+        } catch {
+          logoData = null;
+        }
       }
 
       const html = receiptToPrintHtml(data, biz, logoData);
-
       const iframe = document.createElement("iframe");
       iframe.style.position = "fixed";
       iframe.style.right = "0";
@@ -159,7 +207,6 @@ export default function ReceiptSuccessScreen({
         } catch {}
         cleanup();
       };
-      // give images (logo) a tick to decode
       setTimeout(fire, 350);
     } catch (e: any) {
       setError(e?.message || "Print failed.");
@@ -168,42 +215,42 @@ export default function ReceiptSuccessScreen({
     }
   }, [data, biz]);
 
-  // ── Share (Web Share API → clipboard fallback) ────────────────────
+  // ── Share (Generates PNG on click → Native share sheet) ───────────
   const handleShare = useCallback(async () => {
-    setError("");
-    const text = receiptToText(data, biz);
-    if (navigator.share) {
-      try {
-        await navigator.share({ title: `${biz.businessName || "Receipt"} · ${ref}`, text });
-        return;
-      } catch { /* user cancelled or unsupported */ }
-    }
+    setBusy("share");
     try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement("textarea");
-      ta.value = text;
-      document.body.appendChild(ta);
-      ta.select();
-      try { document.execCommand("copy"); } catch {}
-      document.body.removeChild(ta);
-    }
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2200);
-  }, [data, biz, ref]);
+      const dataUrl = await generateImage();
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
 
-    return (
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: `Receipt ${ref}` });
+      } else {
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = `receipt-${ref}.png`;
+        a.click();
+      }
+    } catch (e: any) {
+      console.error(e);
+    } finally {
+      setBusy(null);
+    }
+  }, [generateImage, ref]);
+
+  return (
     <div
       className="section"
       style={{
         display: "flex",
-        flexDirection: isMobile ? "column" : "row", //  Stack on mobile, side-by-side on desktop
+        flexDirection: isMobile ? "column" : "row",
         alignItems: "flex-start",
         justifyContent: "center",
         gap: isMobile ? 12 : 32,
         paddingTop: 2,
         width: "100%",
-        maxWidth: 1000, // 👈 Wider to accommodate both columns
+        maxWidth: 1000,
         margin: "0 auto",
         boxSizing: "border-box",
         paddingBottom: 40,
@@ -212,18 +259,18 @@ export default function ReceiptSuccessScreen({
       {/* ══════════════════ LEFT COLUMN: RECEIPT ══════════════════ */}
       <div
         style={{
-          flex: isMobile ? "unset" : 1, // Takes up remaining space on desktop
+          flex: isMobile ? "unset" : 1,
           width: "100%",
-          maxWidth: isMobile ? "100%" : 500, // Restrict receipt width so it doesn't get too wide
+          maxWidth: isMobile ? "100%" : 500,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 12,
         }}
       >
-        {/* ── Thin status strip — only when there's something to say ── */}
         {(wasQueued || isCredit) && (
           <div
+            data-capture-skip="true"
             style={{
               width: "100%",
               maxWidth: 420,
@@ -232,14 +279,8 @@ export default function ReceiptSuccessScreen({
               justifyContent: "center",
               gap: 8,
               padding: "8px 12px",
-              background: wasQueued
-                ? "rgba(251,191,36,0.10)"
-                : "rgba(248,113,113,0.08)",
-              border: `1px solid ${
-                wasQueued
-                  ? "rgba(251,191,36,0.35)"
-                  : "rgba(248,113,113,0.30)"
-              }`,
+              background: wasQueued ? "rgba(251,191,36,0.10)" : "rgba(248,113,113,0.08)",
+              border: `1px solid ${wasQueued ? "rgba(251,191,36,0.35)" : "rgba(248,113,113,0.30)"}`,
               borderRadius: 10,
               color: wasQueued ? "#fbbf24" : "#f87171",
               fontFamily: theme.font.mono,
@@ -255,32 +296,34 @@ export default function ReceiptSuccessScreen({
             ) : (
               (() => {
                 const paid = Math.min(Math.max(0, initialPayment), grandTotal);
-                return paid > 0
-                  ? <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
-                  : <>📝 Credit sale · {fmt(grandTotal)} balance due</>;
+                return paid > 0 ? (
+                  <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
+                ) : (
+                  <>📝 Credit sale · {fmt(grandTotal)} balance due</>
+                );
               })()
             )}
           </div>
         )}
 
-        {/* ── Receipt card ── */}
+        {/* Original UI Component */}
         <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} />
       </div>
 
       {/* ══════════════════ RIGHT COLUMN: ACTIONS ══════════════════ */}
       <div
+        data-capture-skip="true"
         style={{
-          width: isMobile ? "100%" : 340, // Fixed width for the action column on desktop
+          width: isMobile ? "100%" : 340,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",
           gap: 12,
-          position: isMobile ? "static" : "sticky", // Keeps actions visible if receipt is long
+          position: isMobile ? "static" : "sticky",
           top: 24,
           marginTop: isMobile ? 0 : 80,
         }}
       >
-        {/* ── Action error ── */}
         {actionError && (
           <div
             style={{
@@ -299,7 +342,6 @@ export default function ReceiptSuccessScreen({
           </div>
         )}
 
-        {/* ── Action bar: 2×2 grid ── */}
         <div
           style={{
             width: "100%",
@@ -342,17 +384,17 @@ export default function ReceiptSuccessScreen({
           />
           <ActionButton
             theme={theme}
-            icon={copied ? "✓" : "🔗"}
-            label={copied ? "Copied!" : "Share"}
-            shortLabel={copied ? "Copied" : "Share"}
+            icon={busy === "share" ? "⏳" : "🔗"}
+            label={busy === "share" ? "Preparing..." : "Share"}
+            shortLabel={busy === "share" ? "..." : "Share"}
             isMobile={isMobile}
+            loading={busy === "share"}
             onClick={handleShare}
             disabled={busy !== null}
-            accent={copied ? "#34d399" : "#fbbf24"}
+            accent="#fbbf24"
           />
         </div>
 
-        {/* ── New Sale ── */}
         <button
           onClick={onReset}
           style={{
@@ -372,7 +414,6 @@ export default function ReceiptSuccessScreen({
           + New Sale
         </button>
 
-        {/* ── Receipt-send status — subtle, below the actions ── */}
         {receiptStatus !== "idle" && (
           <div
             style={{
@@ -412,7 +453,6 @@ export default function ReceiptSuccessScreen({
         )}
       </div>
 
-      {/* ── WhatsApp modal ── */}
       <WhatsAppSendModal
         open={waOpen}
         onClose={() => setWaOpen(false)}
@@ -423,7 +463,6 @@ export default function ReceiptSuccessScreen({
       />
     </div>
   );
-
 }
 
 function fmt(n: number) {
@@ -451,7 +490,6 @@ function ActionButton({
   disabled?: boolean;
   accent: string;
 }) {
-  // Show short label on very tight grids (2×2 on small phones)
   const showShort = isMobile;
   return (
     <button
@@ -478,8 +516,12 @@ function ActionButton({
         WebkitTapHighlightColor: "transparent",
         overflow: "hidden",
       }}
-      onTouchStart={e => { if (!disabled) e.currentTarget.style.transform = "scale(0.97)"; }}
-      onTouchEnd={e => { e.currentTarget.style.transform = "scale(1)"; }}
+      onTouchStart={(e) => {
+        if (!disabled) e.currentTarget.style.transform = "scale(0.97)";
+      }}
+      onTouchEnd={(e) => {
+        e.currentTarget.style.transform = "scale(1)";
+      }}
     >
       <span style={{ fontSize: 18, lineHeight: 1 }}>
         {loading ? (
@@ -494,7 +536,9 @@ function ActionButton({
               animation: "spin 0.7s linear infinite",
             }}
           />
-        ) : icon}
+        ) : (
+          icon
+        )}
       </span>
       <span
         style={{

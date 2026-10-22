@@ -5,7 +5,9 @@ import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
 import { supabase, productImageUrl } from "../lib/supabase";
 import { getQueue, type QueuedSale } from "../lib/offlineQueue";
-
+import WhatsAppSendModal from "../components/WhatsAppSendModal";
+import { useBusinessInfo } from "../lib/useBusinessInfo";
+import type { ReceiptData } from "../lib/receipt";
 
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
@@ -168,6 +170,8 @@ export default function PosTransactionsPage() {
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [sellerFilter, setSellerFilter] = useState<string>("all");
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const businessInfo = useBusinessInfo(shop);
+  const [waModalData, setWaModalData] = useState<ReceiptData | null>(null);
   const [isMobile, setIsMobile]         = useState<boolean>(() =>
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
@@ -1238,6 +1242,39 @@ if (creditSaleIds.length > 0) {
   }
 }
 
+    const openWhatsAppModal = (group: SaleGroup) => {
+    const firstTx = group.items[0];
+    const isCredit = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
+    
+    const data: ReceiptData = {
+      ref: "TXN-" + (firstTx?.id.slice(0, 8).toUpperCase() || ""),
+      timestamp: new Date(group.created_at).toLocaleString("en-KE", { 
+        weekday: 'short', day: 'numeric', month: 'short', 
+        year: 'numeric', hour: '2-digit', minute: '2-digit' 
+      }),
+      sellerName: group.seller_name || "—",
+      customerName: "",
+      customerPhone: firstTx?.receipt_phone ?? firstTx?.customer_phone ?? "",
+      items: group.items.map(t => ({
+        name: t.product_name || "Item",
+        qty: t.quantity,
+        unitPrice: t.unit_price || (t.quantity ? t.amount / t.quantity : 0),
+        total: t.amount,
+        unlisted: !t.product_id,
+      })),
+      total: group.total,
+      paymentMethod: group.payment_method === "cash" ? "Cash" : group.payment_method === "mpesa" ? "M-Pesa" : group.payment_method === "split" ? "Split" : "Pay Later",
+      mpesaRef: firstTx?.mpesa_ref || "",
+      isCredit,
+      amountPaid: group.items.reduce((s, t) => s + (t.cash_amount || 0) + (t.mpesa_amount || 0), 0),
+      balanceOwed: 0,
+      isQueued: false,
+      isBackdated: false,
+    };
+    
+    setWaModalData(data);
+  };
+
   const methodBadge = (method: string, status?: string | null) => {
   if (status === "credit" || status === "credit_partial") return { icon: "📝", color: "#c084fc", label: "Credit" };
   if (method === "exchange") return { icon: "🔁", color: "#a78bfa", label: "Exchange" };
@@ -2271,91 +2308,73 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                                 );
                               })()}
 
-                              {/* Send Receipt — always available on group sales */}
-                              {(() => {
-                                const phone     = group.items[0].receipt_phone ?? group.items[0].customer_phone;
-                                const allSent   = group.items.every(t => t.receipt_sent === true);
-                                const anyFailed = group.items.some(t => t.receipt_sent === false);
-                                
-
-                                if (allSent && phone) {
-                                  return (
-                                    <div style={{
-                                      display: "flex", alignItems: "center", justifyContent: "space-between",
-                                      padding: "10px 14px", background: "rgba(52,211,153,0.06)",
-                                      border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10,
-                                    }}>
-                                      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                        <span>📱</span>
-                                        <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>
-                                          Sent to <strong>{phone}</strong>
-                                        </span>
-                                      </div>
-                                      <button
-                                        onClick={e => { e.stopPropagation(); setResendGroupModal(group); setResendGroupPhone(phone); }}
-                                        style={{
-                                          padding: "5px 14px", background: "rgba(52,211,153,0.12)",
-                                          border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8,
-                                          color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
-                                          cursor: "pointer",
-                                        }}>
-                                        Resend
-                                      </button>
-                                    </div>
-                                  );
-                                }
-
-                                return (
-                                  <button
-                                    onClick={e => { e.stopPropagation(); setResendGroupModal(group); setResendGroupPhone(phone ?? ""); }}
-                                    style={{
-                                      width: "100%", padding: "12px 16px",
-                                      background: anyFailed ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
-                                      border: `1px solid ${anyFailed ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
-                                      borderRadius: 10,
-                                      color: anyFailed ? "#fbbf24" : theme.accent.cyan,
-                                      fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
-                                      cursor: "pointer", display: "flex", alignItems: "center",
-                                      justifyContent: "center", gap: 8,
-                                    }}>
-                                    {anyFailed ? "📵 Retry Receipt" : `📄 Send Receipt (${group.items.length} items)`}
-                                  </button>
-                                );
-                              })()}
+                             {/* ── 2x2 Action Grid ── */}
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
                               
-
-                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) && (
-                                <>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); openReturnModal(group); }}
-                                  style={{
-                                    width: "100%", padding: "11px 16px",
-                                    background: "rgba(248,113,113,0.08)",
-                                    border: "1px solid rgba(248,113,113,0.3)",
-                                    borderRadius: 10, color: "#f87171",
-                                    fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center",
-                                    justifyContent: "center", gap: 6, marginBottom: 8,
-                                  }}
-                                >
-                                  ↩ {returnStatus === "partial" ? "Return More" : "Return Products"}
-                                </button>
+                              {/* 1. WhatsApp */}
                                 <button
-                                  onClick={e => { e.stopPropagation(); openReplaceModal(group); }}
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    openWhatsAppModal(group); 
+                                  }}
+                                style={{
+                                  padding: "12px 8px", background: "rgba(37,211,102,0.08)",
+                                  border: "1px solid rgba(37,211,102,0.3)", borderRadius: 10,
+                                  color: "#25D366", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                }}
+                              >
+                                📱 WhatsApp
+                              </button>
+
+                              {/* 2. SMS / Resend */}
+                                <button
+                                  onClick={(e) => { 
+                                    e.stopPropagation(); 
+                                    openWhatsAppModal(group); 
+                                  }}
+                                style={{
+                                  padding: "12px 8px", 
+                                  background: group.items.some(t => t.receipt_sent === false) ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
+                                  border: `1px solid ${group.items.some(t => t.receipt_sent === false) ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
+                                  borderRadius: 10, color: group.items.some(t => t.receipt_sent === false) ? "#fbbf24" : theme.accent.cyan,
+                                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                }}
+                              >
+                                {group.items.some(t => t.receipt_sent === false) ? "⚠️ Retry SMS" : "✉️ SMS Receipt"}
+                              </button>
+
+                              {/* 3. Return */}
+                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openReturnModal(group); }}
                                   style={{
-                                    width: "100%", padding: "11px 16px",
-                                    background: "rgba(167,139,250,0.08)",
-                                    border: "1px solid rgba(167,139,250,0.35)",
-                                    borderRadius: 10, color: "#a78bfa",
-                                    fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center",
-                                    justifyContent: "center", gap: 6,
+                                    padding: "12px 8px", background: "rgba(248,113,113,0.08)",
+                                    border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
+                                    color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
                                   }}
                                 >
-                                  🔁 Replace with another item
+                                  ↩ Return
                                 </button>
-                              </>
-                            )}
+                              ) : <div />}
+
+                              {/* 4. Replace */}
+                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openReplaceModal(group); }}
+                                  style={{
+                                    padding: "12px 8px", background: "rgba(167,139,250,0.08)",
+                                    border: "1px solid rgba(167,139,250,0.35)", borderRadius: 10,
+                                    color: "#a78bfa", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                  }}
+                                >
+                                  🔁 Replace
+                                </button>
+                              ) : <div />}
+                            </div>
                             </div>
                           )}
                         </div>
@@ -2479,64 +2498,67 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                                 </div>
                               );
                             })()}
-                            <div onClick={e => e.stopPropagation()}>
-                              {tx.receipt_sent === true ? (
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(52,211,153,0.06)", border: "1px solid rgba(52,211,153,0.2)", borderRadius: 10 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <span>📱</span>
-                                    <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: "#34d399" }}>Sent to <strong>{tx.receipt_phone ?? tx.customer_phone}</strong></span>
-                                  </div>
-                                  <button onClick={() => openResendModal(tx)} style={{ padding: "5px 14px", background: "rgba(52,211,153,0.12)", border: "1px solid rgba(52,211,153,0.3)", borderRadius: 8, color: "#34d399", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                                    Resend
-                                  </button>
-                                </div>
-                              ) : (
-                                <button
-                                  onClick={() => openResendModal(tx)}
-                                  style={{ width: "100%", padding: "12px 16px", background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)", border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`, borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                                  {tx.receipt_sent === false ? "📵 Retry Receipt" : "📄 Send Receipt"}
-                                </button>
-                              )}
-                            </div>
-                            {!phone && (
+                            {/* ── 2x2 Action Grid ── */}
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
+                              
+                              {/* 1. WhatsApp */}
                               <button
-                                onClick={e => { e.stopPropagation(); openResendModal(tx); }}
-                                style={{ width: "100%", padding: "12px 16px", background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 10, color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 12, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
-                                📄 Send Receipt (enter number)
+                                onClick={(e) => { e.stopPropagation(); openWhatsAppModal(group) }}
+                                style={{
+                                  padding: "12px 8px", background: "rgba(37,211,102,0.08)",
+                                  border: "1px solid rgba(37,211,102,0.3)", borderRadius: 10,
+                                  color: "#25D366", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                }}
+                              >
+                                📱 WhatsApp Receipt
                               </button>
-                            )}
-                            {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) && (
-                              <>
+
+                              {/* 2. SMS / Resend */}
+                              <button
+                                onClick={(e) => { e.stopPropagation(); openResendModal(tx); }}
+                                style={{
+                                  padding: "12px 8px", 
+                                  background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
+                                  border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
+                                  borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan,
+                                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                }}
+                              >
+                                {tx.receipt_sent === false ? "⚠️ Retry SMS" : "✉️ SMS Receipt"}
+                              </button>
+
+                              {/* 3. Return */}
+                              {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) ? (
                                 <button
-                                  onClick={e => { e.stopPropagation(); openReturnModal(group); }}
-                                    style={{
-                                      width: "100%", padding: "11px 16px",
-                                      background: "rgba(248,113,113,0.08)",
-                                      border: "1px solid rgba(248,113,113,0.3)",
-                                      borderRadius: 10, color: "#f87171",
-                                      fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                      cursor: "pointer", display: "flex", alignItems: "center",
-                                      justifyContent: "center", gap: 6, marginBottom: 8,
-                                    }}
-                                  >
-                                    ↩ {returnStatus === "partial" ? "Return More" : "Return Product"}
-                                  </button>
-                                  <button
-                                    onClick={e => { e.stopPropagation(); openReplaceModal(group); }}
-                                    style={{
-                                      width: "100%", padding: "11px 16px",
-                                      background: "rgba(167,139,250,0.08)",
-                                      border: "1px solid rgba(167,139,250,0.35)",
-                                      borderRadius: 10, color: "#a78bfa",
-                                      fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                      cursor: "pointer", display: "flex", alignItems: "center",
-                                      justifyContent: "center", gap: 6,
-                                    }}
-                                  >
-                                    🔁 Replace with another item
-                                  </button>
-                                </>
-                              )}
+                                  onClick={(e) => { e.stopPropagation(); openReturnModal(group); }}
+                                  style={{
+                                    padding: "12px 8px", background: "rgba(248,113,113,0.08)",
+                                    border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
+                                    color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                  }}
+                                >
+                                  ↩ Return
+                                </button>
+                              ) : <div />}
+
+                              {/* 4. Replace */}
+                              {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) ? (
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); openReplaceModal(group); }}
+                                  style={{
+                                    padding: "12px 8px", background: "rgba(167,139,250,0.08)",
+                                    border: "1px solid rgba(167,139,250,0.35)", borderRadius: 10,
+                                    color: "#a78bfa", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
+                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
+                                  }}
+                                >
+                                  🔁 Replace
+                                </button>
+                              ) : <div />}
+                            </div>
                           </div>
                         )}
                       </div>
@@ -3704,6 +3726,18 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
     </div>
   </div>
 )} 
+
+      {/* ── WhatsApp Modal ── */}
+      {waModalData && (
+        <WhatsAppSendModal
+          open={!!waModalData}
+          onClose={() => setWaModalData(null)}
+          data={waModalData}
+          biz={businessInfo}
+          theme={theme}
+          isMobile={isMobile}
+        />
+      )}
   </div>
   );
 }

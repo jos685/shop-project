@@ -79,6 +79,8 @@ function EditableNumber({
     if (v !== value) onCommit(v);
   };
 
+  
+
   return (
     <input
       type="text"
@@ -1500,6 +1502,7 @@ function AuthModal({
   processing,
   grandTotal,
   error,
+  setError,
   // Add payment props:
   payMethod, setPayMethod,
   cashAmount, setCashAmount,
@@ -1782,32 +1785,51 @@ function AuthModal({
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 6 }}>
                       Who is selling?
                     </div>
+
+                    {error && (
+                      <div style={{ color: theme.accent.red, fontSize: 12, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 10, padding: "10px 12px", marginBottom: 10 }}>
+                        ⚠ {error}
+                      </div>
+                    )}
+
                     {shopAgents.length === 0 ? (
                       <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, padding: 14, textAlign: "center" }}>
                         No agents assigned to this shop yet.
                       </div>
                     ) : (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
-                        {shopAgents.map((sa: any) => (
+                                                {shopAgents.map((sa: any) => (
                           <button
                             key={sa.id}
                             onClick={() => {
+                              // 1. Check for payment method
                               if (!payMethod) {
-                                setPayMethod("cash");
+                                setError("Please select a payment method first.");
+                                return;
                               }
+                              
+                              // 2. Check for credit customer name
                               if (payMethod === "credit" && !customerName.trim()) {
+                                setError("Enter the customer's name before selecting an agent.");
                                 const el = document.getElementById("credit-customer-name") as HTMLInputElement | null;
                                 el?.scrollIntoView({ behavior: "smooth", block: "center" });
                                 setTimeout(() => el?.focus(), 250);
                                 return;
                               }
-                              setSelectedAgent(sa); setPin(""); setPinError("");
+                              
+                              // 3. Clear error and proceed
+                              setError("");
+                              setSelectedAgent(sa); 
+                              setPin(""); 
+                              setPinError("");
                             }}
                             style={{
                               padding: "12px 8px",
                               border: `1px solid ${theme.border.default}`,
-                              borderRadius: 12, background: "transparent",
-                              cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+                              borderRadius: 12, 
+                              background: "transparent",
+                              cursor: "pointer", // 👈 Always clickable
+                              display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
                               color: theme.text.primary,
                             }}
                           >
@@ -3204,7 +3226,8 @@ const handleDesktopCharge = useCallback(() => {
       if (pinLockRef.current) { clearInterval(pinLockRef.current); pinLockRef.current = null; }
     };
 
-    const goBack = () => {
+
+     const goBack = () => {
       setError("");
       if (step === "verify") {
         setStep("scan");
@@ -3454,41 +3477,42 @@ const renderScanStep = () => (
 
   return (
     <button key={alloc.id} onClick={() => handleProductTap(alloc)}
-      style={{
-        padding: "8px 10px",
-        border: `${isCritical || isOOS ? 1.5 : 1}px solid ${borderColor}`,
-        borderRadius: 11,
-        background: bgColor,
-        cursor: "pointer",
-        display: "flex", alignItems: "center", gap: 10, textAlign: "left",
-        transition: "border-color 0.15s",
-        opacity: isOOS ? 0.65 : 1,
-      }}
-      onMouseEnter={e => (e.currentTarget.style.borderColor = isCritical || isOOS ? "rgba(248,113,113,0.95)" : "rgba(6,182,212,0.3)")}
-      onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}>
-      <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{
-          fontSize: 13, fontWeight: 600,
-          color: isOOS ? theme.text.muted : theme.text.primary,
-          marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-          textDecoration: isOOS ? "line-through" : "none",
-        }}>{alloc.product.name}</div>
-        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
-        <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
-          <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
-        </div>
+  style={{
+    padding: "8px 10px",
+    border: `${isCritical || isOOS ? 1.5 : 1}px solid ${borderColor}`,
+    borderRadius: 11,
+    background: bgColor,
+    cursor: "pointer",
+    display: "flex", alignItems: "center", gap: 10, textAlign: "left",
+    transition: "border-color 0.15s",
+    opacity: isOOS ? 0.65 : 1,
+    width: "100%",          // 👈 Add this
+    boxSizing: "border-box",// 👈 Add this
+    overflow: "hidden",     // 👈 Add this
+  }}
+  onMouseEnter={e => (e.currentTarget.style.borderColor = isCritical || isOOS ? "rgba(248,113,113,0.95)" : "rgba(6,182,212,0.3)")}
+  onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}>
+  <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
+  <div style={{ flex: 1, minWidth: 0 }}>
+    <div style={{ fontSize: 13, fontWeight: 600, color: isOOS ? theme.text.muted : theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isOOS ? "line-through" : "none" }}>{alloc.product.name}</div>
+    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+    <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
+      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
+    </div>
+  </div>
+  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
+    {/* 👈 Added flexShrink, whitespace, and maxWidth to the stock badge */}
+    <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 46, flexShrink: 0 }}>
+      <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1, whiteSpace: "nowrap" }}>{alloc.remaining}</div>
+      <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: "100%" }}>{alloc.product.unit}</div>
+    </div>
+    {/* Badges remain the same below */}
+    {isOOS && (
+      <div style={{ fontSize: 8, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.45)", borderRadius: 5, padding: "1px 6px", letterSpacing: "0.04em", whiteSpace: "nowrap" }}>
+        OUT
       </div>
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 3, flexShrink: 0 }}>
-        <div style={{ background: `${sc}18`, border: `1px solid ${sc}40`, borderRadius: 8, padding: "4px 8px", textAlign: "center", minWidth: 40 }}>
-          <div style={{ fontSize: 14, fontFamily: theme.font.mono, fontWeight: 800, color: sc, lineHeight: 1 }}>{alloc.remaining}</div>
-          <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: sc, opacity: 0.8, marginTop: 1 }}>{alloc.product.unit}</div>
-        </div>
-        {isOOS && (
-          <div style={{ fontSize: 8, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.45)", borderRadius: 5, padding: "1px 6px", letterSpacing: "0.04em" }}>
-            OUT
-          </div>
-        )}
+    )}
+    
         {isCritical && (
           <div style={{ fontSize: 8, fontFamily: theme.font.mono, fontWeight: 800, color: "#f87171", background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.45)", borderRadius: 5, padding: "1px 6px", letterSpacing: "0.04em" }}>
             LOW
@@ -3884,44 +3908,42 @@ const renderVerifyStep = () => (
 ))}
       
 
-
       {/* ══════════════════ STEP 4: SUCCESS ══════════════════ */}
       {step === "success" && (
-  <div style={{
-    height: "calc(100dvh - 58px)",
-    overflowY: "auto",
-    display: "flex",
-    flexDirection: "column",
-    justifyContent: "center",
-    alignItems: "flex-start",
-    padding: "24px 20px",
-    paddingTop: "40px",
-    
-  }}>
-    <ReceiptSuccessScreen
-      cart={cart}
-      grandTotal={grandTotal}
-      payMethod={payMethod}
-      selectedAgentName={selectedAgent?.name ?? ""}
-      customerName={customerName}
-      customerPhone={customerPhone}
-      mpesaRef={mpesaRef}
-      initialPayment={Number(initialPayment) || 0}
-      savedBatchRef={savedBatchRef}
-      saleTimestamp={saleTimestamp}
-      wasQueued={wasQueued}
-      isBackdated={backdate}
-      backdatedISO={backdate ? backdateISO : null}
-      receiptStatus={receiptStatus}
-      biz={businessInfo}
-      theme={theme}
-      isMobile={isMobile}
-      onReset={handleReset}
-    />
-  </div>
-)}
-  
-    
+        <div style={{
+          height: "calc(100dvh - 58px)",
+          overflowY: "auto",
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "flex-start",
+          alignItems: "center",
+          padding: "24px 20px",
+          paddingTop: "40px",
+          paddingBottom: "40px",
+        }}>
+          <ReceiptSuccessScreen
+            cart={cart}
+            grandTotal={grandTotal}
+            payMethod={payMethod}
+            selectedAgentName={selectedAgent?.name ?? ""}
+            customerName={customerName}
+            customerPhone={customerPhone}
+            mpesaRef={mpesaRef}
+            initialPayment={Number(initialPayment) || 0}
+            savedBatchRef={savedBatchRef}
+            saleTimestamp={saleTimestamp}
+            wasQueued={wasQueued}
+            isBackdated={backdate}
+            backdatedISO={backdate ? backdateISO : null}
+            receiptStatus={receiptStatus}
+            biz={businessInfo}
+            theme={theme}
+            isMobile={isMobile}
+            onReset={handleReset}
+          />
+        </div>
+      )}
+      
             {/* ══════════════════ ADD-TO-CART OVERLAY ══════════════════ */}
       {addingProduct && (() => {
         const adding = addingProduct;   // narrowed to LocalAlloc
@@ -4756,6 +4778,7 @@ const renderVerifyStep = () => (
           processing={processing}
           grandTotal={grandTotal}
           error={error}
+          setError={setError}
           
           // New props for the checkout flow:
           payMethod={payMethod} setPayMethod={setPayMethod}

@@ -88,8 +88,6 @@ export default function WhatsAppSendModal({
         backdropFilter: "blur(4px)",
         WebkitBackdropFilter: "blur(4px)",
         display: "flex",
-        // Vertically centered at every breakpoint — the modal appears in the
-        // middle of the viewport, not stuck to the bottom on phones.
         alignItems: "center",
         justifyContent: "center",
         padding: 16,
