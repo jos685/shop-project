@@ -216,55 +216,74 @@ export default function ReceiptSuccessScreen({
     }
   }, [data, biz]);
 
-    // ── Share (Web Share API → clipboard fallback) ────────────────────
-     // ── Share (Image → Text → Clipboard) ────────────────────
+    // ── Share (Image → Download Image + Copy Text) ────────────────────
   const handleShare = useCallback(async () => {
     setError("");
     setBusy("share");
     
+    let text = "";
     try {
-      // 1. Try to generate the receipt image
-      const dataUrl = await generateImage();
-      
-      // Convert the dataURL into a File object for the native share API
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
-      const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
+      text = receiptToText(data, biz);
+    } catch (e) {
+      console.error("Failed to generate receipt text:", e);
+    }
 
-      // 2. Try sharing the image (Supported on iOS/Android and some desktops)
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        try {
-          await navigator.share({
-            files: [file],
-            title: `${biz.businessName || "Receipt"} · ${ref}`,
-            text: `Receipt from ${biz.businessName}`,
-          });
-          return; // Success!
-        } catch (err: any) {
-          if (err.name === "AbortError") return; // User cancelled the share dialog
-          console.warn("Image share failed, falling back to text:", err);
+    // 1. Try to generate and share the image natively (Works on Mobile)
+    if (navigator.share && navigator.canShare) {
+      try {
+        const dataUrl = await generateImage();
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
+
+        if (navigator.canShare({ files: [file] })) {
+          try {
+            await navigator.share({
+              files: [file],
+              title: `${biz.businessName || "Receipt"} · ${ref}`,
+              text: `Receipt from ${biz.businessName}`,
+            });
+            setBusy(null);
+            return; // Success! Image shared natively.
+          } catch (err: any) {
+            if (err.name === "AbortError") { setBusy(null); return; } // User cancelled
+            console.warn("Native image share failed:", err);
+          }
         }
-      }
 
-      // 3. Fallback: Try sharing just the text
-      const text = receiptToText(data, biz);
-      if (navigator.share) {
-        try {
-          const sharePromise = navigator.share({ title: `Receipt · ${ref}`, text });
-          // Timeout if the OS hangs
-          const timeoutPromise = new Promise((_, reject) =>
-            setTimeout(() => reject(new Error("Timeout")), 2000)
-          );
-          await Promise.race([sharePromise, timeoutPromise]);
-          return; // Success!
-        } catch (err: any) {
-          if (err.name === "AbortError") return;
-          console.warn("Text share failed, falling back to clipboard:", err);
-        }
+        // 2. DESKTOP FALLBACK: If it can't share the file natively, download the PNG!
+        const a = document.createElement("a");
+        a.href = dataUrl;
+        a.download = `receipt-${ref}.png`;
+        a.click();
+        
+        // Notify user that the image was downloaded
+        setError("Image downloaded! Copying text to clipboard...");
+        
+      } catch (imgErr) {
+        // If toPng completely fails (e.g., CORS issue with logo), just log it
+        console.warn("Image generation failed:", imgErr);
       }
+    }
 
-      // 4. Fallback: Copy to Clipboard
-      let copySuccess = false;
+    // 3. Text Fallback (Share text or copy to clipboard)
+    // ... (Rest of the text and clipboard fallback logic)
+    if (navigator.share && text) {
+      try {
+        const sharePromise = navigator.share({ title: `Receipt · ${ref}`, text });
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Timeout")), 2000)
+        );
+        await Promise.race([sharePromise, timeoutPromise]);
+        setBusy(null);
+        return; 
+      } catch (err: any) {
+        if (err.name === "AbortError") { setBusy(null); return; }
+      }
+    }
+
+    let copySuccess = false;
+    if (text) {
       if (navigator.clipboard && window.isSecureContext) {
         try {
           await navigator.clipboard.writeText(text);
@@ -289,18 +308,16 @@ export default function ReceiptSuccessScreen({
           console.error("Legacy copy failed:", err);
         }
       }
+    }
 
-      if (copySuccess) {
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2200);
-      } else {
-        setError("Could not share or copy receipt. Please try downloading the PDF instead.");
-      }
-    } catch (e) {
-      console.error("Share failed:", e);
-      setError("Failed to prepare receipt for sharing.");
-    } finally {
-      setBusy(null);
+    setBusy(null);
+    if (copySuccess) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2200);
+      // If we downloaded the image earlier, clear that error after a few seconds
+      setTimeout(() => setError(""), 4000); 
+    } else if (!copySuccess && !navigator.share) {
+      setError("Could not share. Please download the PDF instead.");
     }
   }, [data, biz, ref, generateImage]);
 
