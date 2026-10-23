@@ -38,7 +38,11 @@ interface StockItem {
   id: string;
   allocated: number;
   remaining: number;
-  product: { id: string; name: string; sku: string; price: number; unit: string; image_url?: string | null };
+  product: { 
+    id: string; name: string; sku: string; price: number; unit: string; image_url?: string | null;
+    batch_label?: string | null;   
+    expiry_date?: string | null;    
+  };
 }
 
 interface ShopAgent {
@@ -310,6 +314,18 @@ function InvoiceProductPicker({
   );
 }
 
+const getExpiryInfo = (dateStr: string | null | undefined) => {
+  if (!dateStr) return null;
+  const now = new Date(); now.setHours(0,0,0,0);
+  const d = new Date(dateStr); d.setHours(0,0,0,0);
+  const days = Math.round((d.getTime() - now.getTime()) / 86400000);
+  
+  if (days < 0)   return { label: "EXPIRED", color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.3)" };
+  if (days <= 30) return { label: `${days}d left`, color: "#fb923c", bg: "rgba(251,146,60,0.15)", border: "rgba(251,146,60,0.3)" };
+  if (days <= 90) return { label: `${days}d left`, color: "#fbbf24", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.3)" };
+  return null;
+};
+
 export default function PosShopInfo() {
   const { shop } = useShopAuth();
   const { theme, isDark } = useTheme();
@@ -318,6 +334,8 @@ export default function PosShopInfo() {
   const width = useWindowWidth();
   const isMobile = width < 640;
   const isWide   = width >= 1024; 
+
+    const [expiryTracking, setExpiryTracking] = useState(false);
 
   // ── Per-product tab: breakdown (transactions) | log (activity) ──
     const [activeTab,   setActiveTab]   = useState<Record<string, "tx" | "log">>({});
@@ -540,14 +558,17 @@ const addCustomItem = () => {
     if (!navigator.onLine) { setIsOfflineData(true); setLoading(false); return; }
     setLoading(true);
     try {
-      const [allocRes, shopAgentsRaw] = await Promise.all([
+       const [allocRes, shopAgentsRaw, profileRes] = await Promise.all([
         supabase.from("shop_allocations")
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
         supabase.from("shop_agents")
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
+        supabase.from("profiles").select("enable_expiry_tracking").eq("id", shop.owner_id).single(), 
       ]);
+      
+      setExpiryTracking(!!(profileRes.data as any)?.enable_expiry_tracking); 
 
       if (allocRes.error) console.error("shop_allocations error:", allocRes.error.message);
 
@@ -556,7 +577,7 @@ const addCustomItem = () => {
       if (productIds.length > 0) {
         const { data: prodsData, error: prodsError } = await supabase
           .from("products")
-          .select("id, name, sku, price, unit, image_url")
+          .select("id, name, sku, price, unit, image_url, batch_label, expiry_date") 
           .in("id", productIds);
         if (prodsError) console.error("products fetch error:", prodsError.message);
         for (const p of prodsData || []) productsMap[p.id] = p;
@@ -600,6 +621,8 @@ const addCustomItem = () => {
             price:     Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
             unit:      productsMap[a.product_id]?.unit      || a.product_unit  || "",
             image_url: productImageUrl(productsMap[a.product_id]?.image_url),
+            batch_label: productsMap[a.product_id]?.batch_label || null, // 👈 Add
+            expiry_date: productsMap[a.product_id]?.expiry_date || null,
           },
         }));
 
@@ -1474,12 +1497,30 @@ const handleShareInvoice = async () => {
                   />
                 )}
               </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3 }}>{item.product.name}</div>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {item.product.sku} · {item.product.unit}
+
+                <div style={{ minWidth: 0 }}>
+                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {item.product.name}
+                  {expiryTracking && item.product.batch_label && (
+                    <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+                      {item.product.batch_label}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <span>{item.product.sku} · {item.product.unit}</span>
+                  {expiryTracking && (() => {
+                    const exp = getExpiryInfo(item.product.expiry_date);
+                    if (!exp) return null;
+                    return (
+                      <span style={{ color: exp.color, background: exp.bg, padding: "1px 5px", borderRadius: 4, border: `1px solid ${exp.border}`, fontWeight: 700 }}>
+                        ⏰ {exp.label}
+                      </span>
+                    );
+                  })()}
                 </div>
               </div>
+
             </div>
             <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
               <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>

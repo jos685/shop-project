@@ -182,6 +182,8 @@ function useWindowWidth() {
 interface LocalProduct {
   id: string; name: string; sku: string; price: number; unit: string;
   image_url: string | null;
+   batch_label?: string | null; 
+  expiry_date?: string | null;   
 }
 interface LocalAlloc {
   id: string; allocated: number; remaining: number; product_id: string; product: LocalProduct;
@@ -1856,6 +1858,19 @@ function AuthModal({
   );
 }
 
+// Helper to calculate days left for expiry
+const getExpiryInfo = (dateStr: string | null | undefined) => {
+  if (!dateStr) return null;
+  const now = new Date(); now.setHours(0,0,0,0);
+  const d = new Date(dateStr); d.setHours(0,0,0,0);
+  const days = Math.round((d.getTime() - now.getTime()) / 86400000);
+  
+  if (days < 0)   return { label: "EXPIRED", color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.3)" };
+  if (days <= 30) return { label: `${days}d left`, color: "#fb923c", bg: "rgba(251,146,60,0.15)", border: "rgba(251,146,60,0.3)" };
+  if (days <= 90) return { label: `${days}d left`, color: "#fbbf24", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.3)" };
+  return null; // Safe
+};
+
 
   
 export default function PosScan() {
@@ -1865,7 +1880,8 @@ export default function PosScan() {
   const { isOnline, pendingCount, refreshPendingCount } = useNetwork();
   const navigate  = useNavigate();
   const width     = useWindowWidth();
-  const location  = useLocation();          // ← moved up, before any use of `location`
+  const location  = useLocation();    
+  const [expiryTracking, setExpiryTracking] = useState(false);
 
   // ── Backdate mode (set by the "Past Sale" button on PosTransactionsPage) ──
   const [backdate, setBackdate] = useState<boolean>(() => !!location.state?.backdate);
@@ -2191,7 +2207,7 @@ const editUnlistedItem = (key: string) => {
           .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
           .eq("shop_id", shop.id),
         supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
-        supabase.from("profiles").select("business_name").eq("id", shop.owner_id).single(),
+        supabase.from("profiles").select("business_name, enable_expiry_tracking").eq("id", shop.owner_id).single(), 
         supabase.from("shop_custom_items")
         .select("id, shop_id, name, unit, default_price, category, active")
         .eq("shop_id", shop.id).eq("active", true)
@@ -2203,6 +2219,7 @@ const editUnlistedItem = (key: string) => {
 
       const commission = (commRes.data as any)?.[0] ?? { enabled: false, rate: 0 };
       const bizName    = (profileRes.data as any)?.business_name ?? shop.name;
+      setExpiryTracking(!!(profileRes.data as any)?.enable_expiry_tracking);
 
       const agents = (agentsRes.data || []).map((r: any) => ({
         id: r.id, pin: r.pin, active: r.active, agent_id: r.agent_id,
@@ -2213,7 +2230,7 @@ const editUnlistedItem = (key: string) => {
       let productsMap: Record<string, any> = {};
       if (productIds.length > 0) {
         const { data: prodsData } = await supabase
-          .from("products").select("id, name, sku, price, unit, image_url").in("id", productIds);
+          .from("products").select("id, name, sku, price, unit, image_url, batch_label, expiry_date").in("id", productIds); 
         for (const p of prodsData || []) productsMap[p.id] = p;
       }
 
@@ -2232,6 +2249,8 @@ const editUnlistedItem = (key: string) => {
               price: Number(p.price ?? a.product_price ?? 0),
               unit:  p.unit  || a.product_unit  || "",
               image_url: p.image_url ? productImageUrl(p.image_url) : null,
+              batch_label: p.batch_label || null,  
+              expiry_date: p.expiry_date || null, 
             },
           };
         });
@@ -2417,6 +2436,8 @@ const refreshProducts = useCallback(async () => {
             price: Number(p.price ?? a.product_price ?? 0),
             unit:  p.unit  || a.product_unit  || "",
             image_url: p.image_url ? productImageUrl(p.image_url) : null,
+            batch_label: p.batch_label || null,  
+            expiry_date: p.expiry_date || null, 
           },
         };
       });
@@ -3495,7 +3516,25 @@ const renderScanStep = () => (
   <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
   <div style={{ flex: 1, minWidth: 0 }}>
     <div style={{ fontSize: 13, fontWeight: 600, color: isOOS ? theme.text.muted : theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isOOS ? "line-through" : "none" }}>{alloc.product.name}</div>
-    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{alloc.product.sku} · {fmt(alloc.product.price)}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
+      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {alloc.product.sku} · {fmt(alloc.product.price)}
+      </div>
+      {expiryTracking && alloc.product.batch_label && (
+        <div style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+          {alloc.product.batch_label}
+        </div>
+      )}
+      {expiryTracking && (() => {
+        const exp = getExpiryInfo(alloc.product.expiry_date);
+        if (!exp) return null;
+        return (
+          <div style={{ fontSize: 9, fontFamily: theme.font.mono, background: exp.bg, color: exp.color, padding: "1px 5px", borderRadius: 4, border: `1px solid ${exp.border}`, fontWeight: 700 }}>
+            ⏰ {exp.label}
+          </div>
+        );
+      })()}
+    </div>
     <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 2, height: 2 }}>
       <div style={{ width: `${pct}%`, height: "100%", borderRadius: 2, background: sc }} />
     </div>
@@ -3971,10 +4010,26 @@ const renderVerifyStep = () => (
                   productName={adding.product.name}
                   size={48}
                 />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{adding.product.name}</div>
-                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                    {adding.product.sku} · {fmt(adding.product.price)} · {adding.remaining} left
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                    {adding.product.name}
+                    {expiryTracking && adding.product.batch_label && (
+                      <span style={{ fontSize: 10, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 6px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+                        {adding.product.batch_label}
+                      </span>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span>{adding.product.sku} · {fmt(adding.product.price)} · {adding.remaining} left</span>
+                    {expiryTracking && (() => {
+                      const exp = getExpiryInfo(adding.product.expiry_date);
+                      if (!exp) return null;
+                      return (
+                        <span style={{ color: exp.color, background: exp.bg, padding: "1px 6px", borderRadius: 4, border: `1px solid ${exp.border}`, fontWeight: 700 }}>
+                          ⏰ {exp.label}
+                        </span>
+                      );
+                    })()}
                   </div>
                 </div>
                 {alreadyInCart && (

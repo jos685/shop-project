@@ -39,6 +39,7 @@ interface LocalTransaction {
   commission_rate: number | null;
   commission_earned: number | null;
   credit_sale_id: string | null;
+  batch_label: string | null;
 }
 
 interface SaleGroup {
@@ -232,15 +233,20 @@ export default function PosTransactionsPage() {
   const productMapRef = useRef<Record<string, { name: string; sku: string }>>({});
   const sellerMapRef  = useRef<Record<string, { name: string; code: string }>>({});
 
-  // ── Fetch business name once ──────────────────────────────────────────
+    // ── Fetch business name + expiry setting ─────────────────────────────
+  const [expiryTracking, setExpiryTracking] = useState(false);
+
   useEffect(() => {
     if (!shop?.owner_id) return;
     supabase
       .from("profiles")
-      .select("business_name")
+      .select("business_name, enable_expiry_tracking")
       .eq("id", shop.owner_id)
       .single()
-      .then(({ data }) => { if (data?.business_name) setBusinessName(data.business_name); });
+      .then(({ data }) => { 
+        if (data?.business_name) setBusinessName(data.business_name); 
+        if (data?.enable_expiry_tracking) setExpiryTracking(true);
+      });
   }, [shop?.owner_id]);
 
   // ── Fetch returns for loaded transactions (SECURITY DEFINER — bypasses RLS) ──
@@ -875,7 +881,7 @@ if (creditSaleIds.length > 0) {
 
   const enrichRows = useCallback(async (
     txData: any[],
-    existingProductMap: Record<string, { name: string; sku: string; image_url?: string | null }>,
+    existingProductMap: Record<string, { name: string; sku: string; image_url?: string | null; batch_label?: string | null }>,
     existingSellerMap: Record<string, { name: string; code: string }>,
   ): Promise<LocalTransaction[]> => {
     if (!shop) return [];
@@ -883,13 +889,18 @@ if (creditSaleIds.length > 0) {
     const newProductIds = [...new Set(txData.map((t: any) => t.product_id).filter((id: string) => id && !existingProductMap[id]))];
     const newAgentIds   = [...new Set(txData.map((t: any) => t.seller_agent_id).filter((id: string) => id && !existingSellerMap[id]))];
 
-    if (newProductIds.length > 0) {
+        if (newProductIds.length > 0) {
       const { data: prodsData } = await supabase
         .from("products")
-        .select("id, name, sku, image_url")
+        .select("id, name, sku, image_url, batch_label") 
         .in("id", newProductIds);
       for (const p of prodsData ?? []) {
-        existingProductMap[p.id] = { name: p.name, sku: p.sku ?? "", image_url: productImageUrl(p.image_url) };
+        existingProductMap[p.id] = { 
+          name: p.name, 
+          sku: p.sku ?? "", 
+          image_url: productImageUrl(p.image_url),
+          batch_label: p.batch_label 
+        };
       }
     }
 
@@ -951,6 +962,7 @@ if (creditSaleIds.length > 0) {
         commission_rate:   t.commission_rate ?? null,
         commission_earned: t.commission_earned ?? null,
         credit_sale_id:    t.credit_sale_id ?? null,
+        batch_label:       resolved?.batch_label ?? null,
       };
     });
   }, [shop]);
@@ -2249,8 +2261,15 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                                         onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
                                     )}
                                   </div>
-                                  <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
+                                                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                    <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                                      {tx.product_name ?? "—"}
+                                      {expiryTracking && tx.batch_label && (
+                                        <span style={{ fontSize: 8, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 4px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+                                          {tx.batch_label}
+                                        </span>
+                                      )}
+                                    </div>
                                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}/unit</div>
                                     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
                                   </div>
@@ -2397,7 +2416,14 @@ const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
                             )}
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{tx.product_name ?? "—"}</div>
+                            <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
+                              {tx.product_name ?? "—"}
+                              {expiryTracking && tx.batch_label && (
+                                <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+                                  {tx.batch_label}
+                                </span>
+                              )}
+                            </div>
                             <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.seller_name} · {new Date(tx.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
                             <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 2 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
                             {(tx.status === "credit_partial" || tx.status === "credit") && (
