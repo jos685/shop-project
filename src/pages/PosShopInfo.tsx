@@ -320,10 +320,11 @@ const getExpiryInfo = (dateStr: string | null | undefined) => {
   const d = new Date(dateStr); d.setHours(0,0,0,0);
   const days = Math.round((d.getTime() - now.getTime()) / 86400000);
   
-  if (days < 0)   return { label: "EXPIRED", color: "#f87171", bg: "rgba(248,113,113,0.15)", border: "rgba(248,113,113,0.3)" };
-  if (days <= 30) return { label: `${days}d left`, color: "#fb923c", bg: "rgba(251,146,60,0.15)", border: "rgba(251,146,60,0.3)" };
-  if (days <= 90) return { label: `${days}d left`, color: "#fbbf24", bg: "rgba(251,191,36,0.15)", border: "rgba(251,191,36,0.3)" };
-  return null;
+  if (days < 0)   return { label: "EXPIRED", color: "#fff",    bg: "rgba(220,38,38,0.9)",  border: "#7f1d1d" };
+  if (days <= 3)  return { label: `${days}d left`, color: "#fff", bg: "rgba(239,68,68,0.85)", border: "rgba(239,68,68,0.6)" };
+  if (days <= 30) return { label: `${days}d left`, color: "#fbbf24", bg: "rgba(251,191,36,0.10)", border: "rgba(251,191,36,0.3)" };
+  if (days <= 90) return { label: `${days}d left`, color: "#06b6d4", bg: "rgba(6,182,212,0.10)", border: "rgba(6,182,212,0.3)" };
+  return { label: `${days}d left`, color: "#34d399", bg: "rgba(52,211,153,0.08)", border: "rgba(52,211,153,0.25)" };
 };
 
 export default function PosShopInfo() {
@@ -1499,7 +1500,7 @@ const handleShareInvoice = async () => {
               </div>
 
                 <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 3, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                <div style={{ fontWeight: 600, fontSize: isMobile ? 14 : 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", lineHeight: 1.3 }}>
                   {item.product.name}
                   {expiryTracking && item.product.batch_label && (
                     <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
@@ -1509,11 +1510,17 @@ const handleShareInvoice = async () => {
                 </div>
                 <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <span>{item.product.sku} · {item.product.unit}</span>
-                  {expiryTracking && (() => {
+                 {expiryTracking && (() => {
                     const exp = getExpiryInfo(item.product.expiry_date);
                     if (!exp) return null;
                     return (
-                      <span style={{ color: exp.color, background: exp.bg, padding: "1px 5px", borderRadius: 4, border: `1px solid ${exp.border}`, fontWeight: 700 }}>
+                      <span style={{ 
+                        color: exp.color, background: exp.bg, 
+                        padding: "1px 6px", borderRadius: 4, 
+                        border: `1px solid ${exp.border}`, fontWeight: 700,
+                        fontSize: 9, whiteSpace: "nowrap", // 👈 Added whiteSpace and tweaked font size
+                        display: "inline-flex", alignItems: "center", gap: 4
+                      }}>
                         ⏰ {exp.label}
                       </span>
                     );
@@ -1529,7 +1536,7 @@ const handleShareInvoice = async () => {
           </div>
 
           {/* ── progress ── */}
-          <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 6, overflow: "hidden", marginBottom: 12 }}>
+          <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 3, overflow: "hidden", marginBottom: 12 }}>
             <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
           </div>
 

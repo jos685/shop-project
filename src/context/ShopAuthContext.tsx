@@ -8,9 +8,12 @@ interface ShopAuthContextType {
   shop: ShopSession | null;
   loading: boolean;
   isOfflineMode: boolean;
-  /** True only when a real Supabase Auth JWT is active for this shop.
-   *  False means RLS-protected inserts will fail — user must log out and back in. */
-  hasAuthSession: boolean;
+  
+  /** True when a local shop session exists (user is "logged in").
+ *  Does NOT guarantee the JWT is currently valid — RLS-protected
+ *  inserts may still fail if the token has expired. Use refreshAuthSession()
+ *  to check JWT health, or just let the offline queue catch failed writes. */
+hasAuthSession: boolean;
   login: (businessCode: string, shopCode: string, password: string) => Promise<string | null>;
   logout: () => void;
   /** Tries to refresh the Supabase JWT; returns true if session is now valid. */
@@ -64,10 +67,11 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         sessionTokenRef.current = data.session.access_token;
         markProvisioned();
       } else {
-        // If we have a stored session and are offline, keep the session alive!
+        // If we have a stored shop session, NEVER log them out just because the JWT is missing.
+        // They can keep using the POS offline, and we will try to re-auth when they go online.
         const hasStored = !!localStorage.getItem(SESSION_KEY);
-        if (hasStored && !navigator.onLine) {
-          console.warn("Offline mode: No JWT session found, but allowing cached shop session.");
+        if (hasStored) {
+          console.warn("No JWT session found, but keeping local shop session active.");
           setHasAuthSession(true); 
         } else {
           setHasAuthSession(false);
@@ -82,10 +86,12 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
         setHasAuthSession(true);
         markProvisioned();
       } else {
-        // If Supabase emits SIGNED_OUT because of a failed refresh while offline, ignore it.
+        // IGNORE SIGNED_OUT events if we have a local session!
+        // The SDK emits this when the network drops mid-refresh. 
+        // We only want to log them out if they explicitly click "Logout".
         const hasStored = !!localStorage.getItem(SESSION_KEY);
-        if (event === "SIGNED_OUT" && hasStored && !navigator.onLine) {
-          console.warn("Ignored SIGNED_OUT event while offline. Keeping session.");
+        if (event === "SIGNED_OUT" && hasStored) {
+          console.warn("Ignored SIGNED_OUT event. Local shop session is still valid.");
         } else {
           setHasAuthSession(false);
         }
@@ -96,10 +102,19 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
 
     /** Re-checks with the Supabase server that the JWT is still valid.
    *  Returns true if a usable session is active after the attempt. */
-  const refreshAuthSession = useCallback(async (): Promise<boolean> => {
+    const refreshAuthSession = useCallback(async (): Promise<boolean> => {
     const { data, error } = await supabase.auth.refreshSession();
     const ok = !error && !!data?.session;
-    setHasAuthSession(ok);
+    
+    if (ok) {
+      setHasAuthSession(true);
+    } else {
+      // Only set to false if we don't have a local session at all
+      const hasStored = !!localStorage.getItem(SESSION_KEY);
+      if (!hasStored) {
+        setHasAuthSession(false);
+      }
+    }
     return ok;
   }, []);
 
@@ -114,6 +129,18 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     };
     window.addEventListener("online", handleOnline);
     return () => window.removeEventListener("online", handleOnline);
+  }, [refreshAuthSession]);
+
+    // Attempt to refresh the token when the tab becomes visible (e.g. phone unlocked)
+  useEffect(() => {
+    const handleVisible = () => {
+      if (document.visibilityState === "visible" && navigator.onLine) {
+        console.log("Tab visible. Refreshing auth session...");
+        refreshAuthSession();
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisible);
+    return () => document.removeEventListener("visibilitychange", handleVisible);
   }, [refreshAuthSession]);
 
   // Fire-and-forget: set shops.last_seen = null via keepalive fetch
