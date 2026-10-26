@@ -1,5 +1,5 @@
 // pages/PosShopInfo.tsx
-// Shows shop stock and assigned agents
+// Shows shop stock and assigned to shops so that agents can sell
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useLocation } from "react-router-dom";
@@ -375,65 +375,137 @@ useEffect(() => {
   const [stockPage, setStockPage] = useState(1);
   const STOCK_PAGE_SIZE = 20;
 
-  useEffect(() => { setStockPage(1); }, [stockSearch]);
-  // ── Invoice state ──
-const [showInvoiceModal, setShowInvoiceModal] = useState(false);
-const [invoiceSharing, setInvoiceSharing] = useState(false);
-const [invoiceShareMsg, setInvoiceShareMsg] = useState<string | null>(null);
-const [invoiceItems, setInvoiceItems] = useState<{ product_id: string; name: string; price: number; unit: string; qty: number }[]>([]);
-const [customerName, setCustomerName] = useState("");
-const [customerPhone, setCustomerPhone] = useState("");
-const [paymentMethod, setPaymentMethod] = useState<"pochi" | "send" | "paybill" | "till" | "custom" | "">("");
-const [paymentDetails, setPaymentDetails] = useState("");
-const [paymentAccount, setPaymentAccount] = useState("");
+  const [stockTotal,    setStockTotal]    = useState(0);
+  const [serverPaging,  setServerPaging]  = useState(false);  // true → use DB paging; false → use loaded array
 
-
-// ── Custom (non-stock) invoice items ─────────────────────
-const [showCustomItemForm, setShowCustomItemForm] = useState(false);
-const [customItemName,  setCustomItemName]  = useState("");
-const [customItemPrice, setCustomItemPrice] = useState("");
-const [customItemUnit,  setCustomItemUnit]  = useState("pcs");
-const [customItemQty,   setCustomItemQty]   = useState("1");
-const [customItemError, setCustomItemError] = useState("");
-
-// ── Invoice tabs + saved-invoice history ─────────────────
-const [invoiceTab, setInvoiceTab] = useState<"create" | "history">("create");
-const [currentInvoiceNumber, setCurrentInvoiceNumber] = useState("");
-const [savedInvoices, setSavedInvoices] = useState<any[]>([]);
-const [invoiceHistoryLoading, setInvoiceHistoryLoading] = useState(false);
-const [invoiceHistoryError, setInvoiceHistoryError] = useState<string | null>(null);
-const [invoiceHistoryPage, setInvoiceHistoryPage] = useState(1);
-const [invoiceHistoryTotal, setInvoiceHistoryTotal] = useState(0);
-const [confirmDeleteInvoice, setConfirmDeleteInvoice] = useState<any | null>(null);
-const [deletingInvoice, setDeletingInvoice] = useState(false);
-const [deleteInvoiceError, setDeleteInvoiceError] = useState<string | null>(null);
-const INVOICES_PAGE_SIZE = 10;
-
-// ── Invoice detail / edit ──────────────────────────────────
-const [viewingInvoice, setViewingInvoice] = useState<any | null>(null);
-const [editInvoiceItems, setEditInvoiceItems] = useState<{
-  product_id?: string; name: string; price: number; unit: string; qty: number;
-}[]>([]);
-const [editCustomerName,    setEditCustomerName]    = useState("");
-const [editCustomerPhone,   setEditCustomerPhone]   = useState("");
-const [editPaymentMethod,   setEditPaymentMethod]   = useState<"pochi" | "send" | "paybill" | "till" | "custom" | "">("");
-const [editPaymentDetails,  setEditPaymentDetails]  = useState("");
-const [editPaymentAccount,  setEditPaymentAccount]  = useState("");
-const [savingInvoiceEdit,   setSavingInvoiceEdit]   = useState(false);
-const [invoiceEditError,    setInvoiceEditError]    = useState<string | null>(null);
-const [invoiceEditMsg,      setInvoiceEditMsg]      = useState<string | null>(null);
-
-const canSharePdf = (() => {
-  if (typeof navigator === "undefined") return false;
-  const nav = navigator as any;
-  if (typeof nav.share !== "function" || typeof nav.canShare !== "function") return false;
+  const fetchStockPage = useCallback(async (page: number, search: string) => {
+  if (!shop) return;
+  setLoading(true);
+  setServerPaging(true);   // ← NEW: always paged once we start fetching
   try {
-    const dummy = new File([new Blob(["x"])], "x.pdf", { type: "application/pdf" });
-    return nav.canShare({ files: [dummy] });
-  } catch {
-    return false;
+    const offset = (page - 1) * STOCK_PAGE_SIZE;
+
+    let query = supabase
+      .from("shop_allocations")
+      .select(
+        "id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, product:products(id, name, sku, price, unit, image_url, batch_label, expiry_date)",
+        { count: "exact" }
+      )
+      .eq("shop_id", shop.id)
+      .order("product_name", { ascending: true })
+      .range(offset, offset + STOCK_PAGE_SIZE - 1);
+
+    if (search.trim()) {
+      query = query.or(
+        `product_name.ilike.%${search.trim()}%,product_sku.ilike.%${search.trim()}%`
+      );
+    }
+
+    const { data, error, count } = await query;
+
+    if (error) {
+      console.error("fetchStockPage error:", error);
+      return;
+    }
+
+    const items: StockItem[] = (data || [])
+      .filter((a: any) => !!a.product_id || !!a.product)
+      .map((a: any) => ({
+        id: a.id,
+        allocated: a.allocated,
+        remaining: Math.max(0, a.remaining ?? 0),
+        product: {
+          id:          a.product?.id          ?? a.product_id,
+          name:        a.product?.name        ?? a.product_name ?? "—",
+          sku:         a.product?.sku         ?? a.product_sku  ?? "",
+          price:       Number(a.product?.price ?? a.product_price ?? 0),
+          unit:        a.product?.unit        ?? a.product_unit  ?? "",
+          image_url:   a.product?.image_url ? productImageUrl(a.product.image_url) : null,
+          batch_label: a.product?.batch_label ?? null,
+          expiry_date: a.product?.expiry_date ?? null,
+        },
+      }));
+
+    setStock(items);
+    setStockTotal(count ?? items.length);
+  } finally {
+    setLoading(false);
   }
-})();
+}, [shop]);
+
+// Debounce the search — otherwise every keystroke fires a Supabase query
+useEffect(() => {
+  const t = setTimeout(() => {
+    setStockPage(1);
+    fetchStockPage(1, stockSearch);
+  }, 350);
+  return () => clearTimeout(t);
+}, [stockSearch, fetchStockPage]);
+
+// When the user changes page, fetch that page
+useEffect(() => {
+  if (serverPaging) fetchStockPage(stockPage, stockSearch);
+}, [stockPage, serverPaging, fetchStockPage]);  
+
+
+  // ── Invoice state ──
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [invoiceSharing, setInvoiceSharing] = useState(false);
+  const [invoiceShareMsg, setInvoiceShareMsg] = useState<string | null>(null);
+  const [invoiceItems, setInvoiceItems] = useState<{ product_id: string; name: string; price: number; unit: string; qty: number }[]>([]);
+  const [customerName, setCustomerName] = useState("");
+  const [customerPhone, setCustomerPhone] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState<"pochi" | "send" | "paybill" | "till" | "custom" | "">("");
+  const [paymentDetails, setPaymentDetails] = useState("");
+  const [paymentAccount, setPaymentAccount] = useState("");
+
+
+  // ── Custom (non-stock) invoice items ─────────────────────
+  const [showCustomItemForm, setShowCustomItemForm] = useState(false);
+  const [customItemName,  setCustomItemName]  = useState("");
+  const [customItemPrice, setCustomItemPrice] = useState("");
+  const [customItemUnit,  setCustomItemUnit]  = useState("pcs");
+  const [customItemQty,   setCustomItemQty]   = useState("1");
+  const [customItemError, setCustomItemError] = useState("");
+
+  // ── Invoice tabs + saved-invoice history ─────────────────
+  const [invoiceTab, setInvoiceTab] = useState<"create" | "history">("create");
+  const [currentInvoiceNumber, setCurrentInvoiceNumber] = useState("");
+  const [savedInvoices, setSavedInvoices] = useState<any[]>([]);
+  const [invoiceHistoryLoading, setInvoiceHistoryLoading] = useState(false);
+  const [invoiceHistoryError, setInvoiceHistoryError] = useState<string | null>(null);
+  const [invoiceHistoryPage, setInvoiceHistoryPage] = useState(1);
+  const [invoiceHistoryTotal, setInvoiceHistoryTotal] = useState(0);
+  const [confirmDeleteInvoice, setConfirmDeleteInvoice] = useState<any | null>(null);
+  const [deletingInvoice, setDeletingInvoice] = useState(false);
+  const [deleteInvoiceError, setDeleteInvoiceError] = useState<string | null>(null);
+  const INVOICES_PAGE_SIZE = 10;
+
+  // ── Invoice detail / edit ──────────────────────────────────
+  const [viewingInvoice, setViewingInvoice] = useState<any | null>(null);
+  const [editInvoiceItems, setEditInvoiceItems] = useState<{
+    product_id?: string; name: string; price: number; unit: string; qty: number;
+  }[]>([]);
+  const [editCustomerName,    setEditCustomerName]    = useState("");
+  const [editCustomerPhone,   setEditCustomerPhone]   = useState("");
+  const [editPaymentMethod,   setEditPaymentMethod]   = useState<"pochi" | "send" | "paybill" | "till" | "custom" | "">("");
+  const [editPaymentDetails,  setEditPaymentDetails]  = useState("");
+  const [editPaymentAccount,  setEditPaymentAccount]  = useState("");
+  const [savingInvoiceEdit,   setSavingInvoiceEdit]   = useState(false);
+  const [invoiceEditError,    setInvoiceEditError]    = useState<string | null>(null);
+  const [invoiceEditMsg,      setInvoiceEditMsg]      = useState<string | null>(null);
+
+  const canSharePdf = (() => {
+    if (typeof navigator === "undefined") return false;
+    const nav = navigator as any;
+    if (typeof nav.share !== "function" || typeof nav.canShare !== "function") return false;
+    try {
+      const dummy = new File([new Blob(["x"])], "x.pdf", { type: "application/pdf" });
+      return nav.canShare({ files: [dummy] });
+    } catch {
+      return false;
+    }
+  })();
 
 // ── Generate a fresh invoice number ─────────────────────
 const makeInvoiceNumber = () => {
@@ -672,38 +744,26 @@ const addCustomItem = () => {
     }
   }, [shop]);
 
-  useEffect(() => { fetchInfo(); }, [fetchInfo]);
-
 
 
 // ── Realtime stock updates from database ──
-useEffect(() => {
+
+ useEffect(() => {
   if (!shop) return;
-  
-  // Get all product IDs that this shop has stock for
   const productIds = stock.map(item => item.product.id);
   if (productIds.length === 0) return;
   
   const channel = supabase.channel(`shop-stock-${shop.id}`)
     .on(
       'postgres_changes',
-      {
-        event: 'UPDATE',
-        schema: 'public',
-        table: 'products',
-        filter: `id=in.(${productIds.join(',')})`,
-      },
-      () => {
-        // Product stock updated - refresh stock data
-        fetchInfo();
-      }
+      { event: 'UPDATE', schema: 'public', table: 'products',
+        filter: `id=in.(${productIds.join(',')})` },
+      () => { fetchStockPage(stockPage, stockSearch); }    // ← was fetchInfo()
     )
     .subscribe();
   
-  return () => {
-    supabase.removeChannel(channel);
-  };
-}, [shop, stock.map(item => item.product.id).join(','), fetchInfo]);
+  return () => { supabase.removeChannel(channel); };
+}, [shop, stock.map(item => item.product.id).join(','), fetchStockPage, stockPage, stockSearch]);
 
 
   const loadProductTx = useCallback(async (productId: string) => {
@@ -1238,6 +1298,8 @@ const handleShareInvoice = async () => {
     return item.product.name.toLowerCase().includes(q) || item.product.sku.toLowerCase().includes(q);
   })
     .sort((a, b) => a.product.name.localeCompare(b.product.name));
+   
+    const displayStock = serverPaging ? stock : filteredStock;
 
   return (
    <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
@@ -1329,7 +1391,7 @@ const handleShareInvoice = async () => {
       {/* ── Tab bar ── */}
       <div style={{ display: "flex", borderBottom: `1px solid ${theme.border.default}`, padding: "0 16px", overflowX: "auto" }}>
         {([
-          { key: "stock",  label: `📦 Stock (${stock.length})`  },
+          { key: "stock",  label: `📦 Stock (${serverPaging ? stockTotal : stock.length})`  },
           { key: "agents", label: `👤 Agents (${agents.length})` },
         ] as const).map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
@@ -1367,7 +1429,7 @@ const handleShareInvoice = async () => {
                   </div>
                 )}
 
-                  {stock.length > 0 && (
+                  {(stock.length > 0 || stockTotal > 0) && (
                     <div style={{ position: "relative", marginBottom: 16 }}>
                       <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 14, opacity: 0.4 }}>🔍</span>
                       <input
@@ -1399,7 +1461,7 @@ const handleShareInvoice = async () => {
                     </div>
                   )}
               
-                {filteredStock.length === 0 ? (
+                {displayStock.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
                     {stockSearch ? (
                           <>
@@ -1427,291 +1489,290 @@ const handleShareInvoice = async () => {
                         ))}
                       </div>
                     )}
-                           {filteredStock.length === 0 ? (
-  <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
-    {stockSearch ? (
-      <>
-        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
-        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
-      </>
-    ) : (
-      <>
-        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
-        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
-        <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
-      </>
-    )}
-  </div>
-) : (
-  <div style={{
-    display: "grid",
-    gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
-    gap: 12,
-  }}>
-    {filteredStock
-  .slice((stockPage - 1) * STOCK_PAGE_SIZE, stockPage * STOCK_PAGE_SIZE)
-  .map(item => {
-      const sold = item.allocated - item.remaining;
-      const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
-      const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
-      const isExpanded = expandedId === item.product.id;
-      const history    = txHistory[item.product.id];
-      const isLoading  = txLoading.has(item.product.id);
+                {displayStock.length === 0? (
+                              <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+                                {stockSearch ? (
+                                  <>
+                                    <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
+                                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
+                                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
+                                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
+                                  </>
+                                )}
+                              </div>
+                            ) : (
+                              <>
+                              <div style={{
+                                display: "grid",
+                                gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
+                                gap: 12,
+                               }}>
+                                {displayStock.map(item => {
+                                  const sold = item.allocated - item.remaining;
+                                  const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
+                                  const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
+                                  const isExpanded = expandedId === item.product.id;
+                                  const history    = txHistory[item.product.id];
+                                  const isLoading  = txLoading.has(item.product.id);
 
-      return (
-        <div
-          key={item.id}
-          onClick={() => toggleExpand(item.product.id)}
-          style={{
-            background: theme.bg.card,
-            border: `1px solid ${isExpanded ? theme.accent.cyan : theme.border.default}`,
-            borderRadius: 16,
-            padding: 16,
-            cursor: "pointer",
-            transition: "border-color 0.15s ease",
-          }}
-        >
-          {/* ── header row ── */}
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
-              <div
-                className={item.product.image_url ? "thumb thumb-clickable" : "thumb"}
-                onClick={e => {
-                  e.stopPropagation();          // don't trigger the expand toggle
-                  if (item.product.image_url) setLightbox({ url: item.product.image_url, name: item.product.name });
-                }}
-                style={{
-                  width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0,
-                  background: "rgba(255,255,255,0.05)",
-                  border: `1px solid ${theme.border.default}`,
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  fontSize: 18, position: "relative",
-                  cursor: item.product.image_url ? "zoom-in" : "default",
-                }}
-              >
-                <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
-                {item.product.image_url && (
-                  <img
-                    src={item.product.image_url} alt=""
-                    style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                    onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
-                  />
-                )}
-              </div>
+                                        return (
+                                          <div
+                                            key={item.id}
+                                            onClick={() => toggleExpand(item.product.id)}
+                                            style={{
+                                              background: theme.bg.card,
+                                              border: `1px solid ${isExpanded ? theme.accent.cyan : theme.border.default}`,
+                                              borderRadius: 16,
+                                              padding: 16,
+                                              cursor: "pointer",
+                                              transition: "border-color 0.15s ease",
+                                            }}
+                                          >
+                                            {/* ── header row ── */}
+                                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                                              <div style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0 }}>
+                                                <div
+                                                  className={item.product.image_url ? "thumb thumb-clickable" : "thumb"}
+                                                  onClick={e => {
+                                                    e.stopPropagation();          // don't trigger the expand toggle
+                                                    if (item.product.image_url) setLightbox({ url: item.product.image_url, name: item.product.name });
+                                                  }}
+                                                  style={{
+                                                    width: 40, height: 40, borderRadius: 10, overflow: "hidden", flexShrink: 0,
+                                                    background: "rgba(255,255,255,0.05)",
+                                                    border: `1px solid ${theme.border.default}`,
+                                                    display: "flex", alignItems: "center", justifyContent: "center",
+                                                    fontSize: 18, position: "relative",
+                                                    cursor: item.product.image_url ? "zoom-in" : "default",
+                                                  }}
+                                                >
+                                                  <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
+                                                  {item.product.image_url && (
+                                                    <img
+                                                      src={item.product.image_url} alt=""
+                                                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }}
+                                                      onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }}
+                                                    />
+                                                  )}
+                                                </div>
 
-                <div style={{ minWidth: 0 }}>
-                <div style={{ fontWeight: 600, fontSize: isMobile ? 14 : 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", lineHeight: 1.3 }}>
-                  {item.product.name}
-                  {expiryTracking && item.product.batch_label && (
-                    <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
-                      {item.product.batch_label}
-                    </span>
-                  )}
-                </div>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  <span>{item.product.sku} · {item.product.unit}</span>
-                 {expiryTracking && (() => {
-                    const exp = getExpiryInfo(item.product.expiry_date);
-                    if (!exp) return null;
-                    return (
-                      <span style={{ 
-                        color: exp.color, background: exp.bg, 
-                        padding: "1px 6px", borderRadius: 4, 
-                        border: `1px solid ${exp.border}`, fontWeight: 700,
-                        fontSize: 9, whiteSpace: "nowrap", // 👈 Added whiteSpace and tweaked font size
-                        display: "inline-flex", alignItems: "center", gap: 4
-                      }}>
-                        ⏰ {exp.label}
-                      </span>
-                    );
-                  })()}
-                </div>
-              </div>
+                                                  <div style={{ minWidth: 0 }}>
+                                                  <div style={{ fontWeight: 600, fontSize: isMobile ? 14 : 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", lineHeight: 1.3 }}>
+                                                    {item.product.name}
+                                                    {expiryTracking && item.product.batch_label && (
+                                                      <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
+                                                        {item.product.batch_label}
+                                                      </span>
+                                                    )}
+                                                  </div>
+                                                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                                                    <span>{item.product.sku} · {item.product.unit}</span>
+                                                  {expiryTracking && (() => {
+                                                      const exp = getExpiryInfo(item.product.expiry_date);
+                                                      if (!exp) return null;
+                                                      return (
+                                                        <span style={{ 
+                                                          color: exp.color, background: exp.bg, 
+                                                          padding: "1px 6px", borderRadius: 4, 
+                                                          border: `1px solid ${exp.border}`, fontWeight: 700,
+                                                          fontSize: 9, whiteSpace: "nowrap", // 👈 Added whiteSpace and tweaked font size
+                                                          display: "inline-flex", alignItems: "center", gap: 4
+                                                        }}>
+                                                          ⏰ {exp.label}
+                                                        </span>
+                                                      );
+                                                    })()}
+                                                  </div>
+                                                </div>
 
-            </div>
-            <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-              <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>
-              <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{item.product.unit} left</div>
-            </div>
-          </div>
+                                              </div>
+                                              <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                                                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 24, color: sc, lineHeight: 1 }}>{item.remaining}</div>
+                                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{item.product.unit} left</div>
+                                              </div>
+                                            </div>
 
-          {/* ── progress ── */}
-          <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 3, overflow: "hidden", marginBottom: 12 }}>
-            <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
-          </div>
+                                            {/* ── progress ── */}
+                                            <div style={{ background: "rgba(255,255,255,0.07)", borderRadius: 4, height: 3, overflow: "hidden", marginBottom: 12 }}>
+                                              <div style={{ width: `${pct}%`, height: "100%", borderRadius: 4, background: sc, transition: "width 0.8s ease" }} />
+                                            </div>
 
-          {/* ── mini stats ── */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-            {[
-              { label: "Price",     value: fmt(item.product.price), color: theme.accent.gold  },
-              { label: "Allocated", value: String(item.allocated),  color: theme.text.primary },
-              { label: "Sold",      value: String(sold),            color: theme.accent.green },
-            ].map(({ label, value, color }) => (
-              <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
-                <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
-                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
-              </div>
-            ))}
-          </div>
+                                            {/* ── mini stats ── */}
+                                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                                              {[
+                                                { label: "Price",     value: fmt(item.product.price), color: theme.accent.gold  },
+                                                { label: "Allocated", value: String(item.allocated),  color: theme.text.primary },
+                                                { label: "Sold",      value: String(sold),            color: theme.accent.green },
+                                              ].map(({ label, value, color }) => (
+                                                <div key={label} style={{ background: "rgba(255,255,255,0.03)", borderRadius: 8, padding: "8px 10px", textAlign: "center" }}>
+                                                  <div style={{ fontSize: 8, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", marginBottom: 3 }}>{label}</div>
+                                                  <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color }}>{value}</div>
+                                                </div>
+                                              ))}
+                                            </div>
 
-          {item.remaining === 0 && (
-            <div style={{ marginTop: 10, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, textAlign: "center" }}>
-              ⚠ Out of stock — contact supervisor to restock
-            </div>
-          )}
+                                            {item.remaining === 0 && (
+                                              <div style={{ marginTop: 10, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px", fontSize: 11, fontFamily: theme.font.mono, color: theme.accent.red, textAlign: "center" }}>
+                                                ⚠ Out of stock — contact supervisor to restock
+                                              </div>
+                                            )}
 
-{isExpanded && (
-  <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.border.default}` }}>
+                                            {isExpanded && (
+                                              <div style={{ marginTop: 14, paddingTop: 14, borderTop: `1px solid ${theme.border.default}` }}>
 
-    {/* ── Tab bar ── */}
-    <div style={{
-      display: "flex",
-      borderBottom: `1px solid ${theme.border.default}`,
-      marginBottom: 12,
-    }}>
-      {([
-        { key: "tx"  as const, label: "Recent Transactions", Icon: BarChart2   },
-        { key: "log" as const, label: "Activity Log",        Icon: ClipboardList },
-      ]).map(({ key, label, Icon }) => {
-        const isActive = (activeTab[item.product.id] ?? "tx") === key;
-        return (
-          <button
-            key={key}
-            onClick={(e) => {
-              e.stopPropagation();                     // don't collapse the card
-              setActiveTab(t => ({ ...t, [item.product.id]: key }));
-              if (key === "log" && !activityLog[item.product.id]) {
-                fetchLog(item.product.id);
-              }
-            }}
-            style={{
-              padding: "8px 14px",
-              border: "none",
-              borderBottom: `2px solid ${isActive ? theme.accent.cyan : "transparent"}`,
-              background: "transparent",
-              color: isActive ? theme.accent.cyan : theme.text.muted,
-              fontFamily: theme.font.mono,
-              fontSize: 11,
-              cursor: "pointer",
-              fontWeight: isActive ? 700 : 400,
-              display: "flex", alignItems: "center", gap: 6,
-              marginBottom: -1,
-            }}
-          >
-            <Icon size={12} />
-            {label}
-          </button>
-        );
-      })}
-    </div>
+                                                {/* ── Tab bar ── */}
+                                                <div style={{
+                                                  display: "flex",
+                                                  borderBottom: `1px solid ${theme.border.default}`,
+                                                  marginBottom: 12,
+                                                }}>
+                               {([
+                                { key: "tx"  as const, label: "Recent Transactions", Icon: BarChart2   },
+                                { key: "log" as const, label: "Activity Log",        Icon: ClipboardList },
+                               ]).map(({ key, label, Icon }) => {
+                                const isActive = (activeTab[item.product.id] ?? "tx") === key;
+                                return (
+                                  <button
+                                    key={key}
+                                    onClick={(e) => {
+                                      e.stopPropagation();                     // don't collapse the card
+                                      setActiveTab(t => ({ ...t, [item.product.id]: key }));
+                                      if (key === "log" && !activityLog[item.product.id]) {
+                                        fetchLog(item.product.id);
+                                      }
+                                    }}
+                                    style={{
+                                      padding: "8px 14px",
+                                      border: "none",
+                                      borderBottom: `2px solid ${isActive ? theme.accent.cyan : "transparent"}`,
+                                      background: "transparent",
+                                      color: isActive ? theme.accent.cyan : theme.text.muted,
+                                      fontFamily: theme.font.mono,
+                                      fontSize: 11,
+                                      cursor: "pointer",
+                                      fontWeight: isActive ? 700 : 400,
+                                      display: "flex", alignItems: "center", gap: 6,
+                                      marginBottom: -1,
+                                    }}
+                                  >
+                                    <Icon size={12} />
+                                    {label}
+                                  </button>
+                                );
+                               })}
+                               </div>
 
-    {/* ── Recent Transactions tab ── */}
-    {(activeTab[item.product.id] ?? "tx") === "tx" && (
-      <>
-        {isLoading ? (
-          <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
-            <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-          </div>
-        ) : history && history.length > 0 ? (() => {
-          const curPage    = txPage[item.product.id] ?? 1;
-          const totalPages = Math.max(1, Math.ceil(history.length / TX_PAGE_SIZE));
-          const safePage   = Math.min(curPage, totalPages);
-          const paged      = history.slice((safePage - 1) * TX_PAGE_SIZE, safePage * TX_PAGE_SIZE);
+                                  {/* ── Recent Transactions tab ── */}
+                              {(activeTab[item.product.id] ?? "tx") === "tx" && (
+                              <>
+                                {isLoading ? (
+                                  <div style={{ display: "flex", justifyContent: "center", padding: "16px 0" }}>
+                                    <div style={{ width: 18, height: 18, border: "2px solid rgba(6,182,212,0.2)", borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+                                  </div>
+                                ) : history && history.length > 0 ? (() => {
+                                  const curPage    = txPage[item.product.id] ?? 1;
+                                  const totalPages = Math.max(1, Math.ceil(history.length / TX_PAGE_SIZE));
+                                  const safePage   = Math.min(curPage, totalPages);
+                                  const paged      = history.slice((safePage - 1) * TX_PAGE_SIZE, safePage * TX_PAGE_SIZE);
 
-          return (
-            <>
-              {/* Header row: count + page indicator */}
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                  {history.length} transaction{history.length !== 1 ? "s" : ""}
-                </div>
-                {totalPages > 1 && (
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                    Page {safePage} of {totalPages}
-                  </div>
-                )}
-              </div>
+                                  return (
+                                    <>
+                                      {/* Header row: count + page indicator */}
+                                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                          {history.length} transaction{history.length !== 1 ? "s" : ""}
+                                        </div>
+                                        {totalPages > 1 && (
+                                          <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                            Page {safePage} of {totalPages}
+                                          </div>
+                                        )}
+                                      </div>
 
-              {/* Rows */}
-              {paged.map((t, idx) => (
-                <div
-                  key={t.id ?? idx}
-                  style={{
-                    display: "flex", justifyContent: "space-between", alignItems: "center",
-                    padding: "8px 0",
-                    borderBottom: idx < paged.length - 1 ? `1px solid ${theme.border.default}` : "none",
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontFamily: theme.font.mono }}>
-                      {t.quantity} × {fmt(Number(t.unit_price ?? 0))}
-                    </div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                      {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
-                      {t.agent_name ? ` · ${t.agent_name}` : ""}
-                    </div>
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
-                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.green }}>
-                      {fmt(Number(t.amount ?? 0))}
-                    </div>
-                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                      {t.payment_method || (Number(t.mpesa_amount) > 0 ? "M-Pesa" : Number(t.cash_amount) > 0 ? "Cash" : "—")}
-                    </div>
-                  </div>
-                </div>
-              ))}
+                                      {/* Rows */}
+                                      {paged.map((t, idx) => (
+                                        <div
+                                          key={t.id ?? idx}
+                                          style={{
+                                            display: "flex", justifyContent: "space-between", alignItems: "center",
+                                            padding: "8px 0",
+                                            borderBottom: idx < paged.length - 1 ? `1px solid ${theme.border.default}` : "none",
+                                          }}
+                                        >
+                                          <div style={{ minWidth: 0 }}>
+                                            <div style={{ fontSize: 12, fontFamily: theme.font.mono }}>
+                                              {t.quantity} × {fmt(Number(t.unit_price ?? 0))}
+                                            </div>
+                                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                                              {t.created_at ? new Date(t.created_at).toLocaleString() : "—"}
+                                              {t.agent_name ? ` · ${t.agent_name}` : ""}
+                                            </div>
+                                          </div>
+                                          <div style={{ textAlign: "right", flexShrink: 0, marginLeft: 12 }}>
+                                            <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: theme.accent.green }}>
+                                              {fmt(Number(t.amount ?? 0))}
+                                            </div>
+                                            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                                              {t.payment_method || (Number(t.mpesa_amount) > 0 ? "M-Pesa" : Number(t.cash_amount) > 0 ? "Cash" : "—")}
+                                            </div>
+                                          </div>
+                                        </div>
+                                      ))}
 
-              {/* Pagination */}
-              {totalPages > 1 && (
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.max(1, safePage - 1) })); }}
-                    disabled={safePage === 1}
-                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === 1 ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === 1 ? "not-allowed" : "pointer", opacity: safePage === 1 ? 0.4 : 1 }}
-                  >← Prev</button>
+                                      {/* Pagination */}
+                                      {totalPages > 1 && (
+                                        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 12, flexWrap: "wrap" }}>
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.max(1, safePage - 1) })); }}
+                                            disabled={safePage === 1}
+                                            style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === 1 ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === 1 ? "not-allowed" : "pointer", opacity: safePage === 1 ? 0.4 : 1 }}
+                                          >← Prev</button>
 
-                  {Array.from({ length: totalPages }, (_, i) => i + 1)
-                    .filter(pg => pg === 1 || pg === totalPages || Math.abs(pg - safePage) <= 1)
-                    .reduce<(number | "…")[]>((acc, pg, i, arr) => {
-                      if (i > 0 && pg - (arr[i - 1] as number) > 1) acc.push("…");
-                      acc.push(pg);
-                      return acc;
-                    }, [])
-                    .map((pg, i) =>
-                      pg === "…" ? (
-                        <span key={`e-${i}`} style={{ fontSize: 11, color: theme.text.muted, padding: "0 2px" }}>…</span>
-                      ) : (
-                        <button
-                          key={pg}
-                          onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: pg as number })); }}
-                          style={{
-                            minWidth: 30, height: 30, borderRadius: 8,
-                            border: `1px solid ${safePage === pg ? theme.accent.cyan : theme.border.default}`,
-                            background: safePage === pg ? `${theme.accent.cyan}18` : "rgba(255,255,255,0.03)",
-                            color: safePage === pg ? theme.accent.cyan : theme.text.secondary,
-                            fontFamily: theme.font.mono, fontSize: 11, cursor: "pointer", padding: "0 6px",
-                          }}
-                        >{pg}</button>
-                      )
-                    )}
+                                          {Array.from({ length: totalPages }, (_, i) => i + 1)
+                                            .filter(pg => pg === 1 || pg === totalPages || Math.abs(pg - safePage) <= 1)
+                                            .reduce<(number | "…")[]>((acc, pg, i, arr) => {
+                                              if (i > 0 && pg - (arr[i - 1] as number) > 1) acc.push("…");
+                                              acc.push(pg);
+                                              return acc;
+                                            }, [])
+                                            .map((pg, i) =>
+                                              pg === "…" ? (
+                                                <span key={`e-${i}`} style={{ fontSize: 11, color: theme.text.muted, padding: "0 2px" }}>…</span>
+                                              ) : (
+                                                <button
+                                                  key={pg}
+                                                  onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: pg as number })); }}
+                                                  style={{
+                                                    minWidth: 30, height: 30, borderRadius: 8,
+                                                    border: `1px solid ${safePage === pg ? theme.accent.cyan : theme.border.default}`,
+                                                    background: safePage === pg ? `${theme.accent.cyan}18` : "rgba(255,255,255,0.03)",
+                                                    color: safePage === pg ? theme.accent.cyan : theme.text.secondary,
+                                                    fontFamily: theme.font.mono, fontSize: 11, cursor: "pointer", padding: "0 6px",
+                                                  }}
+                                                >{pg}</button>
+                                              )
+                                            )}
 
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.min(totalPages, safePage + 1) })); }}
-                    disabled={safePage === totalPages}
-                    style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === totalPages ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === totalPages ? "not-allowed" : "pointer", opacity: safePage === totalPages ? 0.4 : 1 }}
-                  >Next →</button>
-                </div>
-              )}
-            </>
-          );
-        })() : (
-          <div style={{ textAlign: "center", padding: "14px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
-            No recent transactions for this product
-          </div>
-        )}
-      </>
-    )}
+                                          <button
+                                            onClick={(e) => { e.stopPropagation(); setTxPage(p => ({ ...p, [item.product.id]: Math.min(totalPages, safePage + 1) })); }}
+                                            disabled={safePage === totalPages}
+                                            style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "5px 12px", color: safePage === totalPages ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: safePage === totalPages ? "not-allowed" : "pointer", opacity: safePage === totalPages ? 0.4 : 1 }}
+                                          >Next →</button>
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })() : (
+                                  <div style={{ textAlign: "center", padding: "14px 0", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                                    No recent transactions for this product
+                                  </div>
+                                )}
+                              </>
+                            )}
 
     {/* ── Activity Log tab ── */}
     {(activeTab[item.product.id] ?? "tx") === "log" && (
@@ -1880,10 +1941,45 @@ const handleShareInvoice = async () => {
     </div>
   </div>
 )}
-        </div>
+              </div>
       );
     })}
   </div>
+
+  {/* ── PAGINATION FOOTER ── */}
+  {serverPaging && stockTotal > STOCK_PAGE_SIZE && (() => {
+    const totalPages = Math.ceil(stockTotal / STOCK_PAGE_SIZE);
+    const from = (stockPage - 1) * STOCK_PAGE_SIZE + 1;
+    const to   = Math.min(stockPage * STOCK_PAGE_SIZE, stockTotal);
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+        gap: 10, marginTop: 20, paddingTop: 16, flexWrap: "wrap",
+        borderTop: `1px solid ${theme.border.default}`,
+      }}>
+        <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.muted }}>
+          Showing <strong style={{ color: theme.text.primary }}>{from}–{to}</strong> of <strong style={{ color: theme.text.primary }}>{stockTotal}</strong> products
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+          <button
+            onClick={() => setStockPage(p => Math.max(1, p - 1))}
+            disabled={stockPage === 1}
+            style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "6px 12px", color: stockPage === 1 ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: stockPage === 1 ? "not-allowed" : "pointer", opacity: stockPage === 1 ? 0.4 : 1 }}
+          >← Prev</button>
+          <span style={{ padding: "5px 8px", fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary, whiteSpace: "nowrap" }}>
+            {stockPage} / {totalPages}
+          </span>
+          <button
+            onClick={() => setStockPage(p => Math.min(totalPages, p + 1))}
+            disabled={stockPage === totalPages}
+            style={{ background: "rgba(255,255,255,0.04)", border: `1px solid ${theme.border.default}`, borderRadius: 8, padding: "6px 12px", color: stockPage === totalPages ? theme.text.muted : theme.text.primary, fontFamily: theme.font.mono, fontSize: 11, cursor: stockPage === totalPages ? "not-allowed" : "pointer", opacity: stockPage === totalPages ? 0.4 : 1 }}
+          >Next →</button>
+        </div>
+      </div>
+    );
+  })()}
+
+  </>
 )}
                   </div>
                 )}

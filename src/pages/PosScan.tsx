@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef, useMemo, useDeferredValue } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -2555,12 +2555,17 @@ const refreshProducts = useCallback(async () => {
   };
    
   // Live-filtered products. Matches name OR sku with fuzzy tolerance.
+// Defer the *expensive* part of search so typing/clearing never waits on
+// the fuzzy scan + full-grid re-render. The input stays responsive; the
+// grid catches up a frame or two later.
+const deferredQuery = useDeferredValue(searchQuery);
+
 const filteredProducts = useMemo(() => {
   const base = [...myProducts].sort((a, b) => a.product.name.localeCompare(b.product.name));
-  const q = searchQuery.trim();
+  const q = deferredQuery.trim();
   if (!q) return base;
   return base.filter(a => fuzzyMatch(q, a.product.name) || fuzzyMatch(q, a.product.sku));
-}, [myProducts, searchQuery]);
+}, [myProducts, deferredQuery]);
 
 // If the user typed a value that exactly matches a SKU, pin it as a quick-add.
 const exactSkuMatch = useMemo(() => {
@@ -2713,30 +2718,41 @@ const exactSkuMatch = useMemo(() => {
         shopId:        shop!.id,
         ownerId:       shop!.owner_id,
         type:          payMethod === "credit" ? "credit" : "regular",
-        cart: cart.map(item => item.kind === "unlisted"
-          ? {
-              isUnlisted:  true,
-              customItemId: item.customItemId,
-              productName: item.name,
-              unit:        item.unit,
-              quantity:    item.quantity,
-              sellPrice:   item.sellPrice,
-              basePrice:   item.buyingPrice && item.buyingPrice > 0
-                  ? item.buyingPrice
-                  : impliedBasePrice(item.sellPrice),               
-              commissionRate: commissionConfig.enabled ? commissionConfig.rate : 0, 
-            }
-          : {
-              isUnlisted:  false,
-              allocationId: item.allocation.id,
-              productId:    item.allocation.product.id,
-              productName:  item.allocation.product.name,
-              productImage: item.allocation.product.image_url,
-              quantity:     item.quantity,
-              sellPrice:    item.sellPrice,
-              basePrice:    item.allocation.product.price,
-            }
-        ),
+        cart: cart.map(item => {
+      const commRate = commissionConfig.enabled ? commissionConfig.rate : 0;
+      
+       if (item.kind === "unlisted") {
+        const basePrice = item.buyingPrice && item.buyingPrice > 0
+            ? item.buyingPrice
+            : impliedBasePrice(item.sellPrice);               
+        
+        return {
+          isUnlisted:  true,
+          customItemId: item.customItemId,
+          productName: item.name,
+          unit:        item.unit,
+          quantity:    item.quantity,
+          sellPrice:   item.sellPrice,
+          basePrice:   basePrice,               
+          commissionRate: commRate, 
+        };
+      }
+
+      const basePrice = item.allocation.product.price;
+      
+      
+      return {
+        isUnlisted:  false,
+        allocationId: item.allocation.id,
+        productId:    item.allocation.product.id,
+        productName:  item.allocation.product.name,
+        productImage: item.allocation.product.image_url,
+        quantity:     item.quantity,
+        sellPrice:    item.sellPrice,
+        basePrice:    basePrice,
+        commissionRate: commRate,
+      };
+    }),
         payMethod,
         cashAmount:      Number(cashAmount)  || 0,
         mpesaAmount:     Number(mpesaAmount) || 0,

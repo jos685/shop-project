@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import { useState, useEffect, useCallback, useRef} from "react";
 import { useNavigate } from "react-router-dom";
 import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
@@ -11,8 +11,6 @@ import type { ReceiptData } from "../lib/receipt";
 
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
-
-
 
 interface LocalTransaction {
   id: string;
@@ -41,6 +39,21 @@ interface LocalTransaction {
   credit_sale_id: string | null;
   batch_label: string | null;
 }
+
+interface TxnSummary {
+  total_amount: number;
+  total_cash: number;
+  total_mpesa: number;
+  total_quantity: number;
+  txn_count: number;
+  commission_earned: number;
+  total_refunded: number;
+  cash_refunded: number;
+  mpesa_refunded: number;
+  exchange_value: number;
+  commission_clawback: number;
+}
+
 
 interface SaleGroup {
   key: string;
@@ -170,6 +183,7 @@ export default function PosTransactionsPage() {
   const [typeFilter,   setTypeFilter]   = useState<"all" | "sales" | "expenses" | "returns">("all");
   const [expanded, setExpanded]         = useState<string | null>(null);
   const [sellerFilter, setSellerFilter] = useState<string>("all");
+  const [summary, setSummary] = useState<TxnSummary | null>(null);
   const [filterSheetOpen, setFilterSheetOpen] = useState(false);
   const businessInfo = useBusinessInfo(shop);
   const [waModalData, setWaModalData] = useState<ReceiptData | null>(null);
@@ -991,7 +1005,9 @@ if (creditSaleIds.length > 0) {
 
         // All queries use SECURITY DEFINER RPCs — bypasses RLS regardless of JWT state
     // Promise.allSettled so a blipping fetch never kills the transaction load
-    const [txResult, expResult, cpResult] = await Promise.allSettled([
+
+    
+    const [txResult, expResult, cpResult, summaryResult, retSummaryResult] = await Promise.allSettled([
       supabase.rpc("get_shop_transactions", {
         p_shop_id: shop.id,
         p_start:   pStart ?? null,
@@ -1001,6 +1017,17 @@ if (creditSaleIds.length > 0) {
       }),
       supabase.rpc("get_shop_expenses", { p_shop_id: shop.id }),
       supabase.rpc("get_shop_credit_payments_all", { p_shop_id: shop.id }),
+       supabase.rpc("get_shop_transactions_summary", {
+      p_shop_id: shop.id,
+      p_start:   pStart ?? null,
+      p_end:     pEnd   ?? null,
+    }),
+      supabase.rpc("get_shop_returns_summary", {
+    p_shop_id: shop.id,
+    p_start:   pStart ?? null,
+    p_end:     pEnd   ?? null,
+  }),
+
     ]);
 
     // Auto-retry transactions once on transient network failure
@@ -1019,6 +1046,23 @@ if (creditSaleIds.length > 0) {
       txData  = retry.data;
       txError = retry.error;
     }
+
+    const s  = summaryResult.status === "fulfilled"    ? summaryResult.value.data?.[0]    : null;
+const rs = retSummaryResult.status === "fulfilled" ? retSummaryResult.value.data?.[0] : null;
+
+setSummary(s ? {
+  total_amount:      Number(s.total_amount)      || 0,
+  total_cash:        Number(s.total_cash)        || 0,
+  total_mpesa:       Number(s.total_mpesa)       || 0,
+  total_quantity:    Number(s.total_quantity)    || 0,
+  txn_count:         Number(s.txn_count)         || 0,
+  commission_earned: Number(s.commission_earned) || 0,
+  total_refunded:       Number(rs?.total_refunded)       || 0,
+  cash_refunded:        Number(rs?.cash_refunded)        || 0,
+  mpesa_refunded:       Number(rs?.mpesa_refunded)       || 0,
+  exchange_value:       Number(rs?.exchange_value)       || 0,
+  commission_clawback:  Number(rs?.commission_clawback)  || 0,
+} : null);
     const expData = expResult.status === "fulfilled" ? expResult.value.data : null;
     const cpData  = cpResult.status  === "fulfilled" ? cpResult.value.data  : null;
 
@@ -1295,20 +1339,21 @@ if (creditSaleIds.length > 0) {
   return                         { icon: "⚡", color: "#fbbf24", label: "Split"  };
 };
 
-  const flaggedCount = transactions.filter(t => t.status === "review").length;
+    // ── Full seller list (not paginated) ──
+  const [allSellers, setAllSellers] = useState<{ id: string; name: string }[]>([]);
 
-  // Unique sellers present in the loaded window — used by the seller filter
-  const sellerOptions = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const tx of transactions) {
-      if (tx.seller_agent_id && tx.seller_name && !map.has(tx.seller_agent_id)) {
-        map.set(tx.seller_agent_id, tx.seller_name);
-      }
-    }
-    return [...map.entries()]
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [transactions]);
+  useEffect(() => {
+    if (!shop?.id) return;
+    supabase.rpc("get_shop_sellers", { p_shop_id: shop.id })
+      .then(({ data }) => {
+        setAllSellers(
+          (data ?? []).map((s: any) => ({ id: s.agent_id, name: s.agent_name }))
+        );
+      });
+  }, [shop?.id]);
+
+  const sellerOptions = allSellers;
+  const flaggedCount = transactions.filter(t => t.status === "review").length;
 
   const activeFilterCount = [
     typeFilter   !== "all",
@@ -1347,84 +1392,48 @@ if (creditSaleIds.length > 0) {
     return matchesMethod && matchesSearch && matchesSeller;
   });
 
+ 
+   // ── Expenses + credit payments are fully fetched (not paginated) ──
   const expensesSum   = shopExpenses.reduce((s, e) => s + e.amount, 0);
   const cpTotal       = creditPaymentRows.reduce((s, c) => s + c.amount, 0);
-  const grossRevenue  = displayed.reduce((s, t) => s + t.amount, 0) + cpTotal;
-  const totalRevenue  = Math.max(0, grossRevenue - expensesSum);
   const cashExpenses  = shopExpenses.reduce((s, e) => s + (e.cash_amount  || (e.payment_method === "cash"  ? e.amount : 0)), 0);
   const mpesaExpenses = shopExpenses.reduce((s, e) => s + (e.mpesa_amount || (e.payment_method === "mpesa" ? e.amount : 0)), 0);
   const cpCash        = creditPaymentRows.reduce((s, c) => s + c.cash_amount,  0);
   const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
-  const totalCash     = Math.max(0, displayed.reduce((s, t) => s + (t.cash_amount  ?? 0), 0) + cpCash  - cashExpenses);
-  const totalMpesa    = Math.max(0, displayed.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0) + cpMpesa - mpesaExpenses);
-  const queuedTotal   = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
 
-  // Cap each return deduction at t.amount — credit sales (amount=0) contribute nothing to revenue
-  const effectiveRefund = (t: LocalTransaction) =>
+  // ── Sales + returns come from the server-side aggregate (all pages) ──
+  const grossRevenue = (summary?.total_amount ?? 0) + cpTotal;
+  const totalRevenue = Math.max(0, grossRevenue - expensesSum);
+
+  const totalCash  = Math.max(0, (summary?.total_cash  ?? 0) + cpCash  - cashExpenses);
+  const totalMpesa = Math.max(0, (summary?.total_mpesa ?? 0) + cpMpesa - mpesaExpenses);
+
+  const queuedTotal = queuedSales.reduce((s, q) => s + q.grandTotal, 0);
+
+  // ── Return-related totals (all pages) ──
+  const totalRefunded        = summary?.total_refunded        ?? 0;
+  const exchangeReturnsValue = summary?.exchange_value        ?? 0;
+  const cashReturnsValue     = totalRefunded - exchangeReturnsValue;
+  const cashRefunded         = Math.round(summary?.cash_refunded        ?? 0);
+  const mpesaRefunded        = Math.round(summary?.mpesa_refunded       ?? 0);
+  const totalCommissionClawed = Math.round(summary?.commission_clawback ?? 0);
+
+  // Helpers kept for per-row rendering (these ARE page-scoped by design)
+  const txReturnedValue = (t: LocalTransaction) =>
     (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
 
 
-    // Compute how much of a single transaction was actually returned (cash value)
-    const txReturnedValue = (t: LocalTransaction) =>
-      (returnsMap[t.id] ?? []).reduce((s, r) => s + Math.min(r.amount_refunded, t.amount), 0);
-  
-    // Is the whole transaction returned? (all returnable qty fully returned)
-    const isFullyReturned = (t: LocalTransaction) => {
-        if ((!t.product_id && !t.custom_item_id) || t.unit_price == null) return false;
-        const returned = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
-        return returned >= t.quantity && t.quantity > 0;
-        };
+  const isFullyReturned = (t: LocalTransaction) => {
+    if ((!t.product_id && !t.custom_item_id) || t.unit_price == null) return false;
+    const returned = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
+    return returned >= t.quantity && t.quantity > 0;
+  };
 
-  const totalRefunded = transactions.reduce((s, t) => s + effectiveRefund(t), 0);
-
-  const exchangeReturnsValue = transactions.reduce((s, t) => {
-  for (const r of (returnsMap[t.id] ?? [])) {
-    if (r.exchange_of_transaction_id) {
-      s += Math.min(r.amount_refunded, t.amount);
-    }
-  }
-  return s;
-}, 0);
-const cashReturnsValue = totalRefunded - exchangeReturnsValue;
-
-  const cashRefunded = Math.round(transactions.reduce((s, t) => {
-  for (const r of (returnsMap[t.id] ?? [])) {
-    const ca = r.refund_cash_amount ?? 0;
-    const ma = r.refund_mpesa_amount ?? 0;
-    // Prefer the stored exact amounts (present on both standalone and exchange rows)
-    if (ca > 0 || ma > 0) {
-      s += ca;
-    } else if (r.refund_method === "cash") {
-      s += r.amount_refunded;           // legacy fallback
-    } else if (r.refund_method === "split" && t.amount > 0) {
-      s += r.amount_refunded * ((t.cash_amount ?? 0) / t.amount);
-    }
-  }
-  return s;
-}, 0));
-
-const mpesaRefunded = Math.round(transactions.reduce((s, t) => {
-  for (const r of (returnsMap[t.id] ?? [])) {
-    const ca = r.refund_cash_amount ?? 0;
-    const ma = r.refund_mpesa_amount ?? 0;
-    if (ca > 0 || ma > 0) {
-      s += ma;
-    } else if (r.refund_method === "mpesa") {
-      s += r.amount_refunded;
-    } else if (r.refund_method === "split" && t.amount > 0) {
-      s += r.amount_refunded * ((t.mpesa_amount ?? 0) / t.amount);
-    }
-  }
-  return s;
-}, 0));
-
-  // Derive clawback from return qty vs original commission — no DB column needed
   const calcClawback = (t: LocalTransaction) => {
     if (!t.commission_earned || !t.quantity) return 0;
     const returnedQty = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
     return returnedQty > 0 ? Math.round((returnedQty / t.quantity) * t.commission_earned) : 0;
   };
-  const totalCommissionClawed = displayed.reduce((s, t) => s + calcClawback(t), 0);
 
 
   // Helper: collapse multi-item queued sale to a readable label
