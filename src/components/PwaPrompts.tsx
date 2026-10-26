@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import { useTheme } from "../context/ThemeContext";
 
@@ -101,10 +101,17 @@ export function PwaUpdatePrompt() {
   const [reloading, setReloading] = useState(false);
   const [countdown, setCountdown] = useState(10);
 
-  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
+  const {
+  needRefresh: [needRefresh],
+  updateServiceWorker,
+} = useRegisterSW({
   onOfflineReady() {
     setOfflineReady(true);
     setTimeout(() => setOfflineReady(false), 4000);
+  },
+  onRegisterError(err) {
+    console.error("[PWA] register error", err);
+    // Nothing to do visually — the SW just won't be installed.
   },
 });
 
@@ -125,19 +132,41 @@ useEffect(() => {
   };
 }, []);
 
-  const handleReload = () => { setReloading(true); updateServiceWorker(true); };
+const handleReload = useCallback(() => {
+  if (reloading) return;
+  setReloading(true);
 
-  useEffect(() => {
-    if (!needRefresh) return;
-    setCountdown(10);
-    const id = setInterval(() => setCountdown(c => c - 1), 1000);
-    return () => clearInterval(id);
-  }, [needRefresh]);
+  let done = false;
+  const finish = () => {
+    if (done) return;
+    done = true;
+    window.location.reload();
+  };
 
-  useEffect(() => {
-    if (!needRefresh || countdown > 0) return;
-    handleReload();
-  }, [countdown, needRefresh]);
+  (async () => {
+    const reg = await navigator.serviceWorker.getRegistration();
+
+    // Nothing waiting → reload immediately (update already applied elsewhere)
+    if (!reg?.waiting) { finish(); return; }
+
+    navigator.serviceWorker.addEventListener("controllerchange", finish, { once: true });
+    setTimeout(finish, 8000); // fail-safe
+
+    updateServiceWorker(false).catch(finish);
+  })();
+}, [reloading, updateServiceWorker]);
+
+useEffect(() => {
+  if (!needRefresh || reloading) return;
+  setCountdown(10);
+  const id = setInterval(() => setCountdown(c => c - 1), 1000);
+  return () => clearInterval(id);
+}, [needRefresh, reloading]);
+
+useEffect(() => {
+  if (!needRefresh || reloading || countdown > 0) return;
+  handleReload();
+}, [countdown, needRefresh, reloading, handleReload]);
 
   const gold    = theme.accent.gold;
   const cyan    = theme.accent.cyan;
