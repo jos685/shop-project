@@ -18,6 +18,9 @@ export interface ReceiptData {
   customerPhone: string;
   items: ReceiptItem[];
   total: number;
+  preDiscountTotal: number;
+  lineDiscountTotal: number;
+  saleDiscount: number;
   paymentMethod: string;
   mpesaRef: string;
   isCredit: boolean;
@@ -35,6 +38,9 @@ export function buildReceiptData(input: {
   customerPhone: string;
   cart: CartItem[];
   total: number;
+  preDiscountTotal?: number;
+  lineDiscountTotal?: number;
+  saleDiscount?: number;
   payMethod: string | null;
   mpesaRef: string;
   initialPayment: number;
@@ -50,6 +56,10 @@ export function buildReceiptData(input: {
     input.payMethod === "split"  ? "Split"    :
     input.payMethod === "credit" ? "Pay Later": "—";
 
+   const preDiscountTotal  = input.preDiscountTotal  ?? input.total;
+  const lineDiscountTotal = input.lineDiscountTotal ?? 0;
+  const saleDiscount      = input.saleDiscount      ?? 0;
+
   return {
     ref: input.ref,
     timestamp: input.timestamp,
@@ -60,10 +70,14 @@ export function buildReceiptData(input: {
       name: cartItemName(item),
       qty: item.quantity,
       unitPrice: item.sellPrice,
-      total: item.sellPrice * item.quantity,
+      // Per-line total already reflects the line discount — same figure the cart shows.
+      total: item.sellPrice * item.quantity - (item.discount ?? 0),
       unlisted: item.kind === "unlisted",
     })),
     total: input.total,
+    preDiscountTotal,
+    lineDiscountTotal,
+    saleDiscount,
     paymentMethod: payLabel,
     mpesaRef: input.mpesaRef,
     isCredit,
@@ -101,11 +115,16 @@ export function receiptToText(d: ReceiptData, biz: BusinessInfo): string {
   lines.push(d.timestamp);
   lines.push(`Served by: ${d.sellerName}`);
   lines.push("─────────────────────");
-  for (const it of d.items) {
+    for (const it of d.items) {
     lines.push(`${it.qty}× ${it.name}`);
     lines.push(`   ${ksh(it.total)}`);
   }
   lines.push("─────────────────────");
+  if (d.lineDiscountTotal > 0 || d.saleDiscount > 0) {
+    lines.push(`Subtotal: ${ksh(d.preDiscountTotal)}`);
+    if (d.lineDiscountTotal > 0) lines.push(`Item discounts: -${ksh(d.lineDiscountTotal)}`);
+    if (d.saleDiscount > 0)      lines.push(`Sale discount: -${ksh(d.saleDiscount)}`);
+  }
   lines.push(`TOTAL: ${ksh(d.total)}`);
   if (d.isCredit) {
     lines.push(`Paid upfront: ${ksh(d.amountPaid)}`);
@@ -213,12 +232,27 @@ export function receiptToPrintHtml(d: ReceiptData, biz: BusinessInfo, logoDataUr
     text-transform: uppercase;
   }
 
-  .total-val {
+    .total-val {
     font-size: 24px;
     font-weight: 900;
     color: #ea580c; /* 👈 Bright Orange Accent */
     font-variant-numeric: tabular-nums;
   }
+
+  .discount-block {
+    margin: 10px 0 2px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .disc-row {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #64748b;
+    font-variant-numeric: tabular-nums;
+  }
+  .disc-row.disc-neg span:last-child { color: #dc2626; font-weight: 600; }
 
   .credit-box { 
     border: 1.5px dashed #f87171; 
@@ -257,6 +291,14 @@ export function receiptToPrintHtml(d: ReceiptData, biz: BusinessInfo, logoDataUr
     ${rows}
 
     <div class="divider"></div>
+
+    ${(d.lineDiscountTotal > 0 || d.saleDiscount > 0) ? `
+      <div class="discount-block">
+        <div class="disc-row"><span>Subtotal</span><span>${ksh(d.preDiscountTotal)}</span></div>
+        ${d.lineDiscountTotal > 0 ? `<div class="disc-row disc-neg"><span>Item discounts</span><span>-${ksh(d.lineDiscountTotal)}</span></div>` : ""}
+        ${d.saleDiscount > 0      ? `<div class="disc-row disc-neg"><span>Sale discount</span><span>-${ksh(d.saleDiscount)}</span></div>` : ""}
+      </div>
+    ` : ""}
 
     <div class="total-row">
       <span class="total-label">Total</span>
@@ -421,6 +463,26 @@ export async function receiptToPdf(
   doc.setLineDashPattern([], 0);
   y += 8;
 
+   // ── Discount breakdown (only when present) ──
+  if (d.lineDiscountTotal > 0 || d.saleDiscount > 0) {
+    ensureSpace(24);
+    const discRow = (label: string, value: string, negative = false) => {
+      doc.setFont("helvetica", "normal");
+      doc.setFontSize(10);
+      doc.setTextColor(...mutedSlate);
+      doc.text(label, M, y);
+      if (negative) doc.setTextColor(220, 38, 38);
+      else          doc.setTextColor(...darkSlate);
+      doc.setFont("helvetica", "bold");
+      doc.text(value, PAGE_W - M, y, { align: "right" });
+      y += 5;
+    };
+    discRow("Subtotal", ksh(d.preDiscountTotal));
+    if (d.lineDiscountTotal > 0) discRow("Item discounts", `-${ksh(d.lineDiscountTotal)}`, true);
+    if (d.saleDiscount > 0)      discRow("Sale discount", `-${ksh(d.saleDiscount)}`, true);
+    y += 3;
+  }
+
   // ── Total ──
   ensureSpace(15);
   doc.setFont("helvetica", "bold");
@@ -429,7 +491,7 @@ export async function receiptToPdf(
   doc.text("TOTAL", M, y);
   
   doc.setFontSize(18);
-  doc.setTextColor(...accentOrange); // 👈 Orange Accent
+  doc.setTextColor(...accentOrange); 
   doc.text(ksh(d.total), PAGE_W - M, y, { align: "right" });
   y += 10;
 

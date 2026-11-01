@@ -1190,11 +1190,11 @@ function CartItemsList({
                 >✕</button>
               </div>
 
-              {/* Row 2: Qty · Price · Total */}
+                                        {/* Row 2: Qty · Price · Total */}
               <div style={{
                 display: "grid",
                 gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 8,
+                gap: 6,
               }}>
                 <div>
                   <div style={{
@@ -1264,9 +1264,9 @@ function CartItemsList({
       WebkitOverflowScrolling: "touch",
     }}>
       {/* Column headers */}
-      <div style={{
+            <div style={{
         display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px", // Reduced from 6 to 5 columns
         gap: 6, alignItems: "center",
         fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
         textTransform: "uppercase", letterSpacing: "0.06em",
@@ -1287,9 +1287,9 @@ function CartItemsList({
         const remaining = isListed ? item.allocation.remaining : 9999;
         const minPrice  = isListed ? item.allocation.product.price : 0;
         return (
-          <div key={item.key} style={{
+                    <div key={item.key} style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
+            gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px", // 5 columns
             gap: 6, alignItems: "center",
             padding: "7px 0",
             borderBottom: `1px solid ${theme.border.default}`,
@@ -1358,20 +1358,56 @@ function CartItemsList({
 function CartRail({
   cart,
   theme,
-  grandTotal,
+  grandTotal,        // sum of sellPrice*qty, before bill-level discount
+  netTotal,          // grandTotal minus bill-level sale discount
+  saleDiscount,      // bill-level discount (>= 0)
+  amountReceived,
+  setAmountReceived,
   onClearAll,
   onCharge,
   onUpdateQty,
   onUpdatePrice,
   onRemove,
-  chargeError
-}: any) {
+  chargeError,
+}: {
+  cart: CartItem[];
+  theme: any;
+  grandTotal: number;
+  netTotal: number;
+  saleDiscount: number;
+  amountReceived: string;
+  setAmountReceived: (v: string) => void;
+  onClearAll: () => void;
+  onCharge: () => void;
+  onUpdateQty: (key: string, qty: number) => void;
+  onUpdatePrice: (key: string, price: number) => void;
+  onRemove: (key: string) => void;
+  chargeError: string;
+}) {
   const empty = cart.length === 0;
+
+  // Shared label/value styles used by the footer breakdown.
+  const footerLabel = {
+    fontSize: 10,
+    fontFamily: theme.font.mono,
+    color: theme.text.muted,
+    textTransform: "uppercase" as const,
+    letterSpacing: "0.06em",
+  };
+  
+  const footerValueBig = {
+    fontFamily: theme.font.display,
+    fontWeight: 800,
+    fontSize: 26,
+    color: theme.accent.gold,
+    lineHeight: 1,
+  };
 
   return (
     <aside style={{
       display: "flex", flexDirection: "column",
       height: "100%",
+      width: "100%",
       background: theme.bg.card,
       border: `1px solid ${theme.border.default}`,
       borderRadius: 16,
@@ -1457,17 +1493,47 @@ function CartRail({
           </div>
         )}
         
-        {/* Subtotal */}
+             {/* Subtotal (Always visible now) */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>
-            Subtotal
-          </span>
-          <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 26, color: theme.accent.gold, lineHeight: 1 }}>
+          <span style={footerLabel}>Subtotal</span>
+          <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.text.primary }}>
             {fmt(grandTotal)}
           </span>
         </div>
 
-        {/* Charge Button - Renamed to Sale */}
+        {/* Discount input */}
+        <div>
+          <label style={footerLabel}>Discount / Amount Received</label>
+          <input
+            className="ki"
+            type="text"
+            inputMode="numeric"
+            value={amountReceived}
+            onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
+            placeholder={String(grandTotal)}
+            style={{ marginTop: 4, border: `1px solid ${saleDiscount > 0 ? "#f87171" : theme.border.default}` }}
+          />
+          
+          {/* If a discount is applied, show it right below the input */}
+          {saleDiscount > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
+              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
+                Discount applied
+              </span>
+              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
+                −{fmt(saleDiscount)}
+              </span>
+            </div>
+          )}
+        </div>
+
+
+        {/* Final total + button */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+          <span style={footerLabel}>Total</span>
+          <span style={footerValueBig}>{fmt(netTotal)}</span>
+        </div>
+
         <button
           onClick={onCharge}
           style={{
@@ -1478,18 +1544,18 @@ function CartRail({
             cursor: "pointer",
             boxShadow: "0 4px 14px rgba(6,182,212,0.3)",
             transition: "transform 0.1s",
-            marginBottom: "16px", // Pushes it slightly higher
+            marginBottom: "16px",
           }}
           onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
           onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
           onMouseLeave={e => e.currentTarget.style.transform = "scale(1)"}
         >
-          Sale · {fmt(grandTotal)}
+          Sale · {fmt(netTotal)}
         </button>
       </div>
     </aside>
   );
-}
+  }
 
 function AuthModal({
   open,
@@ -1883,6 +1949,45 @@ export default function PosScan() {
   const location  = useLocation();    
   const [expiryTracking, setExpiryTracking] = useState(false);
 
+    // ── Draggable Cart Resizer ──
+  const [cartWidth, setCartWidth] = useState(() => {
+    const saved = localStorage.getItem("pos_cart_width");
+    return saved ? Number(saved) : 400; // Default width
+  });
+  const [isDragging, setIsDragging] = useState(false);
+
+   useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      // Calculate width based on mouse position from the right edge of the screen
+      const newWidth = window.innerWidth - e.clientX;
+      // Clamp between 340px (minimum) and 700px (maximum)
+      const clamped = Math.min(Math.max(newWidth, 340), 700);
+      setCartWidth(clamped);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+      // Save the final width to local storage
+      localStorage.setItem("pos_cart_width", String(cartWidth));
+      document.body.style.cursor = "default";
+      document.body.style.userSelect = "auto";
+    };
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    
+    // Prevent text selection while dragging
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging, cartWidth]);
+
   // ── Backdate mode (set by the "Past Sale" button on PosTransactionsPage) ──
   const [backdate, setBackdate] = useState<boolean>(() => !!location.state?.backdate);
   const [backdateOpen, setBackdateOpen] = useState(false);
@@ -1989,6 +2094,10 @@ const editUnlistedItem = (key: string) => {
   const [cashAmount,    setCashAmount]    = useState("");
   const [mpesaAmount,   setMpesaAmount]   = useState("");
   const [mpesaRef,      setMpesaRef]      = useState("");
+  
+    // Bill-level concession: agent types the final amount the customer pays.
+  // Blank means "no bill-level discount" — grandTotal is used as-is.
+  const [amountReceived, setAmountReceived] = useState("");
 
   // agent / verify
   const [shopAgents,    setShopAgents]    = useState<LocalAgent[]>([]);
@@ -2521,6 +2630,7 @@ const refreshProducts = useCallback(async () => {
       setTimeout(() => setScanFeedback(""), 2500);
       return;
     }
+    
     setChargeError("");
     const existing = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
     if (existing) {
@@ -2536,6 +2646,7 @@ const refreshProducts = useCallback(async () => {
         allocation: alloc,
         quantity: 1,
         sellPrice: alloc.product.price,
+        discount: 0,
       };
       setCart(prev => [...prev, newItem]);
       showToast(`Added · ${alloc.product.name}`, alloc.id);
@@ -2576,6 +2687,7 @@ const exactSkuMatch = useMemo(() => {
 
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
+    
     if (!addingProduct) return;
 
     // Snapshot into a local so TS keeps the non-null narrowing inside the
@@ -2600,9 +2712,10 @@ const exactSkuMatch = useMemo(() => {
         i => i.kind === "listed" && i.allocation.product_id === product.product_id
       );
       if (existing) {
+        const cap = sp * qty;
         return prev.map(i =>
           i.kind === "listed" && i.allocation.product_id === product.product_id
-            ? { ...i, quantity: qty, sellPrice: sp }
+            ? { ...i, quantity: qty, sellPrice: sp, discount: Math.min(i.discount ?? 0, cap) }
             : i
         );
       }
@@ -2612,6 +2725,7 @@ const exactSkuMatch = useMemo(() => {
         allocation: product,
         quantity: qty,
         sellPrice: sp,
+        discount: 0,
       };
       return [...prev, newItem];
     });
@@ -2629,6 +2743,7 @@ const exactSkuMatch = useMemo(() => {
 
 
   const handleAddUnlisted = (input: {
+    
     customItemId: string | null;
     name: string;
     unit: string;
@@ -2636,12 +2751,13 @@ const exactSkuMatch = useMemo(() => {
     sellPrice: number;
     buyingPrice?: number | null;
   }) => {
+    
     setChargeError("");
     if (editingUnlistedKey) {
       // Update the existing unlisted row
       setCart(prev => prev.map(i =>
         i.key === editingUnlistedKey && i.kind === "unlisted"
-          ? {
+            ? {
               ...i,
               customItemId: input.customItemId,
               name: input.name,
@@ -2649,6 +2765,10 @@ const exactSkuMatch = useMemo(() => {
               quantity: Math.max(1, input.quantity),
               sellPrice: Math.max(0, input.sellPrice),
               buyingPrice: input.buyingPrice ?? null,
+              discount: Math.min(
+                i.discount ?? 0,
+                Math.max(1, input.quantity) * Math.max(0, input.sellPrice)
+              ),
             }
           : i
       ));
@@ -2666,6 +2786,7 @@ const exactSkuMatch = useMemo(() => {
           quantity: Math.max(1, input.quantity),
           sellPrice: Math.max(0, input.sellPrice),
           buyingPrice: input.buyingPrice ?? null,
+          discount: 0,
         },
       ]);
     }
@@ -2678,14 +2799,17 @@ const exactSkuMatch = useMemo(() => {
   };
 
   const handleRemoveFromCart = (key: string) => {
+    
     setCart(prev => prev.filter(i => i.key !== key));
   };
   
   const handleUpdateCartQty = (key: string, qty: number) => {
+    
     setCart(prev => prev.map(i => i.key === key ? { ...i, quantity: Math.max(1, qty) } : i));
   };
 
   const handleUpdateCartPrice = (key: string, price: number) => {
+    
     setCart(prev => prev.map(i => {
       if (i.key !== key) return i;
       // Listed items cannot sell below base price
@@ -2694,8 +2818,20 @@ const exactSkuMatch = useMemo(() => {
     }));
   };
 
+
   // ── checkout ──────────────────────────────────────────────────────────
-  const grandTotal = cart.reduce((s, i) => s + i.sellPrice * i.quantity, 0);
+    // ── checkout ──────────────────────────────────────────────────────────
+  const preDiscountTotal  = cart.reduce((s, i) => s + i.sellPrice * i.quantity, 0);
+  const lineDiscountTotal = cart.reduce((s, i) => s + (i.discount ?? 0), 0);
+  const grandTotal        = Math.max(0, preDiscountTotal - lineDiscountTotal);
+
+  // Bill-level concession: agent types the final amount (e.g. 2000 on a 2100 bill).
+  // Blank means "nothing extra off" — amountReceivedNum falls back to grandTotal.
+  const amountReceivedNum = amountReceived.trim() === ""
+    ? grandTotal
+    : Math.min(grandTotal, Math.max(0, Number(amountReceived) || 0));
+  const saleDiscount = Math.max(0, grandTotal - amountReceivedNum);
+  const netTotal     = amountReceivedNum; // == grandTotal - saleDiscount
 
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
@@ -2706,6 +2842,11 @@ const exactSkuMatch = useMemo(() => {
     }
     if (submittingRef.current) return;
     submittingRef.current = true;
+        // Bill-level concession, computed once. `grandTotal` is already post-line-discount.
+    const amountReceivedNum = amountReceived.trim() === ""
+      ? grandTotal
+      : Math.min(grandTotal, Math.max(0, Number(amountReceived) || 0));
+    const saleDiscount = Math.max(0, grandTotal - amountReceivedNum);
 
     // Persist the active agent so the dashboard can greet them by name
     if (shop?.id) {
@@ -2718,7 +2859,7 @@ const exactSkuMatch = useMemo(() => {
         shopId:        shop!.id,
         ownerId:       shop!.owner_id,
         type:          payMethod === "credit" ? "credit" : "regular",
-        cart: cart.map(item => {
+             cart: cart.map(item => {
       const commRate = commissionConfig.enabled ? commissionConfig.rate : 0;
       
        if (item.kind === "unlisted") {
@@ -2733,6 +2874,7 @@ const exactSkuMatch = useMemo(() => {
           unit:        item.unit,
           quantity:    item.quantity,
           sellPrice:   item.sellPrice,
+          discount:    item.discount ?? 0,
           basePrice:   basePrice,               
           commissionRate: commRate, 
         };
@@ -2749,6 +2891,7 @@ const exactSkuMatch = useMemo(() => {
         productImage: item.allocation.product.image_url,
         quantity:     item.quantity,
         sellPrice:    item.sellPrice,
+        discount:     item.discount ?? 0,
         basePrice:    basePrice,
         commissionRate: commRate,
       };
@@ -2766,6 +2909,8 @@ const exactSkuMatch = useMemo(() => {
         verifiedAgent:   { agent_id: verifiedAgent.agent_id, name: verifiedAgent.name },
         commissionConfig,
         grandTotal,
+        saleDiscount,
+        netTotal,
       });
 
       // Deduct stock locally so agents can't oversell during offline mode.
@@ -2850,7 +2995,7 @@ const exactSkuMatch = useMemo(() => {
     // ── Credit / Pay Later ────────────────────────────────────────────
         // ── Credit / Pay Later ────────────────────────────────────────────
         if (payMethod === "credit") {
-          const creditItems = cart.map(item => item.kind === "unlisted"
+                  const creditItems = cart.map(item => item.kind === "unlisted"
       ? {
           allocation_id:  null,
           product_id:     null,
@@ -2859,10 +3004,11 @@ const exactSkuMatch = useMemo(() => {
           is_unlisted:    true,
           quantity:       item.quantity,
           unit_price:     item.sellPrice,
+          discount:       item.discount ?? 0,
           base_price:      item.buyingPrice && item.buyingPrice > 0
             ? item.buyingPrice
-            : impliedBasePrice(item.sellPrice),                      // ← HERE
-          subtotal:       item.sellPrice * item.quantity,
+            : impliedBasePrice(item.sellPrice),
+          subtotal:       item.sellPrice * item.quantity - (item.discount ?? 0),
         }
       : {
           allocation_id:  item.allocation.id,
@@ -2872,27 +3018,42 @@ const exactSkuMatch = useMemo(() => {
           is_unlisted:    false,
           quantity:       item.quantity,
           unit_price:     item.sellPrice,
-          subtotal:       item.sellPrice * item.quantity,
+          discount:       item.discount ?? 0,
+          subtotal:       item.sellPrice * item.quantity - (item.discount ?? 0),
         }
     );
 
-      const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
+    // Attribute the bill-level concession to the first line — no synthetic row.
+    const creditItemsWithDiscount = creditItems.map((it, idx) => {
+      if (idx !== 0 || saleDiscount <= 0) return it;
+      const extra = saleDiscount;
+      return {
+        ...it,
+        discount:  (it.discount ?? 0) + extra,
+        subtotal:  it.subtotal - extra,
+      };
+    });
+
+      // Credit sale total is the amount actually agreed (post bill-level discount).
+      const saleTotal = amountReceivedNum;
+      const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), saleTotal);
       const initCashPaid = Math.min(Math.max(0, Number(initialCashAmount) || 0), initPaid);
       const initMpesaPaid = initPaid - initCashPaid;
-      const initStatus = initPaid >= grandTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
-      const txStatus = initPaid >= grandTotal - 0.5 ? "ok" : "credit_partial";
+      const initStatus = initPaid >= saleTotal - 0.5 ? "paid" : initPaid > 0 ? "partial" : "pending";
+      const txStatus = initPaid >= saleTotal - 0.5 ? "ok" : "credit_partial";
 
             // Find the first listed item, if any — used as the "primary" product on the
-            const firstListed = cart.find((i): i is ListedCartItem => i.kind === "listed");
+      const firstListed = cart.find((i): i is ListedCartItem => i.kind === "listed");
       const primaryProductId = firstListed ? firstListed.allocation.product.id : null;
       const primaryBasePrice  = firstListed ? firstListed.allocation.product.price : 0;
       const { data: fnData, error: fnErr } = await supabase.functions.invoke("insert-credit-sale", {
         body: {
           shop_id:         shop?.id,
           owner_id:        shop?.owner_id,
-          items:           creditItems,
-          amount:          grandTotal,
+          items:           creditItemsWithDiscount,
+          amount:          saleTotal,
           amount_paid:     initPaid,
+          discount:        saleDiscount,
           customer_name:   customerName.trim(),
           customer_phone:  customerPhone.trim(),
           seller_agent_id: verifiedAgent.agent_id,
@@ -2949,8 +3110,8 @@ const exactSkuMatch = useMemo(() => {
 
       // Fire credit receipt asynchronously — best effort
       if (customerPhone.trim()) {
-        const paid    = Math.min(Math.max(0, Number(initialPayment) || 0), grandTotal);
-        const balance = grandTotal - paid;
+        const paid    = Math.min(Math.max(0, Number(initialPayment) || 0), saleTotal);
+        const balance = saleTotal - paid;
         setReceiptStatus("sending");
         supabase.functions.invoke("send-receipt", {
           body: {
@@ -2959,13 +3120,17 @@ const exactSkuMatch = useMemo(() => {
             agent_name:      verifiedAgent.name,
             created_at:      backdateISO || undefined,
             customer_name:   customerName.trim() || null,
-            items: cart.map(item => ({
-              name:       cartItemName(item),
-              quantity:   item.quantity,
-              unit_price: item.sellPrice,
-              total:      item.sellPrice * item.quantity,
-            })),
-            total_amount:   grandTotal,
+            items: cart.map((item, idx) => {
+              const d = (item.discount ?? 0) + (idx === 0 ? saleDiscount : 0);
+              return {
+                name:       cartItemName(item),
+                quantity:   item.quantity,
+                unit_price: item.sellPrice,
+                discount:   d,
+                total:      item.sellPrice * item.quantity - d,
+              };
+            }),
+            total_amount:   saleTotal,
             payment_method: "credit",
             amount_paid:    paid,
             balance_owed:   balance,
@@ -2984,17 +3149,22 @@ const exactSkuMatch = useMemo(() => {
 
     const commRate = commissionConfig.enabled ? commissionConfig.rate : 0;
 
-    const txRows = cart.map(item => {
+       const txRows = cart.map((item, idx) => {
+      // Bill-level concession is attributed to the FIRST line so that a single
+      // `sum(discount)` still equals the total concession, without a synthetic row.
+      const billShare = idx === 0 ? saleDiscount : 0;
+
       // ── Unlisted branch ──
       if (item.kind === "unlisted") {
-        const itemTotal  = item.sellPrice * item.quantity;
-        const ratio      = grandTotal > 0 ? itemTotal / grandTotal : 0;
+        const itemDiscount = (item.discount ?? 0) + billShare;
+        const itemTotal    = item.sellPrice * item.quantity - itemDiscount;
+        const ratio        = grandTotal > 0 ? itemTotal / grandTotal : 0;
         const basePrice = item.buyingPrice && item.buyingPrice > 0
             ? item.buyingPrice
-            : impliedBasePrice(item.sellPrice);                     
-        const markup     = Math.max(0, item.sellPrice - basePrice);
-        const commEarned = Math.round(markup * item.quantity * commRate / 100);
-      
+            : impliedBasePrice(item.sellPrice);
+        const markup     = Math.max(0, itemTotal - basePrice * item.quantity);
+        const commEarned = Math.round(markup * commRate / 100);
+
         return {
           shop_id:           shop?.id,
           owner_id:          shop?.owner_id,
@@ -3003,8 +3173,10 @@ const exactSkuMatch = useMemo(() => {
           custom_item_id:    item.customItemId,
           product_name:      item.name,
           is_unlisted:       true,
+          is_discount:       false,           // never synthetic
           quantity:          item.quantity,
           amount:            itemTotal,
+          discount:          itemDiscount,
           customer_phone:    customerPhone.trim(),
           payment_method:    payMethod,
           cash_amount:       payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
@@ -3012,19 +3184,20 @@ const exactSkuMatch = useMemo(() => {
           mpesa_ref:         (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
           status:            "ok",
           unit_price:        item.sellPrice,
-          base_price:        basePrice,                           // ← was item.sellPrice
-          commission_rate:   commRate,                            // ← was 0
-          commission_earned: commEarned,                          // ← was 0
+          base_price:        basePrice,
+          commission_rate:   commRate,
+          commission_earned: commEarned,
         };
       }
-    
-      // ── Listed branch (unchanged) ──
-      const basePrice   = item.allocation.product.price;
-      const unitPrice   = item.sellPrice;
-      const itemTotal   = unitPrice * item.quantity;
-      const markup      = Math.max(0, unitPrice - basePrice);
-      const commEarned  = Math.round(markup * item.quantity * commRate / 100);
-      const ratio       = grandTotal > 0 ? itemTotal / grandTotal : 0;
+
+      // ── Listed branch ──
+      const basePrice    = item.allocation.product.price;
+      const unitPrice    = item.sellPrice;
+      const itemDiscount = (item.discount ?? 0) + billShare;
+      const itemTotal    = unitPrice * item.quantity - itemDiscount;
+      const markup       = Math.max(0, itemTotal - basePrice * item.quantity);
+      const commEarned   = Math.round(markup * commRate / 100);
+      const ratio        = grandTotal > 0 ? itemTotal / grandTotal : 0;
       return {
         shop_id:           shop?.id,
         owner_id:          shop?.owner_id,
@@ -3033,8 +3206,10 @@ const exactSkuMatch = useMemo(() => {
         custom_item_id:    null,
         product_name:      item.allocation.product.name,
         is_unlisted:       false,
+        is_discount:       false,             // never synthetic
         quantity:          item.quantity,
         amount:            itemTotal,
+        discount:          itemDiscount,
         customer_phone:    customerPhone.trim(),
         payment_method:    payMethod,
         cash_amount:       payMethod === "cash"  ? itemTotal : payMethod === "mpesa" ? 0 : Math.round(cash  * ratio),
@@ -3049,14 +3224,14 @@ const exactSkuMatch = useMemo(() => {
     });
 
     // Inject the backdated timestamp into every row (only when backdate mode is on)
-    const rowsWithDate = backdateISO
-    ? txRows.map(r => ({ ...r, created_at: backdateISO }))
-    : txRows;
+    const finalRows = backdateISO
+      ? txRows.map(r => ({ ...r, created_at: backdateISO }))
+      : txRows;
 
-   const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: rowsWithDate });
+    const { data, error: txErr } = await supabase.rpc("insert_shop_transaction", { p_rows: finalRows });
     if (txErr) {
       console.error("shop_transactions insert error:", JSON.stringify(txErr, null, 2));
-      console.error("txRows payload:", JSON.stringify(txRows, null, 2));
+     console.error("txRows payload:", JSON.stringify(txRows, null, 2));
       Promise.all(deducted.map(d =>
         supabase.rpc("deduct_shop_stock", { p_shop_allocation_id: d.id, p_quantity: -d.quantity })
       )).catch(() => {});
@@ -3089,13 +3264,18 @@ const exactSkuMatch = useMemo(() => {
           business_name:  businessName,
           agent_name:     verifiedAgent.name,
           created_at:      backdateISO || undefined,
-          items: cart.map(item => ({
-            name:       cartItemName(item),
-            quantity:   item.quantity,
-            unit_price: item.sellPrice,
-            total:      item.sellPrice * item.quantity,
-          })),
-          total_amount:   grandTotal,
+            items: cart.map((item, idx) => {
+              const d = (item.discount ?? 0) + (idx === 0 ? saleDiscount : 0);
+              return {
+                name:       cartItemName(item),
+                quantity:   item.quantity,
+                unit_price: item.sellPrice,
+                discount:   d,
+                total:      item.sellPrice * item.quantity - d,
+              };
+            }),
+          total_amount:   netTotal,
+          discount_total: saleDiscount,
           payment_method: payMethod,
           mpesa_ref:      mpesaRef.trim() || null,
         },
@@ -3253,6 +3433,7 @@ const handleDesktopCharge = useCallback(() => {
       setInitialPayment(""); setInitialCashAmount(""); setInitialMpesaAmount(""); setInitialPayMethod("cash");
       setPayMethod(null);
       setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
+      setAmountReceived("");
       setError(""); setScanFeedback(""); setProcessing(false);
       setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
       setAuthOpen(false);
@@ -3436,7 +3617,11 @@ const renderScanStep = () => (
               <span style={{ display: "inline-block", width: 10, height: 10, border: `1.5px solid ${theme.border.default}`, borderTopColor: theme.accent.cyan, borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
               Loading stock…
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+            <div style={{ 
+              display: "grid", 
+              gridTemplateColumns: isDesktop ? "repeat(auto-fill, minmax(280px, 1fr))" : "1fr", 
+              gap: 8 
+            }}>
               {[0,1,2,3,4,5].map(i => (
                 <div key={i} className="stock-skel" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 10px", background: "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))", border: "1px solid rgba(255,255,255,0.06)", borderRadius: 11, animationDelay: `${i * 90}ms` }}>
                   <div style={{ width: 30, height: 30, borderRadius: 8, background: "rgba(255,255,255,0.06)", flexShrink: 0 }} />
@@ -3489,7 +3674,11 @@ const renderScanStep = () => (
             )}
 
             <div style={{ maxHeight: isMobile ? "52vh" : 520, overflowY: "auto", overflowX: "hidden", paddingRight: 2, WebkitOverflowScrolling: "touch", paddingBottom: step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? 80 : 12 }}>
-              <div style={{ display: "grid", gridTemplateColumns: isDesktop ? "1fr 1fr" : "1fr", gap: 8 }}>
+              <div style={{ 
+                display: "grid", 
+                gridTemplateColumns: isDesktop ? "repeat(auto-fill, minmax(280px, 1fr))" : "1fr", 
+                gap: 8 
+              }}>
                 {filteredProducts.map(alloc => {
   const isOOS      = alloc.remaining <= 0;
   const sc         = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
@@ -3918,38 +4107,74 @@ const renderVerifyStep = () => (
     )}
    {/* ══════════════════ MAIN CONTENT ══════════════════ */}
 {step !== "success" && (isDesktop ? (
-    <div style={{
+  <div style={{
     display: "grid",
-    gridTemplateColumns: "minmax(0, 1fr) clamp(380px, 35%, 500px)",
-    gap: 20,
-    height: "calc(100dvh - 58px)", // Adjusted from 128px to 58px to match the sticky header
-    maxWidth: 1400,
+    // 1fr takes remaining space. cartWidth is the exact pixel width of the cart.
+    // The 12px in the middle is for the drag handle.
+    gridTemplateColumns: `minmax(0, 1fr) 12px ${cartWidth}px`, 
+    gap: 16, // Restored proper spacing between left, handle, and right
+    height: "calc(100dvh - 58px)",
+    maxWidth: 1600, // Increased maxWidth so it stretches on big screens
     margin: "0 auto",
-    padding: "24px 40px", // Added slightly more top padding
+    padding: "24px 24px", // Tighter padding around the edges
     overflow: "hidden",
   }}>
+    
     {/* LEFT — scan/verify content */}
-    <div style={{ minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden", paddingRight: 4 }}>
+    <div style={{ minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
       {step === "scan" && renderScanStep()}
       {step === "verify" && renderVerifyStep()}
     </div>
 
+    {/* DRAG HANDLE */}
+    <div
+      onMouseDown={() => setIsDragging(true)}
+      style={{
+        cursor: "col-resize",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        zIndex: 10,
+        padding: "0 4px",
+        // No negative margins, it sits nicely in the 12px grid column
+      }}
+    >
+      <div style={{
+        width: 4,
+        height: 40,
+        borderRadius: 4,
+        background: isDragging ? theme.accent.cyan : theme.border.default,
+        transition: "background 0.2s",
+        boxShadow: isDragging ? `0 0 8px ${theme.accent.cyan}80` : "none",
+      }} />
+    </div>
+
     {/* RIGHT — cart rail */}
-             
-          <CartRail
-            cart={cart}
-            theme={theme}
-            grandTotal={grandTotal}
-            onEditItem={handleUpdateCartQty}
-            onClearAll={() => setClearCartOpen(true)}
-            onCharge={handleDesktopCharge}
-            onUpdateQty={handleUpdateCartQty}
-            onUpdatePrice={handleUpdateCartPrice}
-            onRemove={handleRemoveFromCart}
-            chargeError={chargeError}
-          />
+    <div style={{ 
+      height: "100%", 
+      display: "flex", 
+      flexDirection: "column",
+      minWidth: 0 // Prevents flex/grid blowout
+    }}>
+      <CartRail
+        cart={cart}
+        theme={theme}
+        grandTotal={grandTotal}
+        netTotal={netTotal}
+        saleDiscount={saleDiscount}
+        amountReceived={amountReceived}
+        setAmountReceived={setAmountReceived}
+        onClearAll={() => setClearCartOpen(true)}
+        onCharge={handleDesktopCharge}
+        onUpdateQty={handleUpdateCartQty}
+        onUpdatePrice={handleUpdateCartPrice}
+        onRemove={handleRemoveFromCart}
+        chargeError={chargeError}
+      />
+    </div>
   </div>
 ) : (
+ 
   <div style={{
     padding: isMobile
       ? `14px 14px ${step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? "calc(env(safe-area-inset-bottom, 0px) + 140px)" : "90px"}`
@@ -3978,7 +4203,10 @@ const renderVerifyStep = () => (
         }}>
           <ReceiptSuccessScreen
             cart={cart}
-            grandTotal={grandTotal}
+            grandTotal={netTotal}
+            preDiscountTotal={preDiscountTotal}
+            lineDiscountTotal={lineDiscountTotal}
+            saleDiscount={saleDiscount}
             payMethod={payMethod}
             selectedAgentName={selectedAgent?.name ?? ""}
             customerName={customerName}
@@ -4245,7 +4473,7 @@ const renderVerifyStep = () => (
 {!isDesktop && step === "scan" && cart.length > 0 && !addingProduct && !payOpen && !unlistedOpen && !backdateOpen && (
   <SaleDock
     count={cart.length}
-    total={grandTotal}
+    total={netTotal}
     theme={theme}
     disabled={cart.length === 0}
     onExpand={() => setPayOpen(true)}
@@ -4320,7 +4548,7 @@ const renderVerifyStep = () => (
               Charge · {cart.length} item{cart.length !== 1 ? "s" : ""}
             </div>
             <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold, lineHeight: 1.1 }}>
-              {fmt(grandTotal)}
+              {fmt(netTotal)}
             </div>
           </div>
           <button
@@ -4343,6 +4571,27 @@ const renderVerifyStep = () => (
             ✕
           </button>
         </div>
+   
+      {/* Bill-level concession */}
+        <div style={{ marginTop: 10 }}>
+          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>
+            Discounted total
+          </label>
+          <input
+            className="ki"
+            type="text"
+            inputMode="numeric"
+            value={amountReceived}
+            onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
+            placeholder={String(grandTotal)}
+          />
+          {saleDiscount > 0 && (
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>
+              Sale discount: −{fmt(saleDiscount)}
+            </div>
+          )}
+        </div>
+
       </div>
 
       {/* ── Scrollable body ── */}
@@ -4369,13 +4618,13 @@ const renderVerifyStep = () => (
             )}
           </div>
           
-     <CartItemsList
-  cart={cart}
-  theme={theme}
-  onUpdateQty={handleUpdateCartQty}
-  onUpdatePrice={handleUpdateCartPrice}
-  onRemove={handleRemoveFromCart}
-/>
+            <CartItemsList
+              cart={cart}
+              theme={theme}
+              onUpdateQty={handleUpdateCartQty}
+              onUpdatePrice={handleUpdateCartPrice}
+              onRemove={handleRemoveFromCart}
+            />
           {/* Add more link */}
           <button
             onClick={() => {
@@ -4724,7 +4973,7 @@ const renderVerifyStep = () => (
           Sale Total
         </div>
         <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 22, color: theme.accent.gold, lineHeight: 1 }}>
-          {fmt(grandTotal)}
+          {fmt(netTotal)}
         </div>
       </div>
 
@@ -4847,7 +5096,7 @@ const renderVerifyStep = () => (
           pinIsLocked={pinIsLocked} pinCountdown={pinCountdown} pinShake={pinShake}
           onPinKey={handlePinKey}
           processing={processing}
-          grandTotal={grandTotal}
+          grandTotal={netTotal}
           error={error}
           setError={setError}
           

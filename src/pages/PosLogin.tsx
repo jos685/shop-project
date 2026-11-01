@@ -12,6 +12,21 @@ function getGreeting() {
   return { text: "Good evening!", icon: "🌙", sub: "Wrapping up a great day of sales?" };
 }
 
+function ErrorButton() {
+  const [crash, setCrash] = useState(false);
+
+  if (crash) {
+    // This throws during render, guaranteed to hit onUncaughtError
+    throw new Error("Sentry test: render-time error");
+  }
+
+  return (
+    <button onClick={() => setCrash(true)}>
+      Break the world
+    </button>
+  );
+}
+
 export default function PosLogin() {
   const { login } = useShopAuth();
   const { theme, toggleTheme } = useTheme();
@@ -93,6 +108,8 @@ export default function PosLogin() {
 
   const attemptsLeft = Math.max(0, 5 - security.failures);
   const isLocked     = security.isLocked;
+
+  
 
   return (
     <div className="est-page">
@@ -757,6 +774,9 @@ export default function PosLogin() {
             </div>
 
           </form>
+
+          {/* TEMP: Sentry test — remove before committing */}
+<ErrorButton />
 
                     {!isInstalled && (
             <div style={{ marginTop: 10 }}>

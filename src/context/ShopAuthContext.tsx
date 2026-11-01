@@ -79,7 +79,7 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       sessionTokenRef.current = session?.access_token ?? null;
       
       if (session) {
@@ -88,10 +88,10 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
       } else {
         // IGNORE SIGNED_OUT events if we have a local session!
         // The SDK emits this when the network drops mid-refresh. 
-        // We only want to log them out if they explicitly click "Logout".
         const hasStored = !!localStorage.getItem(SESSION_KEY);
-        if (event === "SIGNED_OUT" && hasStored) {
-          console.warn("Ignored SIGNED_OUT event. Local shop session is still valid.");
+        if (hasStored) {
+          console.warn("Ignored auth state drop. Local shop session is still valid.");
+          // Do NOT setHasAuthSession(false) here. 
         } else {
           setHasAuthSession(false);
         }
@@ -102,20 +102,38 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
 
     /** Re-checks with the Supabase server that the JWT is still valid.
    *  Returns true if a usable session is active after the attempt. */
-    const refreshAuthSession = useCallback(async (): Promise<boolean> => {
-    const { data, error } = await supabase.auth.refreshSession();
-    const ok = !error && !!data?.session;
-    
-    if (ok) {
-      setHasAuthSession(true);
-    } else {
-      // Only set to false if we don't have a local session at all
+      const refreshAuthSession = useCallback(async (): Promise<boolean> => {
+    try {
+      const { data, error } = await supabase.auth.refreshSession();
+      
+      // If it succeeded, great.
+      if (!error && data?.session) {
+        setHasAuthSession(true);
+        return true;
+      }
+
+      // If it failed, check if we have a local session.
       const hasStored = !!localStorage.getItem(SESSION_KEY);
+      
+      // If the error is a network error (e.g. "Failed to fetch"), and we have a local session, 
+      // we return true to tell the caller "we are fine, just offline".
+      if (hasStored && (error?.message?.includes("fetch") || !navigator.onLine)) {
+        console.warn("Auth refresh failed due to network. Keeping local session.");
+        return true; 
+      }
+
+      // If the token was explicitly rejected by the server (invalid_grant), then we clear it.
       if (!hasStored) {
         setHasAuthSession(false);
       }
+      return false;
+      
+    } catch (err) {
+      // Catch any unexpected throws (e.g., DNS resolution failure)
+      const hasStored = !!localStorage.getItem(SESSION_KEY);
+      if (hasStored) return true; 
+      return false;
     }
-    return ok;
   }, []);
 
   // Attempt to refresh the token when network is restored

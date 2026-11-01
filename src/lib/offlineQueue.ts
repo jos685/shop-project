@@ -43,6 +43,8 @@ export interface QueuedSale {
   verifiedAgent: { agent_id: string; name: string };
   commissionConfig: { enabled: boolean; rate: number };
   grandTotal: number;
+  saleDiscount: number; 
+  netTotal: number;
 }
 
 const QUEUE_KEY = "pos_offline_queue";
@@ -260,6 +262,7 @@ export interface QueuedExpense {
   paymentMethod: "cash" | "mpesa" | "split";
   cashAmount?: number;
   mpesaAmount?: number;
+  expenseDate: string;
 }
 
 type MiscQueueItem = ({ kind: "request" } & QueuedRequest) | ({ kind: "expense" } & QueuedExpense);

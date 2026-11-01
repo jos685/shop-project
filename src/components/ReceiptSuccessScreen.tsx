@@ -14,6 +14,9 @@ import { toPng } from "html-to-image";
 export default function ReceiptSuccessScreen({
   cart,
   grandTotal,
+  preDiscountTotal = 0,
+  lineDiscountTotal = 0,
+  saleDiscount = 0,
   payMethod,
   selectedAgentName,
   customerName,
@@ -33,6 +36,9 @@ export default function ReceiptSuccessScreen({
 }: {
   cart: CartItem[];
   grandTotal: number;
+  preDiscountTotal?: number;
+  lineDiscountTotal?: number;
+  saleDiscount?: number;
   payMethod: string | null;
   selectedAgentName: string;
   customerName: string;
@@ -76,6 +82,9 @@ export default function ReceiptSuccessScreen({
         customerPhone,
         cart,
         total: grandTotal,
+        preDiscountTotal,
+        lineDiscountTotal,
+        saleDiscount,
         payMethod,
         mpesaRef,
         initialPayment,
@@ -83,14 +92,19 @@ export default function ReceiptSuccessScreen({
         isBackdated,
       }),
     [
-      ref, receiptTimestamp, selectedAgentName, customerName, customerPhone, cart, grandTotal, payMethod, mpesaRef, initialPayment, wasQueued, isBackdated,
+      ref, receiptTimestamp, selectedAgentName, customerName, customerPhone, cart, grandTotal, 
+      preDiscountTotal, lineDiscountTotal, saleDiscount,
+      payMethod, mpesaRef, initialPayment, wasQueued, isBackdated,
     ]
   );
 
-  const [waOpen, setWaOpen] = useState(false);
-  const [busy, setBusy] = useState<"pdf" | "print" | "share" | null>(null);
-  const [copied, setCopied]     = useState(false);
-  const [actionError, setError] = useState("");
+const [waOpen, setWaOpen] = useState(false);
+const [busy, setBusy] = useState<"pdf" | "print" | "share" | null>(null);
+const [actionError, setError] = useState("");
+
+// ── Share popover state ──
+const [shareOpen, setShareOpen] = useState(false);
+const [shareImage, setShareImage] = useState<{ file: File; dataUrl: string } | null>(null);
 
      // ── Helper to generate the perfect PNG image ──
   const generateImage = useCallback(async (): Promise<string> => {
@@ -235,51 +249,45 @@ export default function ReceiptSuccessScreen({
   }, [data, biz]);
 
     // ── Share (Image → Download Image + Copy Text) ────────────────────
-     const handleShare = useCallback(async () => {
-    setError("");
-    setBusy("share");
+const handleShare = useCallback(async () => {
+  setError("");
+  setBusy("share");
 
-    try {
-      // 1. Generate the PNG
-      const dataUrl = await generateImage();
-      
-      // 2. Convert to a File object
+  try {
+    // Reuse cached image if we already generated it for this receipt
+    let file = shareImage?.file;
+    let dataUrl = shareImage?.dataUrl;
+
+    if (!file || !dataUrl) {
+      dataUrl = await generateImage();
       const res = await fetch(dataUrl);
       const blob = await res.blob();
-      const file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
-
-      // 3. Try Native Share (Works on Phones/Tablets)
-      if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-        await navigator.share({
-          files: [file],
-          title: `Receipt · ${ref}`,
-          text: `Receipt from ${biz.businessName}`,
-        });
-        setBusy(null);
-        return;
-      }
-
-      // 4. Desktop Fallback: Download the image automatically
-      const a = document.createElement("a");
-      a.href = dataUrl;
-      a.download = `receipt-${ref}.png`;
-      a.click();
-      
-      // Show a quick success message, then clear it
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-
-    } catch (err: any) {
-      console.error("Share failed:", err);
-      if (err.name !== "AbortError") {
-        setError("Could not generate image. Please use the PDF button.");
-      }
-    } finally {
-      setBusy(null);
+      file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
+      setShareImage({ file, dataUrl });
     }
-  }, [generateImage, ref, biz]);
+
+    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({
+        files: [file],
+        title: `Receipt · ${ref}`,
+        text: `Receipt from ${biz.businessName}`,
+      });
+      return;
+    }
+
+    setShareOpen(true);
+  } catch (err: any) {
+    console.error("Share failed:", err);
+    if (err.name !== "AbortError") {
+      setError("Could not generate image. Please use the PDF button.");
+    }
+  } finally {
+    setBusy(null);
+  }
+}, [generateImage, ref, biz, shareImage]);
 
   return (
+    
     <div
       className="section"
       style={{
@@ -296,6 +304,12 @@ export default function ReceiptSuccessScreen({
         paddingBottom: 40,
       }}
     >
+      <style>{`
+          @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(-4px); }
+            to   { opacity: 1; transform: translateY(0); }
+          }
+    `}</style>
       {/* ══════════════════ LEFT COLUMN: RECEIPT ══════════════════ */}
       <div
         style={{
@@ -334,12 +348,22 @@ export default function ReceiptSuccessScreen({
             {wasQueued ? (
               <>⏳ Queued — will sync when online</>
             ) : (
-              (() => {
+                            (() => {
                 const paid = Math.min(Math.max(0, initialPayment), grandTotal);
-                return paid > 0 ? (
-                  <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
-                ) : (
-                  <>📝 Credit sale · {fmt(grandTotal)} balance due</>
+                const hasDiscount = lineDiscountTotal > 0 || saleDiscount > 0;
+                return (
+                  <>
+                    {hasDiscount && (
+                      <span style={{ display: "block", marginBottom: 3, opacity: 0.85 }}>
+                        Subtotal {fmt(preDiscountTotal)}
+                        {lineDiscountTotal > 0 && ` · items −${fmt(lineDiscountTotal)}`}
+                        {saleDiscount > 0 && ` · sale −${fmt(saleDiscount)}`}
+                      </span>
+                    )}
+                    {paid > 0
+                      ? <>📝 Credit · {fmt(paid)} paid · {fmt(grandTotal - paid)} due</>
+                      : <>📝 Credit sale · {fmt(grandTotal)} balance due</>}
+                  </>
                 );
               })()
             )}
@@ -347,7 +371,15 @@ export default function ReceiptSuccessScreen({
         )}
 
         {/* Original UI Component */}
-        <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} />
+        <ReceiptCard 
+          data={data} 
+          biz={biz} 
+          theme={theme} 
+          isMobile={isMobile} 
+          preDiscountTotal={preDiscountTotal}
+          lineDiscountTotal={lineDiscountTotal}
+          saleDiscount={saleDiscount}
+        />
       </div>
 
       {/* ══════════════════ RIGHT COLUMN: ACTIONS ══════════════════ */}
@@ -422,17 +454,32 @@ export default function ReceiptSuccessScreen({
             disabled={busy !== null}
             accent="#25D366"
           />
-                    <ActionButton
-            theme={theme}
-            icon={copied ? "✓" : busy === "share" ? "⏳" : "🔗"}
-            label={copied ? "Copied!" : busy === "share" ? "Preparing..." : "Share"}
-            shortLabel={copied ? "Copied" : busy === "share" ? "..." : "Share"}
-            isMobile={isMobile}
-            loading={busy === "share" && !copied}
-            onClick={handleShare}
-            disabled={busy !== null}
-            accent={copied ? "#34d399" : "#fbbf24"} 
-          />
+
+          <div style={{ position: "relative" }}>
+  <ActionButton
+    theme={theme}
+    icon={busy === "share" ? "⏳" : "🔗"}
+    label={busy === "share" ? "Preparing..." : "Share"}
+    shortLabel={busy === "share" ? "..." : "Share"}
+    isMobile={isMobile}
+    loading={busy === "share"}
+    onClick={handleShare}
+    disabled={busy !== null && busy !== "share"}
+    accent="#fbbf24"
+  />
+  {shareOpen && shareImage && (
+    <SharePopover
+      theme={theme}
+      file={shareImage.file}
+      dataUrl={shareImage.dataUrl}
+      refId={ref}
+      onClose={() => {
+        setShareOpen(false);
+        setShareImage(null);
+      }}
+    />
+  )}
+</div>
         </div>
 
         <button
@@ -519,7 +566,9 @@ function ActionButton({
   onClick,
   disabled,
   accent,
-}: {
+}: 
+
+{
   theme: any;
   icon: string;
   label: string;
@@ -536,6 +585,8 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       style={{
+        width: "100%",
+        boxSizing: "border-box",
         minHeight: 60,
         padding: "12px 8px",
         border: `1px solid ${accent}44`,
@@ -594,5 +645,144 @@ function ActionButton({
         {showShort ? shortLabel : label}
       </span>
     </button>
+  );
+}
+
+function SharePopover({
+  theme,
+  file,
+  dataUrl,
+  refId,
+  onClose,
+}: {
+  theme: any;
+  file: File;
+  dataUrl: string;
+  refId: string;
+  onClose: () => void;
+}) {
+  const filename = `receipt-${refId}.png`;
+
+  // Download
+  const download = () => {
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = filename;
+    a.click();
+  };
+
+  // Copy image to clipboard (works in Chrome/Safari/Edge)
+  const copyImage = async () => {
+    try {
+      await navigator.clipboard.write([
+        new ClipboardItem({ "image/png": file }),
+      ]);
+      onClose();
+    } catch {
+      // fallback: download
+      download();
+      onClose();
+    }
+  };
+
+  // Email with attachment isn't reliably possible in-browser;
+  // open mail client and let user attach the downloaded file
+  const email = () => {
+    download();
+    window.location.href = `mailto:?subject=${encodeURIComponent(
+      `Receipt ${refId}`
+    )}&body=${encodeURIComponent(
+      `Hi, please find attached the receipt ${refId}.`
+    )}`;
+    onClose();
+  };
+
+  // WhatsApp desktop — save image, then open chat to attach
+  const whatsapp = () => {
+    download();
+    window.open(
+      `https://wa.me/?text=${encodeURIComponent(
+        `Receipt ${refId} — please attach the downloaded image.`
+      )}`,
+      "_blank"
+    );
+    onClose();
+  };
+
+  const btnStyle: React.CSSProperties = {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    padding: "10px 12px",
+    background: "rgba(255,255,255,0.03)",
+    border: "1px solid rgba(255,255,255,0.08)",
+    borderRadius: 10,
+    color: theme.text?.primary ?? "#fff",
+    fontFamily: theme.font.mono,
+    fontSize: 12,
+    fontWeight: 700,
+    cursor: "pointer",
+    textAlign: "left",
+  };
+
+  return (
+    <>
+      {/* click-outside overlay */}
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 40,
+          background: "transparent",
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: "100%",
+          left: 0,
+          right: 0,
+          marginTop: 6,
+          zIndex: 41,
+          background: theme.bg?.panel ?? "#1a1d21",
+          border: "1px solid rgba(255,255,255,0.1)",
+          borderRadius: 12,
+          padding: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          boxShadow: "0 12px 32px rgba(0,0,0,0.5)",
+          animation: "fadeIn 0.12s ease",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            fontFamily: theme.font.mono,
+            color: theme.text?.muted ?? "#888",
+            padding: "2px 6px 4px",
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+          }}
+        >
+          Share image
+        </div>
+
+        <button style={btnStyle} onClick={copyImage}>
+          <span>📋</span> Copy image
+        </button>
+        <button style={btnStyle} onClick={whatsapp}>
+          <span>💬</span> WhatsApp
+        </button>
+        <button style={btnStyle} onClick={email}>
+          <span>✉️</span> Email
+        </button>
+        <button style={btnStyle} onClick={download}>
+          <span>⬇️</span> Download PNG
+        </button>
+      </div>
+    </>
   );
 }

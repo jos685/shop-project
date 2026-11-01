@@ -38,6 +38,7 @@ interface LocalTransaction {
   commission_earned: number | null;
   credit_sale_id: string | null;
   batch_label: string | null;
+  
 }
 
 interface TxnSummary {
@@ -99,9 +100,17 @@ interface ReturnItem {
 function groupTransactions(txns: LocalTransaction[]): SaleGroup[] {
   const map = new Map<string, SaleGroup>();
   for (const tx of txns) {
+    // Legacy-only: skip synthetic rows from before Option A was shipped.
+    // New sales never insert such rows.
+    if ((tx as any).is_discount) continue;
+
     const key = `${tx.seller_name ?? ""}__${tx.created_at}`;
     if (!map.has(key)) {
-      map.set(key, { key, created_at: tx.created_at, seller_name: tx.seller_name, payment_method: tx.payment_method, status: tx.status, items: [], total: 0 });
+      map.set(key, {
+        key, created_at: tx.created_at, seller_name: tx.seller_name,
+        payment_method: tx.payment_method, status: tx.status,
+        items: [], total: 0,
+      });
     }
     const g = map.get(key)!;
     g.items.push(tx);
@@ -299,6 +308,7 @@ export default function PosTransactionsPage() {
   // ── Return helpers ───────────────────────────────────────────────────
   type ReturnStatus =
   | "none" | "partial" | "full" | "exchanged" | "partial_exchange";
+
 
 function getReturnStatus(group: SaleGroup): ReturnStatus {
   const returnable = group.items.filter(
@@ -1302,7 +1312,7 @@ setSummary(s ? {
     const firstTx = group.items[0];
     const isCredit = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
     
-    const data: ReceiptData = {
+        const data: ReceiptData = {
       ref: "TXN-" + (firstTx?.id.slice(0, 8).toUpperCase() || ""),
       timestamp: new Date(group.created_at).toLocaleString("en-KE", { 
         weekday: 'short', day: 'numeric', month: 'short', 
@@ -1319,6 +1329,14 @@ setSummary(s ? {
         unlisted: !t.product_id,
       })),
       total: group.total,
+      // These come from the DB rows: sale_discount is a synthetic row with is_discount=true
+      preDiscountTotal: group.items
+        .filter(t => !(t as any).is_discount)
+        .reduce((s, t) => s + t.amount, 0),
+      lineDiscountTotal: 0,
+      saleDiscount: group.items
+        .filter(t => (t as any).is_discount)
+        .reduce((s, t) => s + Math.abs(t.amount), 0),
       paymentMethod: group.payment_method === "cash" ? "Cash" : group.payment_method === "mpesa" ? "M-Pesa" : group.payment_method === "split" ? "Split" : "Pay Later",
       mpesaRef: firstTx?.mpesa_ref || "",
       isCredit,
@@ -2207,6 +2225,7 @@ setSummary(s ? {
                                     {group.items.some(t => t.status === "credit_partial") ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
                                   </span>
                                 )}
+
                                 {(() => {
                                   const b = returnStatusBadge(returnStatus);
                                   if (!b) return null;
@@ -2261,7 +2280,8 @@ setSummary(s ? {
                                 <div style={{ fontSize: 12, fontWeight: 600, fontFamily: theme.font.mono, color: theme.text.primary }}>{new Date(group.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
                               </div>
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
-                              {group.items.map(tx => (
+                                                                   {/* Loop only over real items, hiding the synthetic discount row */}
+                                                            {group.items.map(tx => (
                                 <div key={tx.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
                                   <div style={{ width: 32, height: 32, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, position: "relative" }}>
                                     <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
@@ -2309,6 +2329,7 @@ setSummary(s ? {
                                 return <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>;
                               })()}
                               </div>
+
                               {/* Group commission summary */}
                               {(() => {
                                 const groupCommissionEarned = group.items.reduce((s, t) => s + (t.commission_earned ?? 0), 0);
@@ -2449,6 +2470,7 @@ setSummary(s ? {
                                 </span>
                               </div>
                             )}
+
                             {(() => {
                               const b = returnStatusBadge(returnStatus);
                               if (!b) return null;

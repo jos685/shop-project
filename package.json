@@ -12,6 +12,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@sentry/react": "^11.10.0",
     "@supabase/supabase-js": "^2.99.3",
     "antd": "^6.6.6",
     "html-to-image": "^1.11.13",

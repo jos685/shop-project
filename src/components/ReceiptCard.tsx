@@ -9,12 +9,19 @@ export default function ReceiptCard({
   biz,
   theme,
   isMobile,
+  preDiscountTotal = 0,
+  lineDiscountTotal = 0, 
+  saleDiscount = 0, 
+    
   compact = false,   // used inside the WhatsApp modal preview
 }: {
   data: ReceiptData;
   biz: BusinessInfo;
   theme: any;
   isMobile: boolean;
+  preDiscountTotal?: number;
+  lineDiscountTotal?: number;
+  saleDiscount?: number;
   compact?: boolean;
 }) {
   const [logoBroken, setLogoBroken] = useState(false);
@@ -190,7 +197,33 @@ export default function ReceiptCard({
         ))}
       </div>
 
-      <Divider color={borderCol} />
+                <Divider color={borderCol} />
+
+      {/* ── Discount Breakdown ── */}
+      {(lineDiscountTotal > 0 || saleDiscount > 0) && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: theme.font.mono }}>
+            <span style={{ color: cMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Subtotal</span>
+            <span style={{ color: cPrimary, fontWeight: 600 }}>{ksh(preDiscountTotal)}</span>
+          </div>
+          
+          {lineDiscountTotal > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: theme.font.mono }}>
+              <span style={{ color: cMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Item discounts</span>
+              <span style={{ color: "#dc2626", fontWeight: 600 }}>-{ksh(lineDiscountTotal)}</span>
+            </div>
+          )}
+          
+          {saleDiscount > 0 && (
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11.5, fontFamily: theme.font.mono }}>
+              <span style={{ color: cMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Sale discount</span>
+              <span style={{ color: "#dc2626", fontWeight: 600 }}>-{ksh(saleDiscount)}</span>
+            </div>
+          )}
+
+          <div style={{ borderTop: `1px dashed ${borderCol}`, margin: "4px 0" }} />
+        </div>
+      )}
 
       {/* ── Total ── */}
       <div

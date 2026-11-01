@@ -31,6 +31,7 @@ export interface CustomItem {
     allocation: LocalAlloc;
     quantity: number;
     sellPrice: number;
+    discount: number;
   }
   
   export interface UnlistedCartItem {
@@ -42,6 +43,7 @@ export interface CustomItem {
     quantity: number;
     sellPrice: number;
     buyingPrice?: number | null;
+    discount: number;
   }
   
   export type CartItem = ListedCartItem | UnlistedCartItem;

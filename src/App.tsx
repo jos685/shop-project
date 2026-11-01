@@ -16,6 +16,11 @@ import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
 import { PwaUpdatePrompt, PwaInstallBanner, PwaReinstallNudge } from "./components/PwaPrompts";
 
+import * as Sentry from "@sentry/react";
+
+
+const SentryRoutes = Sentry.wrapReactRouterRouting(Routes);
+
 
 // ── Loading splash ────────────────────────────────────────────
 function LoadingScreen() {
@@ -48,17 +53,22 @@ function PosApp() {
     return () => window.removeEventListener("shop:start-tour", handler);
   }, []);
 
-  // ── Safety net: If the session takes too long to hydrate, pause and show a Retry UI.
-  //    Do NOT automatically log out, as a slow connection might just need a few more seconds.
+   // ── Safety net: If the session takes too long to hydrate, pause and show a Retry UI.
   useEffect(() => {
+    // If we are fully loaded, or already have a session, or are offline, clear any timer and exit
     if (!shop || hasAuthSession || loading) {
       setAuthTimeout(false);
       return;
     }
+
     const t = setTimeout(() => {
-      console.warn("Auth session taking too long to hydrate");
-      setAuthTimeout(true);
-    }, 15_000); // Increased to 15 seconds
+      // Double check: only show the error if we are still waiting AND we aren't offline
+      if (!hasAuthSession && navigator.onLine) {
+        console.warn("Auth session taking too long to hydrate");
+        setAuthTimeout(true);
+      }
+    }, 15_000);
+
     return () => clearTimeout(t);
   }, [shop, hasAuthSession, loading]);
 
@@ -70,19 +80,18 @@ function PosApp() {
     return (
       <>
         <TopNav />
-        <Routes>
+        <SentryRoutes>
           <Route path="/pos/login" element={<PosLogin />} />
           <Route path="*" element={<Navigate to="/pos/login" replace />} />
-        </Routes>
+        </SentryRoutes>
         <BottomNav />
       </>
     );
   }
 
   // 3. Logged in but no Supabase JWT yet
-  if (!hasAuthSession) {
+   if (!hasAuthSession) {
     if (authTimeout) {
-      // Show a friendly retry screen instead of force-logging out
       return (
         <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100vh", padding: 20, textAlign: "center", background: "#0f172a", color: "#fff" }}>
           <div style={{ fontSize: 48, marginBottom: 16 }}>📡</div>
@@ -90,15 +99,28 @@ function PosApp() {
           <p style={{ color: "#94a3b8", marginBottom: 24, maxWidth: 300, fontFamily: "monospace", fontSize: 13 }}>
             We're having trouble verifying your secure session. This usually happens due to a slow internet connection.
           </p>
+          
           <button 
             onClick={() => window.location.reload()} 
-            style={{ padding: "14px 28px", background: "#06b6d4", color: "#fff", border: "none", borderRadius: 12, fontWeight: "bold", cursor: "pointer", fontSize: 14 }}
+            style={{ padding: "14px 28px", background: "#06b6d4", color: "#fff", border: "none", borderRadius: 12, fontWeight: "bold", cursor: "pointer", fontSize: 14, marginBottom: 12 }}
           >
             🔄 Retry Connection
           </button>
+
+          {/* Add this button so they can skip the wait and work offline */}
+          <button 
+            onClick={() => {
+              // Force the app to treat the session as active so they can use the POS offline
+              window.dispatchEvent(new CustomEvent("force-offline-mode"));
+            }} 
+            style={{ padding: "14px 28px", background: "transparent", border: "1px solid #06b6d4", color: "#06b6d4", borderRadius: 12, fontWeight: "bold", cursor: "pointer", fontSize: 14, marginBottom: 24 }}
+          >
+            ⚡ Continue in Offline Mode
+          </button>
+
           <button 
             onClick={logout} 
-            style={{ marginTop: 20, background: "none", border: "none", color: "#64748b", textDecoration: "underline", cursor: "pointer", fontSize: 12 }}
+            style={{ background: "none", border: "none", color: "#64748b", textDecoration: "underline", cursor: "pointer", fontSize: 12 }}
           >
             Sign out and use another account
           </button>
@@ -114,7 +136,7 @@ function PosApp() {
       <TopNav />
       <div style={{ paddingTop: 58 }}>
         <ShopSubscriptionGuard>
-          <Routes>
+          <SentryRoutes>
             <Route path="/pos"              element={<PosDashboard />}        />
             <Route path="/pos/scan"         element={<PosScan />}             />
             <Route path="/pos/transactions" element={<PosTransactionsPage />} />
@@ -122,7 +144,7 @@ function PosApp() {
             <Route path="/pos/requests"     element={<PosRequests />}         />
             <Route path="/pos/login"        element={<Navigate to="/pos" replace />} />
             <Route path="*"                 element={<Navigate to="/pos" replace />} />
-          </Routes>
+          </SentryRoutes>
 
           {showTour && (
             <ShopOnboardingTour
