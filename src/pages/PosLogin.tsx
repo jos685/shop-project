@@ -12,20 +12,6 @@ function getGreeting() {
   return { text: "Good evening!", icon: "🌙", sub: "Wrapping up a great day of sales?" };
 }
 
-function ErrorButton() {
-  const [crash, setCrash] = useState(false);
-
-  if (crash) {
-    // This throws during render, guaranteed to hit onUncaughtError
-    throw new Error("Sentry test: render-time error");
-  }
-
-  return (
-    <button onClick={() => setCrash(true)}>
-      Break the world
-    </button>
-  );
-}
 
 export default function PosLogin() {
   const { login } = useShopAuth();
@@ -775,8 +761,6 @@ export default function PosLogin() {
 
           </form>
 
-          {/* TEMP: Sentry test — remove before committing */}
-<ErrorButton />
 
                     {!isInstalled && (
             <div style={{ marginTop: 10 }}>
