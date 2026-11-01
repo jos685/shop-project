@@ -32,6 +32,7 @@ export default defineConfig({
         navigateFallback: '/pos/index.html',
         navigateFallbackAllowlist: [/^\/pos/],
         globPatterns: ['**/*.{js,css,html,ico,svg,png,woff2}'],
+        maximumFileSizeToCacheInBytes: 3 * 1024 * 1024,
         runtimeCaching: [
           {
             urlPattern: /^https:\/\/.*\.supabase\.co\/(rest|auth|storage)\//,

@@ -9,59 +9,6 @@ import { supabase } from "../lib/supabase";
 import { sanitizeInteger, sanitizeText, sanitizeAmount, sanitizeCode } from "../lib/sanitize";
 import { enqueueRequest, enqueueExpense, getMiscQueue, type QueuedRequest, type QueuedExpense } from "../lib/offlineQueue";
 
-// Sums what has already been spent per method. Handles:
-//   - pure cash  (cash_amount set, mpesa_amount 0)
-//   - pure mpesa (mpesa_amount set, cash_amount 0)
-//   - split      (both set)
-//   - legacy rows where cash_amount/mpesa_amount are null but
-function sumExpensedByMethod(list: Expense[]): { cash: number; mpesa: number } {
-  let cash = 0, mpesa = 0;
-  for (const e of list) {
-    // Use || so a stored 0 (legacy row) falls through to payment_method,
-    // not ?? which would count it as a real 0.
-    const c = Number(e.cash_amount)  || (e.payment_method === "cash"  ? Number(e.amount) : 0);
-    const m = Number(e.mpesa_amount) || (e.payment_method === "mpesa" ? Number(e.amount) : 0);
-    cash  += c;
-    mpesa += m;
-  }
-  return { cash, mpesa };
-}
-
-// Mirrors the split-routing rules used across the app:
-// prefer the exact refund_cash_amount / refund_mpesa_amount split;
-// fall back to refund_method when the split isn't recorded.
-function sumReturnsByMethod(list: {
-  refund_cash_amount?: number | null;
-  refund_mpesa_amount?: number | null;
-  refund_method?: string | null;
-  amount_refunded?: number | null;
-}[]): { cash: number; mpesa: number } {
-  let cash = 0, mpesa = 0;
-  for (const r of list) {
-    const ca = Number(r.refund_cash_amount)  || 0;
-    const ma = Number(r.refund_mpesa_amount) || 0;
-    if (ca > 0 || ma > 0) {
-      cash  += ca;
-      mpesa += ma;
-    } else {
-      const amt = Number(r.amount_refunded) || 0;
-      if (r.refund_method === "cash")       cash  += amt;
-      else if (r.refund_method === "mpesa") mpesa += amt;
-      // "exchange" / "split with no amounts" → contributes nothing
-    }
-  }
-  return { cash, mpesa };
-}
-
-// Today-only guard — RPC (get_shop_wallet_totals) reports today's activity,
-// so any client-side subtraction must be scoped the same way.
-function isToday(iso: string): boolean {
-  const d = new Date(iso);
-  const n = new Date();
-  return d.getFullYear() === n.getFullYear()
-      && d.getMonth()    === n.getMonth()
-      && d.getDate()     === n.getDate();
-}
 
 // Signed net position for a single sale.
 //   > 0 → customer still owes the shop
@@ -213,6 +160,7 @@ interface Expense {
   logged_by_name: string;
   created_at: string;
   updated_at: string;
+  expense_date?: string;
 }
 
 interface CreditSaleItem {
@@ -345,7 +293,11 @@ function statusBadge(status: RequestStatus) {
 
     const needsProduct = type === "stock_request" || type === "damage_report" || type === "demand_report";
     const needsQty     = type === "stock_request" || type === "damage_report";
-
+     
+    
+    //Expenses
+    const [expenseDate, setExpenseDate] = useState<string>(new Date().toISOString().split('T')[0]);
+    const [expenseEndDate, setExpenseEndDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
     // ── Replace (exchange) for credit sales ───────────────────
     const [replaceTarget,   setReplaceTarget]   = useState<CreditSale | null>(null);
@@ -396,36 +348,6 @@ function statusBadge(status: RequestStatus) {
     const [expenses,      setExpenses]      = useState<Expense[]>([]);
     const [expLoading,    setExpLoading]    = useState(false);
 
-    // Shop-wide returns — used to reduce the wallet totals in the expense modal
-    const [shopReturns, setShopReturns] = useState<{
-      refund_cash_amount: number | null;
-      refund_mpesa_amount: number | null;
-      refund_method: string | null;
-      amount_refunded: number | null;
-      created_at: string;
-    }[]>([]);
-
-    const fetchShopReturns = useCallback(async () => {
-      if (!shop) return;
-      const { data } = await supabase
-        .from("transaction_returns")
-        .select("refund_cash_amount, refund_mpesa_amount, refund_method, amount_refunded, created_at")
-        .eq("shop_id", shop.id);
-      setShopReturns((data || []) as any);
-    }, [shop]);
-
-    useEffect(() => { fetchShopReturns(); }, [fetchShopReturns]);
-
-    // Refresh if another tab (PosTransactions) inserts a return
-    useEffect(() => {
-      if (!shop) return;
-      const ch = supabase.channel("shop-returns-live-req")
-        .on("postgres_changes",
-          { event: "*", schema: "public", table: "transaction_returns", filter: `shop_id=eq.${shop.id}` },
-          fetchShopReturns)
-        .subscribe();
-      return () => { supabase.removeChannel(ch); };
-    }, [shop, fetchShopReturns]);
 
     const [logOpen,        setLogOpen]        = useState(false);
     const [expDesc,        setExpDesc]        = useState("");
@@ -806,26 +728,31 @@ function statusBadge(status: RequestStatus) {
     setTimeout(() => { setShowForm(false); setSuccessMsg(""); fetchData(); }, 1500);
   };
 
-  // ── Fetch shop sales totals (overall + per payment method) when expense modal opens ──
+
  // ── Fetch shop sales totals (overall + per payment method) when expense modal opens ──
 useEffect(() => {
   if (!logOpen || !shop) return;
   setShopCashTotal(null); setShopMpesaTotal(null);
+
   supabase
-    .rpc("get_shop_wallet_totals", { p_shop_id: shop.id })
+    .rpc("get_shop_balance_as_of", {
+      p_shop_id: shop.id,
+      p_start_date: expenseDate,
+      p_end_date: expenseEndDate,
+    })
     .then(({ data, error }) => {
       if (error) {
-        console.error("get_shop_wallet_totals error:", error);
+        console.error("get_shop_balance_as_of error:", error);
         return;
       }
       const row = Array.isArray(data) ? data[0] : data;
-      setShopCashTotal(Number(row?.cash_total  ?? 0));
-      setShopMpesaTotal(Number(row?.mpesa_total ?? 0));
+      setShopCashTotal(Number(row?.cash_available ?? 0));
+      setShopMpesaTotal(Number(row?.mpesa_available ?? 0));
     });
-}, [logOpen, shop]);
+}, [logOpen, shop, expenseDate, expenseEndDate]);
 
   // ── Expense handlers ──────────────────────────────────────────────────
-  const handleLogExpense = async (agent: ShopAgent) => {
+const handleLogExpense = async (agent: ShopAgent) => {
     const expCash  = Math.round(Number(expCashAmount)  || 0);
     const expMpesa = Math.round(Number(expMpesaAmount) || 0);
     const amount   = expCash + expMpesa;
@@ -834,15 +761,11 @@ useEffect(() => {
     
     const autoMethod = expCash > 0 && expMpesa > 0 ? "split" : expMpesa > 0 ? "mpesa" : "cash";
 
-    const { cash: cashExpensed, mpesa: mpesaExpensed } =
-     sumExpensedByMethod(expenses.filter(e => isToday(e.created_at)));
-    const { cash: cashReturned, mpesa: mpesaReturned } =
-    sumReturnsByMethod(shopReturns.filter(r => isToday(r.created_at)));
+    // get_shop_balance_as_of already subtracts all past expenses + returns
+    // up to expenseDate, so no client-side subtraction is needed.
+    const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal)  : null;
+    const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal) : null;
 
-const cashAvail  = shopCashTotal  !== null
-  ? Math.max(0, shopCashTotal  - cashReturned  - cashExpensed)  : null;
-const mpesaAvail = shopMpesaTotal !== null
-  ? Math.max(0, shopMpesaTotal - mpesaReturned - mpesaExpensed) : null;
     if (cashAvail  !== null && expCash  > cashAvail)  { setExpError(`Cash amount exceeds available (${fmt(cashAvail)}).`);  return; }
     if (mpesaAvail !== null && expMpesa > mpesaAvail) { setExpError(`M-Pesa amount exceeds available (${fmt(mpesaAvail)}).`); return; }
         setExpProcessing(true);
@@ -851,7 +774,7 @@ const mpesaAvail = shopMpesaTotal !== null
       enqueueExpense({
         shopId: shop!.id, ownerId: shop!.owner_id, amount,
         description: expDesc.trim(), loggedBy: agent.agent.id, loggedByName: agent.agent.name,
-        paymentMethod: autoMethod, cashAmount: expCash, mpesaAmount: expMpesa,
+        paymentMethod: autoMethod, cashAmount: expCash, mpesaAmount: expMpesa, expenseDate,
       });
       refreshPendingCount();
       setLogOpen(false);
@@ -869,6 +792,7 @@ const mpesaAvail = shopMpesaTotal !== null
       p_payment_method: autoMethod,
       p_cash_amount:    expCash,
       p_mpesa_amount:   expMpesa,
+      p_expense_date:   expenseDate,
     });
     if (error) { console.error("insert_shop_expense error:", error.message, error.code, error.details); setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
     setLogOpen(false);
@@ -907,11 +831,13 @@ const mpesaAvail = shopMpesaTotal !== null
   };
 
   const resetLogModal = () => {
-    setLogOpen(false);
-    setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null);
-    setExpPin(""); setExpPinError(""); setExpError(""); setExpProcessing(false);
-    resetPinLockout();
-  };
+  setLogOpen(false);
+  setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null);
+  setExpPin(""); setExpPinError(""); setExpError(""); setExpProcessing(false);
+  setExpenseDate(new Date().toISOString().split('T')[0]);  
+  setExpenseEndDate(new Date().toISOString().split('T')[0]);
+  resetPinLockout();
+};
 
   const resetEditModal = () => {
     setEditTarget(null);
@@ -2142,7 +2068,7 @@ ${theme.kiCss}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.description}</div>
                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                      {exp.logged_by_name} · {new Date(exp.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short" })} {new Date(exp.created_at).toLocaleTimeString("en-KE", { hour: "2-digit", minute: "2-digit" })}
+                      {exp.logged_by_name} · {new Date((exp as any).expense_date || exp.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}
                     </div>
                     {exp.updated_at !== exp.created_at && (
                       <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>edited</div>
@@ -2902,44 +2828,84 @@ ${theme.kiCss}
             </div>
 
             {/* Available balance strips */}
-              {(() => {
-                const { cash: cashExpensed, mpesa: mpesaExpensed } =
-                  sumExpensedByMethod(expenses.filter(e => isToday(e.created_at)));
-                const { cash: cashReturned, mpesa: mpesaReturned } =
-                  sumReturnsByMethod(shopReturns.filter(r => isToday(r.created_at)));
+         
+                {(() => {
+                  const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
+                  const enteredC   = Math.round(Number(expCashAmount)  || 0);
+                  const enteredM   = Math.round(Number(expMpesaAmount) || 0);
 
-                const cashAvail  = shopCashTotal  !== null
-                  ? Math.max(0, shopCashTotal  - cashReturned  - cashExpensed)  : null;
-                const mpesaAvail = shopMpesaTotal !== null
-                  ? Math.max(0, shopMpesaTotal - mpesaReturned - mpesaExpensed) : null;
-                const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
-                const enteredC   = Math.round(Number(expCashAmount)  || 0);
-                const enteredM   = Math.round(Number(expMpesaAmount) || 0);
-                return (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {[
-                    { icon: "💵", label: "Cash available",   avail: cashAvail,  entered: enteredC },
-                    { icon: "📱", label: "M-Pesa available", avail: mpesaAvail, entered: enteredM },
-                  ].map(r => {
-                    const over = r.avail !== null && r.entered > 0 && r.entered > r.avail;
-                    return (
-                      <div key={r.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", background: over ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${over ? "rgba(248,113,113,0.3)" : theme.border.default}`, borderRadius: 10 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                          <span style={{ fontSize: 14 }}>{over ? "⚠️" : r.icon}</span>
-                          <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: over ? "#f87171" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{r.label}</span>
-                        </div>
-                        {isLoading
-                          ? <span style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
-                          : <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: over ? "#f87171" : (r.avail ?? 0) === 0 ? theme.text.muted : "#34d399" }}>{fmt(r.avail ?? 0)}</span>
-                        }
-                      </div>
-                    );
-                  })}
-                </div>
-              );
-            })()}
+                  // The SQL function ALREADY calculated the net balance. 
+                  // DO NOT subtract cashReturned, cashExpensed, etc. here.
+                  const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal)  : null;
+                  const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal) : null;
 
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {[
+                        { icon: "💵", label: "Cash available",   avail: cashAvail,  entered: enteredC },
+                        { icon: "📱", label: "M-Pesa available", avail: mpesaAvail, entered: enteredM },
+                      ].map(r => {
+                        const over = r.avail !== null && r.entered > 0 && r.entered > r.avail;
+                        return (
+                          <div key={r.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", background: over ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${over ? "rgba(248,113,113,0.3)" : theme.border.default}`, borderRadius: 10 }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                              <span style={{ fontSize: 14 }}>{over ? "⚠️" : r.icon}</span>
+                              <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: over ? "#f87171" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{r.label}</span>
+                            </div>
+                            {isLoading
+                              ? <span style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
+                              : <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: over ? "#f87171" : (r.avail ?? 0) === 0 ? theme.text.muted : "#34d399" }}>{fmt(r.avail ?? 0)}</span>
+                            }
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
+
+           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
+              <label style={{
+                color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+                textTransform: "uppercase", letterSpacing: "0.07em",
+                display: "block", marginBottom: 6,
+              }}>
+                Start Date
+              </label>
+              <input
+                type="date"
+                className="ki"
+                value={expenseDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={e => {
+                  setExpenseDate(e.target.value);
+                  // Ensure end date is never before start date
+                  if (expenseEndDate < e.target.value) setExpenseEndDate(e.target.value);
+                  setExpError("");
+                }}
+                style={{ width: "100%", boxSizing: "border-box" }}
+              />
+            </div>
+            <div>
+              <label style={{
+                color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+                textTransform: "uppercase", letterSpacing: "0.07em",
+                display: "block", marginBottom: 6,
+              }}>
+                End Date
+              </label>
+              <input
+                type="date"
+                className="ki"
+                value={expenseEndDate}
+                min={expenseDate}
+                max={new Date().toISOString().split('T')[0]}
+                onChange={e => { setExpenseEndDate(e.target.value); setExpError(""); }}
+                style={{ width: "100%", boxSizing: "border-box" }}
+              />
+            </div>
+          </div>
+             <div>
               <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 6 }}>What was it for?</label>
               <textarea className="ki" value={expDesc}
                 onChange={e => { setExpDesc(sanitizeText(e.target.value, 200)); setExpError(""); }}
