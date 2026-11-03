@@ -18,7 +18,6 @@ import { PwaUpdatePrompt, PwaInstallBanner, PwaReinstallNudge } from "./componen
 
 import * as Sentry from "@sentry/react";
 
-
 const SentryRoutes = Sentry.wrapReactRouterRouting(Routes);
 
 

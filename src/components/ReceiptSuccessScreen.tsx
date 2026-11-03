@@ -106,7 +106,7 @@ const [actionError, setError] = useState("");
 const [shareOpen, setShareOpen] = useState(false);
 const [shareImage, setShareImage] = useState<{ file: File; dataUrl: string } | null>(null);
 
-     // ── Helper to generate the perfect PNG image ──
+  // ── Helper to generate the perfect PNG image ──
   const generateImage = useCallback(async (): Promise<string> => {
     let logoData: string | null = null;
     const url = biz.logoUrl;
@@ -129,8 +129,11 @@ const [shareImage, setShareImage] = useState<{ file: File; dataUrl: string } | n
     const iframe = document.createElement("iframe");
     iframe.style.position = "fixed";
     iframe.style.left = "-9999px";
+    iframe.style.top = "0";
     iframe.style.width = "400px";
     iframe.style.height = "1200px";
+    iframe.style.border = "none";
+    iframe.style.visibility = "hidden"; // Hide visually but keep in DOM
     document.body.appendChild(iframe);
 
     try {
@@ -142,7 +145,9 @@ const [shareImage, setShareImage] = useState<{ file: File; dataUrl: string } | n
 
       // Wait for images inside the iframe to load
       await new Promise((resolve) => {
+        const timeout = setTimeout(resolve, 2000); // 2s safety timeout
         iframe.onload = async () => {
+          clearTimeout(timeout);
           const images = Array.from(doc.querySelectorAll("img"));
           await Promise.all(
             images.map((img) => {
@@ -152,15 +157,22 @@ const [shareImage, setShareImage] = useState<{ file: File; dataUrl: string } | n
           );
           resolve(null);
         };
-        setTimeout(resolve, 1500); 
       });
 
+      // Add a small delay to ensure CSS/Layout is painted on mobile
+      await new Promise((r) => setTimeout(r, 300));
+
       const dataUrl = await toPng(doc.body, {
-        pixelRatio: 2,
+        pixelRatio: 2, // Keep 2 for decent quality, reduce to 1 if it still fails
         backgroundColor: "#ffffff",
         width: 400,
         height: doc.body.scrollHeight,
-        cacheBust: true, 
+        cacheBust: true,
+        skipAutoScale: true, // Important for mobile
+        style: {
+          margin: '0',
+          padding: '0'
+        }
       });
 
       return dataUrl;
@@ -254,37 +266,61 @@ const handleShare = useCallback(async () => {
   setBusy("share");
 
   try {
-    // Reuse cached image if we already generated it for this receipt
     let file = shareImage?.file;
     let dataUrl = shareImage?.dataUrl;
 
+    // 1. Try to generate the image
     if (!file || !dataUrl) {
-      dataUrl = await generateImage();
-      const res = await fetch(dataUrl);
-      const blob = await res.blob();
-      file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
-      setShareImage({ file, dataUrl });
+      try {
+        dataUrl = await generateImage();
+        const res = await fetch(dataUrl);
+        const blob = await res.blob();
+        file = new File([blob], `receipt-${ref}.png`, { type: "image/png" });
+        setShareImage({ file, dataUrl });
+      } catch (imgError) {
+        console.warn("Image generation failed, falling back to text/PDF share.", imgError);
+        // Do not throw here. Let it fall through to native text share below.
+      }
     }
 
-    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({
-        files: [file],
+    // 2. Try Native Share (Mobile Share Sheet)
+    if (navigator.share) {
+      const shareData: ShareData = {
         title: `Receipt · ${ref}`,
-        text: `Receipt from ${biz.businessName}`,
-      });
+        text: `Receipt from ${biz.businessName}\nRef: ${ref}\nTotal: KSh ${grandTotal}`,
+      };
+
+      // If we successfully generated the image, attach it
+      if (file && navigator.canShare && navigator.canShare({ files: [file] })) {
+        shareData.files = [file];
+      }
+
+      try {
+        await navigator.share(shareData);
+        return; // Successfully opened share sheet
+      } catch (err: any) {
+        if (err.name === 'AbortError') return; // User cancelled
+        console.warn("Native share failed, showing popover...", err);
+      }
+    }
+
+    // 3. Fallback: If no native share or it failed, show the custom popover
+    // If we don't have an image, we can't show the image preview in the popover,
+    // so we just trigger the PDF generation or fallback text.
+    if (!file) {
+      setError("Image generation failed. Please use the PDF button.");
+      setBusy(null);
       return;
     }
 
     setShareOpen(true);
   } catch (err: any) {
     console.error("Share failed:", err);
-    if (err.name !== "AbortError") {
-      setError("Could not generate image. Please use the PDF button.");
-    }
+    setError("Could not share. Please use the PDF button.");
   } finally {
     setBusy(null);
   }
-}, [generateImage, ref, biz, shareImage]);
+}, [generateImage, ref, biz, shareImage, grandTotal]);
 
   return (
     

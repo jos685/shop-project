@@ -4572,25 +4572,7 @@ const renderVerifyStep = () => (
           </button>
         </div>
    
-      {/* Bill-level concession */}
-        <div style={{ marginTop: 10 }}>
-          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>
-            Discounted total
-          </label>
-          <input
-            className="ki"
-            type="text"
-            inputMode="numeric"
-            value={amountReceived}
-            onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
-            placeholder={String(grandTotal)}
-          />
-          {saleDiscount > 0 && (
-            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>
-              Sale discount: −{fmt(saleDiscount)}
-            </div>
-          )}
-        </div>
+   
 
       </div>
 
@@ -4643,6 +4625,31 @@ const renderVerifyStep = () => (
           >
             + Add more products
           </button>
+
+             {/* Bill-level concession */}
+        <div style={{ marginTop: 10 }}>
+          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>
+            Discounted total
+          </label>
+          <input
+            className="ki"
+            type="text"
+            inputMode="numeric"
+            value={amountReceived}
+            onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
+            placeholder={String(grandTotal)}
+            style={{
+              border: "2px solid #06b6d4",
+              borderRadius: 8,
+              outline: "none",
+            }}
+          />
+          {saleDiscount > 0 && (
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", marginTop: 4 }}>
+              Sale discount: −{fmt(saleDiscount)}
+            </div>
+          )}
+        </div>
 
           {/* ── Backdate row ─────────────────────────────────────────── */}
 <button
