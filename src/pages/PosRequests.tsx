@@ -1906,10 +1906,11 @@ function getGroupShopOwes(group: CustomerCreditGroup): number {
   );
 
   // ── Tab labels ────────────────────────────────────────────────────────
+    // ── Tab labels ────────────────────────────────────────────────────────
   const tabs: { key: ActiveTab; label: string }[] = [
     { key: "credit",   label: `📝 Credit (${openCredit.length})` },
-    { key: "requests", label: `📋 Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` },
     { key: "expenses", label: `💸 Expenses (${expenses.length})` },
+    { key: "requests", label: `📋 Requests${pendingCount > 0 ? ` (${pendingCount})` : ""}` },
   ];
 
   return (

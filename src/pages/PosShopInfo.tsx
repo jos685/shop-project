@@ -1461,26 +1461,22 @@ const handleShareInvoice = async () => {
                     </div>
                   )}
               
-                {displayStock.length === 0 ? (
+                                {displayStock.length === 0 ? (
                   <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
                     {stockSearch ? (
-                          <>
-                            <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
-                            <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
-                          </>
-                        ) : (
-                          <>
-                            <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
-                            <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
-                            <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
-                          </>
-                        )}
-                    <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
-                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
-                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
+                      <>
+                        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
+                        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
+                      </>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
+                        <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
+                        <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
+                      </>
+                    )}
                   </div>
-                  ) 
-                : (
+                ) : (
                   <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
                     {!isMobile && (
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 110px 90px 90px 90px", gap: 12, padding: "12px 20px", borderBottom: `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.02)" }}>
@@ -1489,29 +1485,15 @@ const handleShareInvoice = async () => {
                         ))}
                       </div>
                     )}
-                {displayStock.length === 0? (
-                              <div style={{ textAlign: "center", padding: "60px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
-                                {stockSearch ? (
-                                  <>
-                                    <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>🔍</div>
-                                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products match "{stockSearch}"</div>
-                                  </>
-                                ) : (
-                                  <>
-                                    <div style={{ fontSize: 48, opacity: 0.2, marginBottom: 14 }}>📦</div>
-                                    <div style={{ color: theme.text.muted, fontSize: 14, fontFamily: theme.font.mono }}>No products assigned to this shop yet</div>
-                                    <div style={{ color: theme.text.muted, fontSize: 12, fontFamily: theme.font.mono, marginTop: 6, opacity: 0.6 }}>Contact your supervisor to assign stock</div>
-                                  </>
-                                )}
-                              </div>
-                            ) : (
-                              <>
-                              <div style={{
-                                display: "grid",
-                                gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
-                                gap: 12,
-                               }}>
-                                {displayStock.map(item => {
+                    
+                    {/* REMOVED the redundant inner check. We go straight to the grid. */}
+                    <div style={{
+                      display: "grid",
+                      gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
+                      gap: 12,
+                    }}>
+                      {displayStock.map(item => {
+                        
                                   const sold = item.allocated - item.remaining;
                                   const pct  = item.allocated > 0 ? Math.round((item.remaining / item.allocated) * 100) : 0;
                                   const sc   = item.remaining === 0 ? theme.accent.red : pct <= 20 ? theme.accent.gold : theme.accent.green;
@@ -1979,9 +1961,7 @@ const handleShareInvoice = async () => {
     );
   })()}
 
-  </>
-)}
-                  </div>
+                       </div>
                 )}
               </div>
             )}
