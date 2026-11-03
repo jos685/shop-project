@@ -263,6 +263,8 @@ export interface QueuedExpense {
   cashAmount?: number;
   mpesaAmount?: number;
   expenseDate: string;
+  source: "shop" | "owner" | "loan" | "other";
+  sourceLabel: string | null;
 }
 
 type MiscQueueItem = ({ kind: "request" } & QueuedRequest) | ({ kind: "expense" } & QueuedExpense);
@@ -316,16 +318,21 @@ async function syncAllMisc(): Promise<{ synced: number; failed: number }> {
       const vCash = item.cashAmount  ?? (pm === "cash"  ? item.amount : 0);
       const vMpesa= item.mpesaAmount ?? (pm === "mpesa" ? item.amount : 0);
       const { error } = await supabase.from("shop_expenses").insert({
-        shop_id:        item.shopId,
-        owner_id:       item.ownerId,
-        amount:         item.amount,
-        description:    item.description,
-        logged_by:      item.loggedBy,
-        logged_by_name: item.loggedByName,
-        payment_method: pm,
-        cash_amount:    vCash,
-        mpesa_amount:   vMpesa,
-      });
+          shop_id:        item.shopId,
+          owner_id:       item.ownerId,
+          amount:         item.amount,
+          description:    item.description,
+          logged_by:      item.loggedBy,
+          logged_by_name: item.loggedByName,
+          payment_method: pm,
+          cash_amount:    vCash,
+          mpesa_amount:   vMpesa,
+          expense_date:   item.expenseDate,                          // ← add
+          source:         item.source,                               // ← add
+          source_label:   item.source === "other"
+                            ? (item.sourceLabel?.trim() || null)
+                            : null,                                  // ← add
+        });
       err = error;
     }
     if (err) failed++;

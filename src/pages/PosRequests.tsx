@@ -122,6 +122,7 @@ function useWindowWidth() {
 type RequestType = "stock_request" | "damage_report" | "demand_report" | "message";
 type RequestStatus = "pending" | "approved" | "rejected";
 type ActiveTab = "requests" | "expenses" | "credit";
+type ExpenseSource = "shop" | "owner" | "loan" | "other";
 
 interface ShopRequest {
   id: string;
@@ -161,6 +162,8 @@ interface Expense {
   created_at: string;
   updated_at: string;
   expense_date?: string;
+  source: ExpenseSource;
+  source_label: string | null;
 }
 
 interface CreditSaleItem {
@@ -252,6 +255,13 @@ function statusBadge(status: RequestStatus) {
     </span>
   );
 }
+
+const EXPENSE_SOURCES: { value: ExpenseSource; label: string; icon: string }[] = [
+  { value: "shop",  label: "Shop",           icon: "🏪" },
+  { value: "owner", label: "Owner's pocket", icon: "👤" },
+  { value: "loan",  label: "Loan / credit",  icon: "🏦" },
+  { value: "other", label: "Other…",         icon: "✏️" },
+];
 
  // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -348,11 +358,21 @@ function statusBadge(status: RequestStatus) {
     const [expenses,      setExpenses]      = useState<Expense[]>([]);
     const [expLoading,    setExpLoading]    = useState(false);
 
+    const [expSearch,       setExpSearch]       = useState("");
+    const [expSourceFilter, setExpSourceFilter] = useState<"all" | ExpenseSource>("all");
+    const [expDateFilter,   setExpDateFilter]   = useState<"all" | "today" | "week" | "month" | "year" | "specific">("all");
+    const [expMonthFilter,  setExpMonthFilter]  = useState("");
+    const [expPage,         setExpPage]         = useState(1);
+    const EXP_PAGE_SIZE = 15;
+
 
     const [logOpen,        setLogOpen]        = useState(false);
     const [expDesc,        setExpDesc]        = useState("");
     const [expCashAmount,  setExpCashAmount]  = useState("");
     const [expMpesaAmount, setExpMpesaAmount] = useState("");
+    const [expSource,      setExpSource]      = useState<ExpenseSource>("shop");
+    const [expSourceLabel, setExpSourceLabel] = useState("");
+    const [expDatePreset, setExpDatePreset] = useState<"today" | "week" | "month" | "year" | "custom">("today"); 
     const [expAgent,       setExpAgent]       = useState<ShopAgent | null>(null);
     const [expPin,         setExpPin]         = useState("");
     const [expPinError,    setExpPinError]    = useState("");
@@ -414,6 +434,13 @@ function statusBadge(status: RequestStatus) {
     const [creditPayments,      setCreditPayments]      = useState<Record<string, CreditPayment[]>>({});
     const [paymentsLoading,     setPaymentsLoading]     = useState<string | null>(null);
     const [creditReturns, setCreditReturns] = useState<Record<string, TransactionReturn[]>>({});
+
+    const [creditSearch, setCreditSearch] = useState("");
+    const [creditDateFilter,  setCreditDateFilter]  = useState<"all" | "today" | "week" | "month" | "year" | "specific">("all");
+    const [creditMonthFilter, setCreditMonthFilter] = useState("");
+    const [creditFilter, setCreditFilter] = useState<"all" | "open" | "settled" | "returns">("all");
+    const [creditPage,   setCreditPage]   = useState(1);
+    const CREDIT_PAGE_SIZE = 15;
     
 
     const [businessName,    setBusinessName]    = useState("");
@@ -564,6 +591,14 @@ function statusBadge(status: RequestStatus) {
   }, [shop]);
 
   useEffect(() => { fetchExpenses(); }, [fetchExpenses]);
+
+  useEffect(() => {
+  setExpPage(1);
+}, [expSearch, expSourceFilter, expDateFilter, expMonthFilter]);
+
+useEffect(() => {
+  setCreditPage(1);
+}, [creditSearch, creditFilter, creditDateFilter, creditMonthFilter]);
 
   useEffect(() => {
     if (!shop) return;
@@ -751,54 +786,78 @@ useEffect(() => {
     });
 }, [logOpen, shop, expenseDate, expenseEndDate]);
 
-  // ── Expense handlers ──────────────────────────────────────────────────
 const handleLogExpense = async (agent: ShopAgent) => {
-    const expCash  = Math.round(Number(expCashAmount)  || 0);
-    const expMpesa = Math.round(Number(expMpesaAmount) || 0);
-    const amount   = expCash + expMpesa;
-    if (!amount || amount <= 0) { setExpError("Enter a Cash or M-Pesa amount."); return; }
-    if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
-    
-    const autoMethod = expCash > 0 && expMpesa > 0 ? "split" : expMpesa > 0 ? "mpesa" : "cash";
+  const expCash  = Math.round(Number(expCashAmount)  || 0);
+  const expMpesa = Math.round(Number(expMpesaAmount) || 0);
+  const amount   = expCash + expMpesa;
+  if (!amount || amount <= 0) { setExpError("Enter a Cash or M-Pesa amount."); return; }
+  if (!expDesc.trim()) { setExpError("Describe the expense."); return; }
 
-    // get_shop_balance_as_of already subtracts all past expenses + returns
-    // up to expenseDate, so no client-side subtraction is needed.
+  // Validate custom label
+  if (expSource === "other" && !expSourceLabel.trim()) {
+    setExpError("Please name the source."); return;
+  }
+
+  const autoMethod = expCash > 0 && expMpesa > 0 ? "split" : expMpesa > 0 ? "mpesa" : "cash";
+
+  // Balance check — ONLY shop-funded expenses deduct from shop cash
+  if (expSource === "shop") {
     const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal)  : null;
     const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal) : null;
+    if (cashAvail  !== null && expCash  > cashAvail)  { setExpError(`Cash exceeds available (${fmt(cashAvail)}).`);  return; }
+    if (mpesaAvail !== null && expMpesa > mpesaAvail) { setExpError(`M-Pesa exceeds available (${fmt(mpesaAvail)}).`); return; }
+  }
+  // external sources: no check — the money came from outside the till
 
-    if (cashAvail  !== null && expCash  > cashAvail)  { setExpError(`Cash amount exceeds available (${fmt(cashAvail)}).`);  return; }
-    if (mpesaAvail !== null && expMpesa > mpesaAvail) { setExpError(`M-Pesa amount exceeds available (${fmt(mpesaAvail)}).`); return; }
-        setExpProcessing(true);
+  setExpProcessing(true);
 
-    if (!isOnline) {
-      enqueueExpense({
-        shopId: shop!.id, ownerId: shop!.owner_id, amount,
-        description: expDesc.trim(), loggedBy: agent.agent.id, loggedByName: agent.agent.name,
-        paymentMethod: autoMethod, cashAmount: expCash, mpesaAmount: expMpesa, expenseDate,
-      });
-      refreshPendingCount();
-      setLogOpen(false);
-      setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
-      return;
-    }
-
-    const { error } = await supabase.rpc("insert_shop_expense", {
-      p_shop_id:        shop?.id,
-      p_owner_id:       shop?.owner_id,
-      p_amount:         amount,
-      p_description:    expDesc.trim(),
-      p_logged_by:      agent.agent.id,
-      p_logged_by_name: agent.agent.name,
-      p_payment_method: autoMethod,
-      p_cash_amount:    expCash,
-      p_mpesa_amount:   expMpesa,
-      p_expense_date:   expenseDate,
+  if (!isOnline) {
+    enqueueExpense({
+      shopId: shop!.id, ownerId: shop!.owner_id, amount,
+      description: expDesc.trim(),
+      loggedBy: agent.agent.id, loggedByName: agent.agent.name,
+      paymentMethod: autoMethod, cashAmount: expCash, mpesaAmount: expMpesa,
+      expenseDate, source: expSource,
+      sourceLabel: expSource === "other" ? expSourceLabel.trim() : null,
     });
-    if (error) { console.error("insert_shop_expense error:", error.message, error.code, error.details); setExpProcessing(false); setExpError("Failed to save expense. Try again."); return; }
+    refreshPendingCount();
     setLogOpen(false);
-    setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null); setExpPin(""); setExpError(""); setExpProcessing(false);
-    fetchExpenses();
-  };
+    setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null);
+    setExpPin(""); setExpError(""); setExpProcessing(false);
+    setExpSource("shop"); setExpSourceLabel("");   // ← reset source too
+    setExpenseDate(new Date().toISOString().split('T')[0]);
+    setExpenseEndDate(new Date().toISOString().split('T')[0]);
+    setExpDatePreset("today");
+    return;
+  }
+
+  const { error } = await supabase.rpc("insert_shop_expense", {
+    p_shop_id:        shop?.id,
+    p_owner_id:       shop?.owner_id,
+    p_amount:         amount,
+    p_description:    expDesc.trim(),
+    p_logged_by:      agent.agent.id,
+    p_logged_by_name: agent.agent.name,
+    p_payment_method: autoMethod,
+    p_cash_amount:    expCash,
+    p_mpesa_amount:   expMpesa,
+    p_expense_date:   expenseDate,
+    p_source:         expSource,
+    p_source_label:   expSource === "other" ? expSourceLabel.trim() : null,
+  });
+  if (error) {
+    console.error("insert_shop_expense error:", error.message, error.code, error.details);
+    setExpProcessing(false); setExpError("Failed to save expense. Try again."); return;
+  }
+  setLogOpen(false);
+  setExpDesc(""); setExpCashAmount(""); setExpMpesaAmount(""); setExpAgent(null);
+  setExpPin(""); setExpError(""); setExpProcessing(false);
+  setExpSource("shop"); setExpSourceLabel("");   // ← reset source too
+  setExpenseDate(new Date().toISOString().split('T')[0]);
+  setExpenseEndDate(new Date().toISOString().split('T')[0]);
+  setExpDatePreset("today");
+  fetchExpenses();
+};
 
   const openEdit = (exp: Expense) => {
     setEditTarget(exp);
@@ -836,7 +895,34 @@ const handleLogExpense = async (agent: ShopAgent) => {
   setExpPin(""); setExpPinError(""); setExpError(""); setExpProcessing(false);
   setExpenseDate(new Date().toISOString().split('T')[0]);  
   setExpenseEndDate(new Date().toISOString().split('T')[0]);
+  setExpDatePreset("today");
   resetPinLockout();
+  setExpSource("shop");
+  setExpSourceLabel("");
+};
+
+const applyExpDatePreset = (preset: "today" | "week" | "month" | "year" | "custom") => {
+  setExpDatePreset(preset);
+  if (preset === "custom") return;         // don't touch dates; user will edit manually
+
+  const today = new Date();
+  let start   = new Date(today);
+
+  if (preset === "week") {
+    start.setDate(today.getDate() - today.getDay());   // Sunday → today
+  } else if (preset === "month") {
+    start = new Date(today.getFullYear(), today.getMonth(), 1);
+  } else if (preset === "year") {
+    start = new Date(today.getFullYear(), 0, 1);
+  }
+  // preset === "today" → start = today (as initialized)
+
+  const toIso = (d: Date) =>
+    `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`;
+
+  setExpenseDate(toIso(start));
+  setExpenseEndDate(toIso(today));
+  setExpError("");
 };
 
   const resetEditModal = () => {
@@ -1330,6 +1416,106 @@ if (tot > refundable + 0.5) {
   const pendingCount   = requests.filter(r => r.status === "pending").length;
   const totalExpenses  = expenses.reduce((s, e) => s + e.amount, 0);
   const openCredit     = creditSales.filter(c => c.status === "pending" || c.status === "partial");
+
+  // ── Credit tab search / filter / pagination ─────────────────
+const allCreditGroups = groupByCustomer(creditSales);
+
+const filteredCreditGroups = allCreditGroups.filter(g => {
+  // ── Date filter — group passes if at least one sale is in range ──
+  if (creditDateFilter !== "all") {
+    const now = new Date();
+    let start: Date | null = null;
+    let end:   Date | null = null;
+
+    if (creditDateFilter === "today") {
+      start = new Date(now); start.setHours(0, 0, 0, 0);
+    } else if (creditDateFilter === "week") {
+      start = new Date(now);
+      start.setDate(now.getDate() - now.getDay());
+      start.setHours(0, 0, 0, 0);
+    } else if (creditDateFilter === "month") {
+      start = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (creditDateFilter === "year") {
+      start = new Date(now.getFullYear(), 0, 1);
+    } else if (creditDateFilter === "specific" && creditMonthFilter) {
+      const [y, m] = creditMonthFilter.split("-").map(Number);
+      start = new Date(y, m - 1, 1);
+      end   = new Date(y, m, 0, 23, 59, 59, 999);
+    }
+
+    const hasInRange = g.sales.some(s => {
+      const d = new Date(s.created_at);
+      if (start && d < start) return false;
+      if (end   && d > end)   return false;
+      return true;
+    });
+    if (!hasInRange) return false;
+  }
+
+  if (creditSearch.trim()) {
+  
+    const q = creditSearch.toLowerCase();
+    const itemsText = g.sales.flatMap(s => s.items.map(i => i.product_name)).join(" ");
+    const hay = `${g.customer_name} ${g.customer_phone ?? ""} ${itemsText}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+  if (creditFilter === "open"    && !g.hasOpen) return false;
+  if (creditFilter === "settled" &&  g.hasOpen) return false;
+  if (creditFilter === "returns") {
+    const hasReturns = g.sales.some(s => (creditReturns[s.id] || []).length > 0);
+    if (!hasReturns) return false;
+  }
+  return true;
+});
+
+const creditTotalExtended    = creditSales.reduce((s, cs) => s + cs.amount, 0);
+const creditTotalPaid        = creditSales.reduce((s, cs) => s + cs.amount_paid, 0);
+const creditTotalOutstanding = allCreditGroups.reduce((s, g) => s + g.totalOutstanding, 0);
+const creditTotalShopOwes    = allCreditGroups.reduce((s, g) => s + getGroupShopOwes(g), 0);
+
+const totalCreditPages  = Math.max(1, Math.ceil(filteredCreditGroups.length / CREDIT_PAGE_SIZE));
+const safeCreditPage    = Math.min(creditPage, totalCreditPages);
+const pagedCreditGroups = filteredCreditGroups.slice((safeCreditPage - 1) * CREDIT_PAGE_SIZE, safeCreditPage * CREDIT_PAGE_SIZE);
+
+  const filteredExpenses = expenses.filter(e => {
+  // source
+  if (expSourceFilter !== "all" && e.source !== expSourceFilter) return false;
+
+  // search
+  if (expSearch.trim()) {
+    const q = expSearch.toLowerCase();
+    const hay = `${e.description} ${e.logged_by_name} ${e.source_label ?? ""} ${e.amount}`.toLowerCase();
+    if (!hay.includes(q)) return false;
+  }
+
+  // date
+  const d = new Date((e as any).expense_date || e.created_at);
+  const now = new Date();
+  if (expDateFilter === "today") {
+    if (d.toDateString() !== now.toDateString()) return false;
+  } else if (expDateFilter === "week") {
+    const start = new Date(now);
+    start.setDate(now.getDate() - now.getDay());
+    start.setHours(0, 0, 0, 0);
+    if (d < start) return false;
+  } else if (expDateFilter === "month") {
+    if (d.getMonth() !== now.getMonth() || d.getFullYear() !== now.getFullYear()) return false;
+  } else if (expDateFilter === "year") {
+    if (d.getFullYear() !== now.getFullYear()) return false;
+  } else if (expDateFilter === "specific" && expMonthFilter) {
+    const [y, m] = expMonthFilter.split("-").map(Number);
+    if (d.getFullYear() !== y || d.getMonth() !== m - 1) return false;
+  }
+  return true;
+});
+
+const filteredExpTotal    = filteredExpenses.reduce((s, e) => s + e.amount, 0);
+const filteredShopTotal   = filteredExpenses.filter(e => e.source === "shop").reduce((s, e) => s + e.amount, 0);
+const filteredExtTotal    = filteredExpTotal - filteredShopTotal;
+
+const totalExpPages = Math.max(1, Math.ceil(filteredExpenses.length / EXP_PAGE_SIZE));
+const safeExpPage   = Math.min(expPage, totalExpPages);
+const pagedExpenses = filteredExpenses.slice((safeExpPage - 1) * EXP_PAGE_SIZE, safeExpPage * EXP_PAGE_SIZE);
 
   const statusColor = (s: string) => s === "paid" ? "#34d399" : s === "returned" ? "#6b7280" : s === "partial" ? "#fbbf24" : "#f87171";
   const statusLabel = (s: string) => s === "paid" ? "Paid" : s === "returned" ? "Returned" : s === "partial" ? "Partial" : "Pending";
@@ -2013,80 +2199,288 @@ ${theme.kiCss}
         </>
       )}
 
-      {/* ══ EXPENSES TAB ══ */}
-      {activeTab === "expenses" && (
-        <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
+     {/* ══ EXPENSES TAB ══ */}
+{activeTab === "expenses" && (
+  <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
 
-          {/* Centered log expense button */}
-          <div style={{ display: "flex", justifyContent: "center" }}>
-            <button onClick={() => setLogOpen(true)}
-              style={{ padding: "9px 20px", background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.35)", borderRadius: 50, color: "#f87171", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
-              + Log Expense
+    {/* Log Expense button */}
+    <div style={{ display: "flex", justifyContent: "center" }}>
+      <button onClick={() => setLogOpen(true)}
+        style={{ padding: "9px 20px", background: "rgba(248,113,113,0.12)", border: "1px solid rgba(248,113,113,0.35)", borderRadius: 50, color: "#f87171", fontFamily: theme.font.display, fontWeight: 700, fontSize: 13, cursor: "pointer" }}>
+        + Log Expense
+      </button>
+    </div>
+
+    {/* Summary card */}
+    <div style={{ background: theme.bg.card, border: "1px solid rgba(248,113,113,0.2)", borderRadius: 14, padding: "16px 18px" }}>
+      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>
+        Total{filteredExpenses.length !== expenses.length ? " (filtered)" : ""} Expenses
+      </div>
+      <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26, color: theme.accent.red }}>
+        {fmt(filteredExpTotal)}
+      </div>
+      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>
+        {filteredExpenses.length} record{filteredExpenses.length !== 1 ? "s" : ""}
+        {filteredExpenses.length !== expenses.length && (
+          <> · <span style={{ opacity: 0.6 }}>of {expenses.length} total ({fmt(totalExpenses)})</span></>
+        )}
+      </div>
+      {filteredExpTotal > 0 && filteredExtTotal > 0 && (
+        <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px dashed ${theme.border.default}`, display: "flex", flexDirection: "column", gap: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: theme.font.mono }}>
+            <span style={{ color: theme.text.muted }}>🏪 Shop-funded</span>
+            <span style={{ color: theme.accent.red }}>{fmt(filteredShopTotal)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, fontFamily: theme.font.mono }}>
+            <span style={{ color: "#c084fc" }}>👤 Owner / loan / other</span>
+            <span style={{ color: "#c084fc" }}>{fmt(filteredExtTotal)}</span>
+          </div>
+        </div>
+      )}
+    </div>
+
+    {/* Filter bar */}
+    <div style={{ display: "flex", flexDirection: "column", gap: 10, background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+      {/* Row 1 — search + source */}
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <div style={{ position: "relative", flex: 1, minWidth: isMobile ? "100%" : 220 }}>
+          <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.4, pointerEvents: "none" }}>🔍</span>
+          <input
+            type="text"
+            value={expSearch}
+            onChange={e => setExpSearch(e.target.value)}
+            placeholder="Search description, person, amount…"
+            style={{
+              width: "100%", boxSizing: "border-box",
+              padding: "9px 12px 9px 32px",
+              background: theme.bg.input,
+              border: `1px solid ${theme.border.default}`,
+              borderRadius: 9,
+              color: theme.text.primary,
+              fontFamily: theme.font.mono,
+              fontSize: 12,
+              outline: "none",
+            }}
+          />
+        </div>
+        <select
+          value={expSourceFilter}
+          onChange={e => setExpSourceFilter(e.target.value as any)}
+          style={{
+            background: theme.bg.input, border: `1px solid ${theme.border.default}`,
+            borderRadius: 9, padding: "9px 12px", color: theme.text.primary,
+            fontFamily: theme.font.mono, fontSize: 12, outline: "none",
+            cursor: "pointer", minWidth: 130,
+          }}>
+          <option value="all">All sources</option>
+          <option value="shop">🏪 Shop</option>
+          <option value="owner">👤 Owner</option>
+          <option value="loan">🏦 Loan</option>
+          <option value="other">✏️ Other</option>
+        </select>
+      </div>
+
+      {/* Row 2 — date chips */}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+        <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", paddingRight: 4 }}>
+          Date
+        </span>
+        {([
+          { key: "all",   label: "All time"   },
+          { key: "today", label: "Today"      },
+          { key: "week",  label: "This week"  },
+          { key: "month", label: "This month" },
+          { key: "year",  label: "This year"  },
+        ] as const).map(({ key, label }) => {
+          const active = expDateFilter === key;
+          return (
+            <button key={key} type="button"
+              onClick={() => { setExpDateFilter(key); setExpMonthFilter(""); }}
+              style={{
+                padding: "5px 10px", borderRadius: 20,
+                border: `1px solid ${active ? theme.accent.cyan : theme.border.default}`,
+                background: active ? "rgba(6,182,212,0.12)" : "transparent",
+                color: active ? theme.accent.cyan : theme.text.muted,
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 700 : 500,
+                cursor: "pointer",
+              }}>
+              {label}
             </button>
-          </div>
+          );
+        })}
+        {/* Specific month chip (native input overlaid) */}
+        <div style={{
+          position: "relative",
+          padding: "5px 10px", borderRadius: 20,
+          border: `1px solid ${expDateFilter === "specific" && expMonthFilter ? theme.accent.cyan : theme.border.default}`,
+          background: expDateFilter === "specific" && expMonthFilter ? "rgba(6,182,212,0.12)" : "transparent",
+          color: expDateFilter === "specific" && expMonthFilter ? theme.accent.cyan : theme.text.muted,
+          fontFamily: theme.font.mono, fontSize: 11,
+          fontWeight: expDateFilter === "specific" && expMonthFilter ? 700 : 500,
+          cursor: "pointer", overflow: "hidden",
+          display: "inline-flex", alignItems: "center", gap: 4,
+        }}>
+          📅 {expMonthFilter
+            ? new Date(expMonthFilter + "-01").toLocaleDateString("en-KE", { month: "short", year: "numeric" })
+            : "Month"}
+          <input
+            type="month"
+            value={expMonthFilter}
+            onChange={e => {
+              setExpMonthFilter(e.target.value);
+              setExpDateFilter(e.target.value ? "specific" : "all");
+            }}
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: "none", padding: 0, margin: 0 }}
+          />
+        </div>
+      </div>
+    </div>
 
-          {/* Summary card */}
-          <div style={{ background: theme.bg.card, border: "1px solid rgba(248,113,113,0.2)", borderRadius: 14, padding: "16px 18px" }}>
-            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>Total Expenses</div>
-            <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 22 : 26, color: theme.accent.red }}>{fmt(totalExpenses)}</div>
-            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 4 }}>{expenses.length} record{expenses.length !== 1 ? "s" : ""}</div>
+    {/* Queued offline expenses — UNCHANGED */}
+    {queuedItems.filter(i => "loggedBy" in i).map(i => {
+      const q = i as QueuedExpense;
+      return (
+        <div key={q.id} style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+          <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>⏳</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.description}</div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+              {q.loggedByName} · <span style={{ color: "#fbbf24" }}>queued offline</span>
+            </div>
           </div>
+          <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#fbbf24", flexShrink: 0 }}>{fmt(q.amount)}</div>
+        </div>
+      );
+    })}
 
-          {/* Queued offline expenses */}
-          {queuedItems.filter(i => "loggedBy" in i).map(i => {
-            const q = i as QueuedExpense;
+    {/* Body states */}
+    {expLoading ? (
+      <div style={{ textAlign: "center", padding: "40px 0" }}>
+        <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
+      </div>
+    ) : expenses.length === 0 && queuedItems.filter(i => "loggedBy" in i).length === 0 ? (
+      <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+        <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>💸</div>
+        <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No expenses recorded yet</div>
+        <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Tap the button above to add one</div>
+      </div>
+    ) : expenses.length === 0 ? (
+      null   /* queued items already showing above, nothing to add */
+    ) : filteredExpenses.length === 0 ? (
+      <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+        <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>🔍</div>
+        <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No expenses match your filters</div>
+        <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Try clearing your filters</div>
+      </div>
+    ) : (
+      <>
+        <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
+          {pagedExpenses.map((exp, i) => {
+            const isShop   = exp.source === "shop";
+            const srcIcon  = exp.source === "shop" ? "🏪" : exp.source === "owner" ? "👤" : exp.source === "loan" ? "🏦" : "✏️";
+            const srcLabel = exp.source === "shop" ? "Shop" : exp.source === "owner" ? "Owner" : exp.source === "loan" ? "Loan" : (exp.source_label || "Other");
+            const dLabel   = new Date((exp as any).expense_date || exp.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" });
             return (
-              <div key={q.id} style={{ background: "rgba(251,191,36,0.05)", border: "1px solid rgba(251,191,36,0.25)", borderRadius: 14, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(251,191,36,0.12)", border: "1px solid rgba(251,191,36,0.3)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>⏳</div>
+              <div key={exp.id} className="exp-row"
+                style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 16px", borderBottom: i < pagedExpenses.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
+                <div style={{
+                  width: 36, height: 36, borderRadius: 10,
+                  background: isShop ? "rgba(248,113,113,0.1)" : "rgba(192,132,252,0.1)",
+                  border:     isShop ? "1px solid rgba(248,113,113,0.2)" : "1px solid rgba(192,132,252,0.2)",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 16, flexShrink: 0,
+                }}>💸</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{q.description}</div>
-                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                    {q.loggedByName} · <span style={{ color: "#fbbf24" }}>queued offline</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1 }}>
+                      {exp.description}
+                    </div>
+                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: isShop ? theme.accent.red : "rgba(248,113,113,0.6)", flexShrink: 0 }}>
+                      {fmt(exp.amount)}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center", marginTop: 4 }}>
+                    <span style={{
+                      fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700,
+                      padding: "2px 7px", borderRadius: 4,
+                      background: isShop ? "rgba(248,113,113,0.12)" : "rgba(192,132,252,0.12)",
+                      border:     isShop ? "1px solid rgba(248,113,113,0.3)" : "1px solid rgba(192,132,252,0.3)",
+                      color:      isShop ? "#f87171" : "#c084fc",
+                      letterSpacing: "0.04em",
+                    }}>
+                      {srcIcon} {srcLabel.toUpperCase()}
+                    </span>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{exp.logged_by_name}</span>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, opacity: 0.5 }}>·</span>
+                    <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{dLabel}</span>
+                    {exp.updated_at !== exp.created_at && (
+                      <>
+                        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, opacity: 0.5 }}>·</span>
+                        <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.3)", fontStyle: "italic" }}>edited</span>
+                      </>
+                    )}
                   </div>
                 </div>
-                <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#fbbf24", flexShrink: 0 }}>{fmt(q.amount)}</div>
+                <button onClick={() => openEdit(exp)}
+                  style={{
+                    marginTop: 2,
+                    background: "transparent",
+                    border: "1px solid rgba(255,255,255,0.08)",
+                    borderRadius: 6,
+                    padding: "4px 9px",
+                    color: theme.text.muted,
+                    fontFamily: theme.font.mono,
+                    fontSize: 10,
+                    cursor: "pointer",
+                    flexShrink: 0,
+                  }}>
+                  Edit
+                </button>
               </div>
             );
           })}
-
-          {expLoading ? (
-            <div style={{ textAlign: "center", padding: "40px 0" }}>
-              <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
-            </div>
-          ) : expenses.length === 0 && queuedItems.filter(i => "loggedBy" in i).length === 0 ? (
-            <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
-              <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>💸</div>
-              <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No expenses recorded yet</div>
-              <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Tap the button above to add one</div>
-            </div>
-          ) : (
-            <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, overflow: "hidden" }}>
-              {expenses.map((exp, i) => (
-                <div key={exp.id} className="exp-row"
-                  style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", borderBottom: i < expenses.length - 1 ? `1px solid ${theme.border.default}` : "none" }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 10, background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.2)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>💸</div>
-                  <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{exp.description}</div>
-                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                      {exp.logged_by_name} · {new Date((exp as any).expense_date || exp.created_at).toLocaleDateString("en-KE", { day: "numeric", month: "short", year: "numeric" })}
-                    </div>
-                    {exp.updated_at !== exp.created_at && (
-                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>edited</div>
-                    )}
-                  </div>
-                  <div style={{ textAlign: "right", flexShrink: 0 }}>
-                    <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.red }}>{fmt(exp.amount)}</div>
-                    <button onClick={() => openEdit(exp)}
-                      style={{ marginTop: 4, background: "transparent", border: "1px solid rgba(255,255,255,0.08)", borderRadius: 6, padding: "3px 8px", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 10, cursor: "pointer" }}>
-                      Edit
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
-      )}
+
+        {/* Pagination */}
+        {totalExpPages > 1 && (
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "0 4px" }}>
+            <button
+              onClick={() => setExpPage(p => Math.max(1, p - 1))}
+              disabled={safeExpPage === 1}
+              style={{
+                padding: "8px 14px", borderRadius: 8,
+                background: "transparent",
+                border: `1px solid ${safeExpPage === 1 ? theme.border.default : "rgba(6,182,212,0.3)"}`,
+                color: safeExpPage === 1 ? theme.text.muted : theme.accent.cyan,
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+                cursor: safeExpPage === 1 ? "not-allowed" : "pointer",
+                opacity: safeExpPage === 1 ? 0.5 : 1,
+              }}>
+              ← Prev
+            </button>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
+              Page {safeExpPage} of {totalExpPages} · {(safeExpPage - 1) * EXP_PAGE_SIZE + 1}–{Math.min(safeExpPage * EXP_PAGE_SIZE, filteredExpenses.length)} of {filteredExpenses.length}
+            </div>
+            <button
+              onClick={() => setExpPage(p => Math.min(totalExpPages, p + 1))}
+              disabled={safeExpPage === totalExpPages}
+              style={{
+                padding: "8px 14px", borderRadius: 8,
+                background: "transparent",
+                border: `1px solid ${safeExpPage === totalExpPages ? theme.border.default : "rgba(6,182,212,0.3)"}`,
+                color: safeExpPage === totalExpPages ? theme.text.muted : theme.accent.cyan,
+                fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+                cursor: safeExpPage === totalExpPages ? "not-allowed" : "pointer",
+                opacity: safeExpPage === totalExpPages ? 0.5 : 1,
+              }}>
+              Next →
+            </button>
+          </div>
+        )}
+      </>
+    )}
+  </div>
+)}
 
       {/* ══ CREDIT TAB ══ */}
       {activeTab === "credit" && (
@@ -2101,10 +2495,151 @@ ${theme.kiCss}
               <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No credit sales yet</div>
               <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Use "Pay Later" when processing a sale</div>
             </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-              {groupByCustomer(creditSales).map(group => {
-                const isGroupExpanded = expandedCustomerKey === group.key;
+                   ) : (
+            <>
+              {/* ══ Summary cards ══ */}
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4, 1fr)", gap: isMobile ? 8 : 12 }}>
+                {[
+                  { label: "Total Credit", value: fmt(creditTotalExtended),    icon: "📝", color: theme.accent.gold, sub: `${allCreditGroups.length} customer${allCreditGroups.length !== 1 ? "s" : ""}` },
+                  { label: "Collected",    value: fmt(creditTotalPaid),        icon: "✅", color: "#34d399",         sub: "payments received" },
+                  { label: "Outstanding",  value: fmt(creditTotalOutstanding), icon: "⏳", color: "#f87171",         sub: "owed to shop" },
+                  { label: "Open Sales",   value: String(openCredit.length),   icon: "📋", color: theme.accent.cyan, sub: openCredit.length > 0 ? "awaiting payment" : "all settled" },
+                ].map(s => (
+                  <div key={s.label} style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}>
+                      <span style={{ fontSize: 11 }}>{s.icon}</span>
+                      <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{s.label}</span>
+                    </div>
+                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: isMobile ? 16 : 20, color: s.color, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{s.value}</div>
+                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, opacity: 0.7 }}>{s.sub}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* ══ We owe customer banner ══ */}
+              {creditTotalShopOwes > 0 && (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(192,132,252,0.06)", border: "1px solid rgba(192,132,252,0.25)", borderRadius: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>💸</span>
+                    <div>
+                      <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#c084fc", fontWeight: 700 }}>We Owe Customers</div>
+                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(192,132,252,0.7)", marginTop: 1 }}>Refunds not yet paid out</div>
+                    </div>
+                  </div>
+                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: "#c084fc" }}>{fmt(creditTotalShopOwes)}</div>
+                </div>
+              )}
+
+              {/* ══ Search + filter chips ══ */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: "12px 14px" }}>
+                <div style={{ position: "relative" }}>
+                  <span style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", fontSize: 13, opacity: 0.4, pointerEvents: "none" }}>🔍</span>
+                  <input
+                    type="text"
+                    value={creditSearch}
+                    onChange={e => setCreditSearch(e.target.value)}
+                    placeholder="Search customer, phone, product…"
+                    style={{ width: "100%", boxSizing: "border-box", padding: "9px 12px 9px 32px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 9, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 12, outline: "none" }}
+                  />
+                </div>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", paddingRight: 4 }}>
+                    Show
+                  </span>
+                  {([
+                    { key: "all",     label: "All"     },
+                    { key: "open",    label: "Open"    },
+                    { key: "settled", label: "Settled" },
+                    { key: "returns", label: "Returns" },
+                  ] as const).map(({ key, label }) => {
+                    const active = creditFilter === key;
+                    return (
+                      <button key={key} type="button"
+                        onClick={() => setCreditFilter(key)}
+                        style={{
+                          padding: "5px 10px", borderRadius: 20,
+                          border: `1px solid ${active ? theme.accent.cyan : theme.border.default}`,
+                          background: active ? "rgba(6,182,212,0.12)" : "transparent",
+                          color: active ? theme.accent.cyan : theme.text.muted,
+                          fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 700 : 500,
+                          cursor: "pointer",
+                        }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                                    <span style={{ marginLeft: "auto", fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+                    {filteredCreditGroups.length} of {allCreditGroups.length}
+                  </span>
+                </div>
+
+                {/* ── Date filter row ── */}
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", paddingRight: 4 }}>
+                    Date
+                  </span>
+                  {([
+                    { key: "all",   label: "All time"   },
+                    { key: "today", label: "Today"      },
+                    { key: "week",  label: "This week"  },
+                    { key: "month", label: "This month" },
+                    { key: "year",  label: "This year"  },
+                  ] as const).map(({ key, label }) => {
+                    const active = creditDateFilter === key;
+                    return (
+                      <button key={key} type="button"
+                        onClick={() => { setCreditDateFilter(key); setCreditMonthFilter(""); }}
+                        style={{
+                          padding: "5px 10px", borderRadius: 20,
+                          border: `1px solid ${active ? theme.accent.cyan : theme.border.default}`,
+                          background: active ? "rgba(6,182,212,0.12)" : "transparent",
+                          color: active ? theme.accent.cyan : theme.text.muted,
+                          fontFamily: theme.font.mono, fontSize: 11, fontWeight: active ? 700 : 500,
+                          cursor: "pointer",
+                        }}>
+                        {label}
+                      </button>
+                    );
+                  })}
+                  {/* Specific-month chip */}
+                  <div style={{
+                    position: "relative",
+                    padding: "5px 10px", borderRadius: 20,
+                    border: `1px solid ${creditDateFilter === "specific" && creditMonthFilter ? theme.accent.cyan : theme.border.default}`,
+                    background: creditDateFilter === "specific" && creditMonthFilter ? "rgba(6,182,212,0.12)" : "transparent",
+                    color: creditDateFilter === "specific" && creditMonthFilter ? theme.accent.cyan : theme.text.muted,
+                    fontFamily: theme.font.mono, fontSize: 11,
+                    fontWeight: creditDateFilter === "specific" && creditMonthFilter ? 700 : 500,
+                    cursor: "pointer", overflow: "hidden",
+                    display: "inline-flex", alignItems: "center", gap: 4,
+                  }}>
+                    📅 {creditMonthFilter
+                      ? new Date(creditMonthFilter + "-01").toLocaleDateString("en-KE", { month: "short", year: "numeric" })
+                      : "Month"}
+                    <input
+                      type="month"
+                      value={creditMonthFilter}
+                      onChange={e => {
+                        setCreditMonthFilter(e.target.value);
+                        setCreditDateFilter(e.target.value ? "specific" : "all");
+                      }}
+                      style={{ position: "absolute", inset: 0, width: "100%", height: "100%", opacity: 0, cursor: "pointer", border: "none", padding: 0, margin: 0 }}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* ══ List / no-matches ══ */}
+              {filteredCreditGroups.length === 0 ? (
+                <div style={{ textAlign: "center", padding: "50px 20px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16 }}>
+                  <div style={{ fontSize: 44, opacity: 0.2, marginBottom: 12 }}>🔍</div>
+                  <div style={{ color: theme.text.muted, fontSize: 13, fontFamily: theme.font.mono }}>No credit customers match your filters</div>
+                  <div style={{ color: theme.text.muted, fontSize: 11, fontFamily: theme.font.mono, marginTop: 5, opacity: 0.6 }}>Try clearing search or filters</div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {pagedCreditGroups.map(group => {
+                    const isGroupExpanded = expandedCustomerKey === group.key;
                 const openCount = group.sales.filter(cs => cs.status === "pending" || cs.status === "partial").length;
                 return (
                   <div key={group.key} style={{ background: theme.bg.card, border: `1px solid ${isGroupExpanded ? "rgba(192,132,252,0.3)" : group.hasOpen ? "rgba(248,113,113,0.2)" : theme.border.default}`, borderRadius: 16, overflow: "hidden", transition: "border-color 0.15s" }}>
@@ -2166,9 +2701,57 @@ ${theme.kiCss}
                             }}>
                               💸 We owe customer {fmt(shopOwes)}
                             </div>
-                          );
+                                                );
                         })()}
                         </div>
+
+                        {/* ── Progress bar — fills as customer pays down balance ── */}
+                        {(() => {
+                          const totalOwed = group.totalOutstanding + group.totalPaid;
+                          const pct = totalOwed > 0
+                            ? Math.min(100, Math.round((group.totalPaid / totalOwed) * 100))
+                            : 100;
+                          const barColor = !group.hasOpen
+                            ? "#34d399"
+                            : pct >= 67 ? "#34d399"
+                            : pct >= 33 ? "#fbbf24"
+                            : "#f87171";
+                          return (
+                            <div style={{ marginTop: 8, marginBottom: 6, width: "100%", maxWidth: 280 }}>
+                              <div style={{
+                                width: "100%",
+                                height: 6,
+                                borderRadius: 3,
+                                background: "rgba(255,255,255,0.06)",
+                                overflow: "hidden",
+                              }}>
+                                <div style={{
+                                  width: `${pct}%`,
+                                  height: "100%",
+                                  background: barColor,
+                                  borderRadius: 3,
+                                  transition: "width 0.4s ease, background 0.3s ease",
+                                }} />
+                              </div>
+                              <div style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                marginTop: 3,
+                                fontSize: 9,
+                                fontFamily: theme.font.mono,
+                                color: theme.text.muted,
+                              }}>
+                                <span style={{ color: barColor, fontWeight: 600 }}>
+                                  {pct}% paid
+                                </span>
+                                <span>
+                                  {fmt(group.totalPaid)} / {fmt(totalOwed)}
+                                </span>
+                              </div>
+                            </div>
+                          );
+                        })()}
+
                         <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
                           {[
                             group.customer_phone || null,
@@ -2178,6 +2761,7 @@ ${theme.kiCss}
                             .join(" · ")}
                         </div>
                       </div>
+
                       <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2, flexShrink: 0, marginLeft: 12 }}>
                     {(() => {
                       const shopOwes = getGroupShopOwes(group);
@@ -2721,11 +3305,51 @@ ${theme.kiCss}
                     )}
                   </div>
                 );
-              })}
-            </div>
+                           })}
+                </div>
+              )}
+
+              {/* ══ Pagination ══ */}
+              {totalCreditPages > 1 && (
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "0 4px" }}>
+                  <button
+                    onClick={() => setCreditPage(p => Math.max(1, p - 1))}
+                    disabled={safeCreditPage === 1}
+                    style={{
+                      padding: "8px 14px", borderRadius: 8,
+                      background: "transparent",
+                      border: `1px solid ${safeCreditPage === 1 ? theme.border.default : "rgba(6,182,212,0.3)"}`,
+                      color: safeCreditPage === 1 ? theme.text.muted : theme.accent.cyan,
+                      fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+                      cursor: safeCreditPage === 1 ? "not-allowed" : "pointer",
+                      opacity: safeCreditPage === 1 ? 0.5 : 1,
+                    }}>
+                    ← Prev
+                  </button>
+                  <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textAlign: "center" }}>
+                    Page {safeCreditPage} of {totalCreditPages} · {(safeCreditPage - 1) * CREDIT_PAGE_SIZE + 1}–{Math.min(safeCreditPage * CREDIT_PAGE_SIZE, filteredCreditGroups.length)} of {filteredCreditGroups.length}
+                  </div>
+                  <button
+                    onClick={() => setCreditPage(p => Math.min(totalCreditPages, p + 1))}
+                    disabled={safeCreditPage === totalCreditPages}
+                    style={{
+                      padding: "8px 14px", borderRadius: 8,
+                      background: "transparent",
+                      border: `1px solid ${safeCreditPage === totalCreditPages ? theme.border.default : "rgba(6,182,212,0.3)"}`,
+                      color: safeCreditPage === totalCreditPages ? theme.text.muted : theme.accent.cyan,
+                      fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600,
+                      cursor: safeCreditPage === totalCreditPages ? "not-allowed" : "pointer",
+                      opacity: safeCreditPage === totalCreditPages ? 0.5 : 1,
+                    }}>
+                    Next →
+                  </button>
+                </div>
+              )}
+            </>
           )}
         </div>
       )}
+
 
       {/* ══ SEND STATEMENT MODAL ══ */}
       {sendStmtGroup && (
@@ -2816,7 +3440,7 @@ ${theme.kiCss}
 
       {/* ══ LOG EXPENSE MODAL ══ */}
       {logOpen && (
-        <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
+        <div style={{ position: "fixed", inset: 0, background: theme.bg.overlay, zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: "0 16px" }}
           onClick={e => { if (e.target === e.currentTarget) resetLogModal(); }}>
           <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 20, padding: "24px 20px 28px", width: "100%", maxWidth: 460, display: "flex", flexDirection: "column", gap: 16, animation: "slideUp 0.22s ease", maxHeight: "90vh", overflowY: "auto" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -2827,41 +3451,153 @@ ${theme.kiCss}
               <button onClick={resetLogModal} style={{ background: "transparent", border: "none", color: theme.text.muted, fontSize: 20, cursor: "pointer", padding: "4px 8px" }}>✕</button>
             </div>
 
-            {/* Available balance strips */}
-         
-                {(() => {
-                  const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
-                  const enteredC   = Math.round(Number(expCashAmount)  || 0);
-                  const enteredM   = Math.round(Number(expMpesaAmount) || 0);
 
-                  // The SQL function ALREADY calculated the net balance. 
-                  // DO NOT subtract cashReturned, cashExpensed, etc. here.
-                  const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal)  : null;
-                  const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal) : null;
+{/* ── Paid from ── */}
+<div>
+  <label style={{
+    color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+    textTransform: "uppercase", letterSpacing: "0.07em",
+    display: "block", marginBottom: 6,
+  }}>
+    Paid from
+  </label>
+  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+    {EXPENSE_SOURCES.map(s => {
+      const active = expSource === s.value;
+      return (
+        <button key={s.value} type="button"
+          onClick={() => { setExpSource(s.value); setExpError(""); }}
+          style={{
+            padding: "9px 10px",
+            border: `1px solid ${active ? "rgba(6,182,212,0.6)" : theme.border.default}`,
+            borderRadius: 9,
+            background: active ? "rgba(6,182,212,0.1)" : "transparent",
+            color: active ? theme.accent.cyan : theme.text.muted,
+            fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700,
+            cursor: "pointer", textAlign: "left",
+            display: "flex", alignItems: "center", gap: 6,
+          }}>
+          <span>{s.icon}</span>{s.label}
+        </button>
+      );
+    })}
+  </div>
+  {expSource === "other" && (
+    <input className="ki" value={expSourceLabel}
+      onChange={e => { setExpSourceLabel(sanitizeText(e.target.value, 60)); setExpError(""); }}
+      placeholder="e.g. Mama Wanjiku SACCO, supplier credit…"
+      maxLength={60} style={{ marginTop: 8 }} />
+  )}
+</div>
 
-                  return (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                      {[
-                        { icon: "💵", label: "Cash available",   avail: cashAvail,  entered: enteredC },
-                        { icon: "📱", label: "M-Pesa available", avail: mpesaAvail, entered: enteredM },
-                      ].map(r => {
-                        const over = r.avail !== null && r.entered > 0 && r.entered > r.avail;
-                        return (
-                          <div key={r.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 13px", background: over ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)", border: `1px solid ${over ? "rgba(248,113,113,0.3)" : theme.border.default}`, borderRadius: 10 }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                              <span style={{ fontSize: 14 }}>{over ? "⚠️" : r.icon}</span>
-                              <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: over ? "#f87171" : theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em" }}>{r.label}</span>
-                            </div>
-                            {isLoading
-                              ? <span style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
-                              : <span style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 15, color: over ? "#f87171" : (r.avail ?? 0) === 0 ? theme.text.muted : "#34d399" }}>{fmt(r.avail ?? 0)}</span>
-                            }
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
+{/* ── Balance strips (shop) or external banner ── */}
+{(() => {
+  if (expSource !== "shop") {
+    return (
+      <div style={{
+        background: "rgba(6,182,212,0.06)",
+        border: "1px solid rgba(6,182,212,0.25)",
+        borderRadius: 10, padding: "10px 13px",
+        fontSize: 11, fontFamily: theme.font.mono,
+        color: theme.accent.cyan, lineHeight: 1.6,
+      }}>
+        ℹ️ <strong>Funded externally.</strong> This will be recorded but{" "}
+        <strong>not</strong> deducted from shop cash or M-Pesa.
+        {expSource === "other" && expSourceLabel && (
+          <> Source: <strong>{expSourceLabel}</strong>.</>
+        )}
+      </div>
+    );
+  }
+
+  const isLoading  = shopCashTotal === null || shopMpesaTotal === null;
+  const enteredC   = Math.round(Number(expCashAmount)  || 0);
+  const enteredM   = Math.round(Number(expMpesaAmount) || 0);
+  const cashAvail  = shopCashTotal  !== null ? Math.max(0, shopCashTotal)  : null;
+  const mpesaAvail = shopMpesaTotal !== null ? Math.max(0, shopMpesaTotal) : null;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      {[
+        { icon: "💵", label: "Cash available",   avail: cashAvail,  entered: enteredC },
+        { icon: "📱", label: "M-Pesa available", avail: mpesaAvail, entered: enteredM },
+      ].map(r => {
+        const over = r.avail !== null && r.entered > 0 && r.entered > r.avail;
+        return (
+          <div key={r.label} style={{
+            display: "flex", alignItems: "center", justifyContent: "space-between",
+            padding: "9px 13px",
+            background: over ? "rgba(248,113,113,0.07)" : "rgba(255,255,255,0.03)",
+            border: `1px solid ${over ? "rgba(248,113,113,0.3)" : theme.border.default}`,
+            borderRadius: 10,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+              <span style={{ fontSize: 14 }}>{over ? "⚠️" : r.icon}</span>
+              <span style={{
+                fontSize: 10, fontFamily: theme.font.mono,
+                color: over ? "#f87171" : theme.text.muted,
+                textTransform: "uppercase", letterSpacing: "0.06em",
+              }}>{r.label}</span>
+            </div>
+            {isLoading
+              ? <span style={{ width: 12, height: 12, border: "2px solid rgba(255,255,255,0.15)", borderTopColor: theme.accent.cyan, borderRadius: "50%", display: "inline-block", animation: "spin 0.8s linear infinite" }} />
+              : <span style={{
+                  fontFamily: theme.font.display, fontWeight: 800, fontSize: 15,
+                  color: over ? "#f87171" : (r.avail ?? 0) === 0 ? theme.text.muted : "#34d399",
+                }}>{fmt(r.avail ?? 0)}</span>
+            }
+          </div>
+        );
+      })}
+    </div>
+  );
+})()}
+
+{/* ── Balance period presets ── */}
+<div>
+  <label style={{
+    color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono,
+    textTransform: "uppercase", letterSpacing: "0.07em",
+    display: "block", marginBottom: 6,
+  }}>
+    Balance period
+  </label>
+  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+    {([
+      { key: "today", label: "Today" },
+      { key: "week",  label: "Week"  },
+      { key: "month", label: "Month" },
+      { key: "year",  label: "Year"  },
+    ] as const).map(({ key, label }) => {
+      const active = expDatePreset === key;
+      return (
+        <button
+          key={key}
+          type="button"
+          onClick={() => applyExpDatePreset(key)}
+          style={{
+            padding: "6px 12px",
+            borderRadius: 8,
+            border: `1px solid ${active ? "rgba(6,182,212,0.6)" : theme.border.default}`,
+            background: active ? "rgba(6,182,212,0.1)" : "transparent",
+            color: active ? theme.accent.cyan : theme.text.muted,
+            fontFamily: theme.font.mono,
+            fontSize: 11,
+            fontWeight: active ? 700 : 500,
+            cursor: "pointer",
+          }}>
+          {label}
+        </button>
+      );
+    })}
+  </div>
+  {expDatePreset === "custom" && (
+    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 6, opacity: 0.75 }}>
+      Custom range — adjust dates below
+    </div>
+  )}
+</div>
+
 
            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <div>
@@ -2881,6 +3617,7 @@ ${theme.kiCss}
                   setExpenseDate(e.target.value);
                   // Ensure end date is never before start date
                   if (expenseEndDate < e.target.value) setExpenseEndDate(e.target.value);
+                  setExpDatePreset("custom");
                   setExpError("");
                 }}
                 style={{ width: "100%", boxSizing: "border-box" }}
@@ -2900,7 +3637,7 @@ ${theme.kiCss}
                 value={expenseEndDate}
                 min={expenseDate}
                 max={new Date().toISOString().split('T')[0]}
-                onChange={e => { setExpenseEndDate(e.target.value); setExpError(""); }}
+                onChange={e => { setExpenseEndDate(e.target.value); setExpDatePreset("custom"); setExpError(""); }}
                 style={{ width: "100%", boxSizing: "border-box" }}
               />
             </div>
@@ -2945,9 +3682,31 @@ ${theme.kiCss}
             </div>
 
             {expError && <div style={{ color: theme.accent.red, fontSize: 11, fontFamily: theme.font.mono, background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.2)", borderRadius: 8, padding: "8px 12px" }}>⚠ {expError}</div>}
-
-            {!expAgent ? (
+{!expAgent ? (
   <div>
+    {/* Live validation banner — makes the requirement visible before clicking */}
+    {(() => {
+      const amountOk = Math.round(Number(expCashAmount) || 0) + Math.round(Number(expMpesaAmount) || 0) > 0;
+      const descOk   = !!expDesc.trim();
+      const labelOk  = expSource !== "other" || !!expSourceLabel.trim();
+      if (amountOk && descOk && labelOk) return null;
+      const msg = !amountOk
+        ? "Enter a Cash or M-Pesa amount above."
+        : !descOk
+        ? "Add a description (what was it for?) above."
+        : "Name the source for 'Other' above.";
+      return (
+        <div style={{
+          marginBottom: 12, padding: "8px 12px",
+          background: "rgba(251,191,36,0.08)",
+          border: "1px solid rgba(251,191,36,0.25)",
+          borderRadius: 8, fontSize: 11, fontFamily: theme.font.mono,
+          color: "#fbbf24", lineHeight: 1.5,
+        }}>
+          ⚠ {msg}
+        </div>
+      );
+    })()}
     <label style={{ color: theme.text.secondary, fontSize: 10, fontFamily: theme.font.mono, textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 8 }}>
       Who is logging this?
     </label>
@@ -2955,11 +3714,14 @@ ${theme.kiCss}
       const c = Math.round(Number(expCashAmount)  || 0);
       const m = Math.round(Number(expMpesaAmount) || 0);
       if (c + m <= 0) { setExpError("Enter a Cash or M-Pesa amount first."); return; }
+      if (!expDesc.trim()) { setExpError("Describe the expense first."); return; }
+      if (expSource === "other" && !expSourceLabel.trim()) { setExpError("Please name the source."); return; }
       setExpError("");
       setExpAgent(sa); setExpPin(""); setExpPinError("");
     }} />
   </div>
 ) : (
+
   <PinModal
     agent={expAgent}
     pin={expPin} setPin={setExpPin}

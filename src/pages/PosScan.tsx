@@ -948,45 +948,43 @@ function ConfirmModal({
   const accentBg = danger ? "rgba(248,113,113,0.14)" : "rgba(6,182,212,0.14)";
 
   return createPortal(
-    <div
-      onClick={onCancel}
-      style={{
-        position: "fixed", inset: 0, zIndex: 100,
-        background: "rgba(0,0,0,0.7)",
-        backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
-        display: "flex",
-        alignItems: isMobile ? "flex-end" : "center",
-        justifyContent: "center",
-        padding: isMobile ? 0 : 20,
-        animation: "fadeIn 0.15s ease both",
-        overflow: "hidden",
-      }}
+    
+ <div
+  onClick={onCancel}
+  style={{
+    position: "fixed", inset: 0, zIndex: 100,
+    background: "rgba(0,0,0,0.7)",
+    backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 16,
+    animation: "fadeIn 0.15s ease both",
+    overflow: "hidden",
+  }}
     >
+    
       <div
         onClick={e => e.stopPropagation()}
         role="dialog"
         aria-modal="true"
         aria-labelledby="confirm-modal-title"
         style={{
-          boxSizing: "border-box",
-          background: theme.bg.card,
-          border: `1px solid ${theme.border.default}`,
-          borderRadius: isMobile ? "20px 20px 0 0" : 18,
-          borderBottom: isMobile ? "none" : `1px solid ${theme.border.default}`,
-          width: isMobile ? "100%" : "min(420px, 100%)",
-          maxWidth: "100%",
-          // Hard cap so the modal never fills the screen on tiny viewports
-          maxHeight: isMobile ? "min(80dvh, 80vh)" : "min(90vh, 90vh)",
-          overflowY: "auto",
-          overflowX: "hidden",
-          padding: isMobile
-            ? `18px 16px calc(env(safe-area-inset-bottom, 0px) + 18px)`
-            : "20px 20px 20px",
-          display: "flex", flexDirection: "column", gap: 14,
-          animation: "zoomIn 0.2s ease both",
-          boxShadow: "0 24px 60px rgba(0,0,0,0.55)",
-          WebkitOverflowScrolling: "touch",
-        }}
+        boxSizing: "border-box",
+        background: theme.bg.card,
+        border: `1px solid ${theme.border.default}`,
+        borderRadius: 18,
+        width: "min(420px, 100%)",
+        maxWidth: "100%",
+        maxHeight: "min(85dvh, 85vh)",
+        overflowY: "auto",
+        overflowX: "hidden",
+        padding: isMobile ? "18px 16px" : "20px",
+        display: "flex", flexDirection: "column", gap: 14,
+        animation: "zoomIn 0.2s ease both",
+        boxShadow: "0 24px 60px rgba(0,0,0,0.55)",
+        WebkitOverflowScrolling: "touch",
+      }}
       >
         {/* Icon + Title row */}
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
@@ -2128,7 +2126,10 @@ const editUnlistedItem = (key: string) => {
     pinLockRef.current = setInterval(tick, 500);
   }, []);
 
-  useEffect(() => () => { if (pinLockRef.current) clearInterval(pinLockRef.current); }, []);
+  // The Products/Camera toggle is hidden on phones — always force manual there.
+useEffect(() => {
+  if (isMobile && mode !== "manual") setMode("manual");
+}, [isMobile, mode]);
 
   // ── Cash register sound — synthesized via Web Audio API, no external files ──
   const cashAudioCtxRef = useRef<AudioContext | null>(null);
@@ -3508,15 +3509,17 @@ const renderScanStep = () => (
       </div>
     )}
 
-    {/* Manual / Camera toggle */}
-    <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
-      {(["manual", "camera"] as const).map(m => (
-        <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
-          style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
-          {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
-        </button>
-      ))}
-    </div>
+    {/* Manual / Camera toggle — desktop & tablet only */}
+{!isMobile && (
+  <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
+    {(["manual", "camera"] as const).map(m => (
+      <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
+        style={{ flex: 1, padding: "10px 0", border: "none", borderRadius: 9, cursor: "pointer", fontFamily: theme.font.mono, fontSize: 13, fontWeight: mode === m ? 600 : 400, background: mode === m ? "rgba(6,182,212,0.15)" : "transparent", color: mode === m ? theme.accent.cyan : theme.text.muted }}>
+        {m === "camera" ? `${canScan ? "📷" : "🔒"} Camera` : "📦 Products"}
+      </button>
+    ))}
+  </div>
+)}
 
     {/* Camera: locked */}
     {mode === "camera" && !canScan && (
@@ -3555,46 +3558,77 @@ const renderScanStep = () => (
     {/* Manual mode */}
     {mode === "manual" && (
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+{/* Search + Sell unlisted row — equal 50/50 split on all viewports */}
+<div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
 
-        {/* Search */}
-        <div style={{ position: "relative" }}>
-          <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45, pointerEvents: "none" }}>🔍</span>
-          <input
-            className="ki"
-            value={searchQuery}
-            onChange={e => { setSearchQuery(e.target.value); setError(""); }}
-            onKeyDown={async e => {
-              if (e.key !== "Enter") return;
-              e.preventDefault();
-              const q = searchQuery.trim();
-              if (!q) return;
-              if (exactSkuMatch) { handleProductTap(exactSkuMatch); setSearchQuery(""); return; }
-              const alloc = await fetchAllocationBySku(q);
-              if (alloc) { handleProductTap(alloc); setSearchQuery(""); return; }
-              if (filteredProducts.length === 1) { handleProductTap(filteredProducts[0]); setSearchQuery(""); return; }
-              if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
-            }}
-            placeholder="Search by name or SKU…"
-            style={{ paddingLeft: 40, paddingRight: searchQuery ? 40 : 14 }}
-            spellCheck={false}
-            autoComplete="off"
-            maxLength={40}
-          />
-          {searchQuery && (
-            <button onClick={() => { setSearchQuery(""); setError(""); }}
-              style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.08)", color: theme.text.muted, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }}>×</button>
-          )}
-        </div>
+  {/* Search */}
+  <div style={{ position: "relative", flex: 1, minWidth: 0 }}>
+    <span style={{ position: "absolute", left: 14, top: "50%", transform: "translateY(-50%)", fontSize: 15, opacity: 0.45, pointerEvents: "none" }}>🔍</span>
+    <input
+      className="ki"
+      value={searchQuery}
+      onChange={e => { setSearchQuery(e.target.value); setError(""); }}
+      onKeyDown={async e => {
+        if (e.key !== "Enter") return;
+        e.preventDefault();
+        const q = searchQuery.trim();
+        if (!q) return;
+        if (exactSkuMatch) { handleProductTap(exactSkuMatch); setSearchQuery(""); return; }
+        const alloc = await fetchAllocationBySku(q);
+        if (alloc) { handleProductTap(alloc); setSearchQuery(""); return; }
+        if (filteredProducts.length === 1) { handleProductTap(filteredProducts[0]); setSearchQuery(""); return; }
+        if (filteredProducts.length === 0) setError(`"${q}" not found in this shop's stock.`);
+      }}
+      placeholder={isMobile ? "Search…" : "Search by name or SKU…"}
+      style={{
+        paddingLeft: 40,
+        paddingRight: searchQuery ? 40 : 14,
+        width: "100%",
+        boxSizing: "border-box",
+      }}
+      spellCheck={false}
+      autoComplete="off"
+      maxLength={40}
+    />
+    {searchQuery && (
+      <button onClick={() => { setSearchQuery(""); setError(""); }}
+        style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", width: 24, height: 24, borderRadius: "50%", border: "none", background: "rgba(255,255,255,0.08)", color: theme.text.muted, fontSize: 14, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", padding: 0, lineHeight: 1 }}>×</button>
+    )}
+  </div>
 
-        {/* Sell unlisted */}
-        <button
-          onClick={() => { setUnlistedOpen(true); setError(""); }}
-          style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, padding: "12px 14px", background: "rgba(168,85,247,0.06)", border: "1px dashed rgba(168,85,247,0.4)", borderRadius: 12, color: "#c084fc", fontFamily: theme.font.mono, fontSize: 13, cursor: "pointer", transition: "background 0.15s" }}
-          onMouseEnter={e => (e.currentTarget.style.background = "rgba(168,85,247,0.12)")}
-          onMouseLeave={e => (e.currentTarget.style.background = "rgba(168,85,247,0.06)")}
-        >
-          ➕ Sell item not in stock
-        </button>
+  {/* Sell unlisted — same width as the search */}
+  <button
+    onClick={() => { setUnlistedOpen(true); setError(""); }}
+    title="Sell an item not in this shop's stock"
+    style={{
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      gap: 6,
+      padding: "10px 12px",
+      background: "rgba(168,85,247,0.06)",
+      border: "1px dashed rgba(168,85,247,0.4)",
+      borderRadius: 12,
+      color: "#c084fc",
+      fontFamily: theme.font.mono,
+      fontSize: isMobile ? 12 : 13,
+      cursor: "pointer",
+      transition: "background 0.15s",
+      flex: 1,
+      minWidth: 0,
+      whiteSpace: "nowrap",
+      overflow: "hidden",
+      textOverflow: "ellipsis",
+    }}
+    onMouseEnter={e => (e.currentTarget.style.background = "rgba(168,85,247,0.12)")}
+    onMouseLeave={e => (e.currentTarget.style.background = "rgba(168,85,247,0.06)")}
+  >
+    <span style={{ fontSize: 14, flexShrink: 0 }}>➕</span>
+    <span style={{ overflow: "hidden", textOverflow: "ellipsis" }}>
+      {isMobile ? "Not in stock" : "Sell item not in stock"}
+    </span>
+  </button>
+</div>
 
         {/* Exact SKU quick-add */}
         {exactSkuMatch && (

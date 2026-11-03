@@ -176,7 +176,7 @@ export default function PosTransactionsPage() {
 
   type CreditPaymentRow = { id: string; credit_sale_id: string; amount: number; payment_method: string; cash_amount: number; mpesa_amount: number; mpesa_ref: string | null; customer_name: string | null; customer_phone: string | null; created_at: string };
   const [transactions, setTransactions] = useState<LocalTransaction[]>([]);
-  const [shopExpenses, setShopExpenses] = useState<{ id: string; amount: number; description: string; payment_method: string; cash_amount: number; mpesa_amount: number; logged_by: string; logged_by_name: string; created_at: string }[]>([]);
+  const [shopExpenses, setShopExpenses] = useState<{ id: string; amount: number; description: string; payment_method: string; cash_amount: number; mpesa_amount: number; logged_by: string; logged_by_name: string; created_at: string; source: "shop" | "owner" | "loan" | "other"; source_label: string | null; }[]>([]);
   const [creditPaymentRows, setCreditPaymentRows] = useState<CreditPaymentRow[]>([]);
   const [fetchError, setFetchError]     = useState<string | null>(null);
   const [loading, setLoading]           = useState(true);
@@ -1081,18 +1081,25 @@ setSummary(s ? {
     setFetchError(null);
 
     // Filter expenses client-side to match the active date window
-    const allExps: { id: string; amount: number; description: string; payment_method: string; cash_amount: number; mpesa_amount: number; logged_by: string; logged_by_name: string; created_at: string }[] =
-      (expData || []).map((e: any) => ({
-        id:             e.id,
-        amount:         Number(e.amount) || 0,
-        description:    e.description || "Expense",
-        payment_method: e.payment_method || "cash",
-        cash_amount:    Number(e.cash_amount)  || 0,
-        mpesa_amount:   Number(e.mpesa_amount) || 0,
-        logged_by:      e.logged_by      || "",
-        logged_by_name: e.logged_by_name || "",
-        created_at:     e.created_at,
-      }));
+   const allExps: {
+      id: string; amount: number; description: string;
+      payment_method: string; cash_amount: number; mpesa_amount: number;
+      logged_by: string; logged_by_name: string; created_at: string;
+      source: "shop" | "owner" | "loan" | "other";
+      source_label: string | null;
+    }[] = (expData || []).map((e: any) => ({
+      id:             e.id,
+      amount:         Number(e.amount) || 0,
+      description:    e.description || "Expense",
+      payment_method: e.payment_method || "cash",
+      cash_amount:    Number(e.cash_amount)  || 0,
+      mpesa_amount:   Number(e.mpesa_amount) || 0,
+      logged_by:      e.logged_by      || "",
+      logged_by_name: e.logged_by_name || "",
+      created_at:     e.created_at,
+      source:         (e.source ?? "shop") as "shop" | "owner" | "loan" | "other",
+      source_label:   e.source_label ?? null,
+    }));
 
     const filteredExps = allExps.filter(e => {
       const d = new Date(e.created_at);
@@ -1411,13 +1418,18 @@ setSummary(s ? {
   });
 
  
-   // ── Expenses + credit payments are fully fetched (not paginated) ──
-  const expensesSum   = shopExpenses.reduce((s, e) => s + e.amount, 0);
-  const cpTotal       = creditPaymentRows.reduce((s, c) => s + c.amount, 0);
-  const cashExpenses  = shopExpenses.reduce((s, e) => s + (e.cash_amount  || (e.payment_method === "cash"  ? e.amount : 0)), 0);
-  const mpesaExpenses = shopExpenses.reduce((s, e) => s + (e.mpesa_amount || (e.payment_method === "mpesa" ? e.amount : 0)), 0);
-  const cpCash        = creditPaymentRows.reduce((s, c) => s + c.cash_amount,  0);
-  const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
+ // ── Expenses + credit payments are fully fetched (not paginated) ──
+// Only SHOP-sourced expenses reduce the till / net.
+// Owner / loan / other are recorded and shown in the list, but never
+// touched the shop's cash box, so they must not affect totals.
+const shopOnlyExpenses = shopExpenses.filter(e => e.source === "shop");
+
+const expensesSum   = shopOnlyExpenses.reduce((s, e) => s + e.amount, 0);
+const cpTotal       = creditPaymentRows.reduce((s, c) => s + c.amount, 0);
+const cashExpenses  = shopOnlyExpenses.reduce((s, e) => s + (e.cash_amount  || (e.payment_method === "cash"  ? e.amount : 0)), 0);
+const mpesaExpenses = shopOnlyExpenses.reduce((s, e) => s + (e.mpesa_amount || (e.payment_method === "mpesa" ? e.amount : 0)), 0);
+const cpCash        = creditPaymentRows.reduce((s, c) => s + c.cash_amount,  0);
+const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
 
   // ── Sales + returns come from the server-side aggregate (all pages) ──
   const grossRevenue = (summary?.total_amount ?? 0) + cpTotal;
@@ -2120,8 +2132,8 @@ setSummary(s ? {
                 const dayReturned = txnsForDate.reduce((s, t) => s + txReturnedValue(t), 0);
                 const dayNet = txnsForDate.reduce((s, t) => s + t.amount, 0)
                   + cpsForDate.reduce((s, c) => s + c.amount, 0)
-                  - expsForDate.reduce((s, e) => s + e.amount, 0)
-                  - dayReturned; 
+                  - expsForDate.filter(e => e.source === "shop").reduce((s, e) => s + e.amount, 0)
+                  - dayReturned;
                 // Merge all item types into one time-sorted list so the render order matches real time
                 type DayItem =
                   | { kind: "exp";   data: typeof expsForDate[number] }
@@ -2161,7 +2173,28 @@ setSummary(s ? {
                                 <span style={{ color: "#06b6d4" }}>📱 {fmt(exp.mpesa_amount)}</span>
                               </div>
                             )}
-                            <div style={{ display: "inline-block", marginTop: 4, background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700, color: "#f87171", fontFamily: theme.font.mono, letterSpacing: "0.06em" }}>EXPENSE</div>
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                         <div style={{
+                            background: "rgba(248,113,113,0.15)", border: "1px solid rgba(248,113,113,0.3)",
+                            borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700,
+                            color: "#f87171", fontFamily: theme.font.mono, letterSpacing: "0.06em",
+                          }}>
+                            EXPENSE
+                          </div>
+                          {exp.source !== "shop" && (
+                            <div style={{
+                              background: "rgba(192,132,252,0.12)", border: "1px solid rgba(192,132,252,0.35)",
+                              borderRadius: 20, padding: "2px 8px", fontSize: 9, fontWeight: 700,
+                              color: "#c084fc", fontFamily: theme.font.mono, letterSpacing: "0.06em",
+                            }}>
+                              {exp.source === "owner" ? "👤 OWNER-PAID"
+                              : exp.source === "loan" ? "🏦 LOAN"
+                              : exp.source_label ? `✏️ ${exp.source_label.toUpperCase()}`
+                              : "✏️ OTHER"}
+                              {" · NOT IN TOTALS"}
+                            </div>
+                          )}
+                        </div>
                           </div>
                           <div style={{ textAlign: "right", flexShrink: 0 }}>
                             <div style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(exp.amount)}</div>
