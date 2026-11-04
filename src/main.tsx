@@ -12,7 +12,8 @@ import {
 Sentry.init({
   dsn: "https://fee0bf91979cd5948e9f5fdcec8ca473@o4512328803287040.ingest.de.sentry.io/4512336967434320",
   environment: import.meta.env.MODE,
-  // debug: true, // 👈 Keep this to see Sentry's internal logs in the console
+  // This is the key change — route events through your own domain
+  tunnel: "/api/monitoring", 
   integrations: [
     Sentry.reactRouterBrowserTracingIntegration({
       useEffect: React.useEffect, 

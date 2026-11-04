@@ -12,6 +12,8 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@sentry/core": "^11.10.0",
+    "@sentry/node": "^11.10.0",
     "@sentry/react": "^11.10.0",
     "@supabase/supabase-js": "^2.99.3",
     "antd": "^6.6.6",

@@ -30,3 +30,5 @@ dist-ssr
 
 # Vite PWA generated files
 dev-dist/
+.vercel
+.env*

@@ -1365,12 +1365,17 @@ setSummary(s ? {
 };
 
     // ── Full seller list (not paginated) ──
+    // ── Full seller list (not paginated) ──
   const [allSellers, setAllSellers] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     if (!shop?.id) return;
-    supabase.rpc("get_shop_sellers", { p_shop_id: shop.id })
-      .then(({ data }) => {
+    supabase
+      .from("shop_agents")
+      .select("agent_id, agent_name")
+      .eq("shop_id", shop.id)
+      .then(({ data, error }) => {
+        if (error) console.error("Error fetching sellers:", error);
         setAllSellers(
           (data ?? []).map((s: any) => ({ id: s.agent_id, name: s.agent_name }))
         );

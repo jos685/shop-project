@@ -12,7 +12,6 @@ const isIos = () =>
 
 const ICON_VERSION   = "2";
 const REINSTALL_KEY  = `pos_pwa_reinstall_seen_v${ICON_VERSION}`;
-const INSTALL_SESSION_KEY = "pos_pwa_install_dismissed_session";
 
 const SHARED_STYLES = `
   @keyframes pwaSlideUp { from{opacity:0;transform:translateY(18px)} to{opacity:1;transform:translateY(0)} }
@@ -352,7 +351,7 @@ export function PwaInstallBanner() {
 
   useEffect(() => {
     if (installed || isStandalone()) return;
-    if (sessionStorage.getItem(INSTALL_SESSION_KEY)) return;
+    if (localStorage.getItem("pwa_install_dismissed")) return;
     setVisible(true);
     setShowBar(true);
   }, [installed]);
@@ -364,7 +363,7 @@ export function PwaInstallBanner() {
   }, [visible, showIosSteps]);
 
   const dismiss = () => {
-    sessionStorage.setItem(INSTALL_SESSION_KEY, "1");
+    localStorage.setItem("pwa_install_dismissed", "1");
     setVisible(false);
   };
 
