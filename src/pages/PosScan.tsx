@@ -2440,18 +2440,13 @@ useEffect(() => {
     );
     if (existing) return existing;
   
-    const { data, error } = await supabase
-      .from("shop_custom_items")
-      .insert({
-        shop_id: shop.id,
-        owner_id: shop.owner_id,
-        name: trimmed,
-        unit: unit || "pc",
-        default_price: price || 0,
-        created_by: shop.owner_id, // or current agent id if you track it
-      })
-      .select("id, shop_id, name, unit, default_price, category, active")
-      .single();
+    const { data, error } = await supabase.rpc("insert_shop_custom_item", {
+      p_shop_id: shop.id,
+      p_owner_id: shop.owner_id,
+      p_name: trimmed,
+      p_unit: unit || "pc",
+      p_price: price || 0
+    }).select().single(); 
   
     if (error || !data) {
       console.warn("saveCustomItem failed:", error?.message);
@@ -2478,11 +2473,12 @@ useEffect(() => {
     if (!shop || !name.trim() || !phone.trim()) return;
     const already = savedCustomers.some(c => c.phone === phone.trim());
     if (already) return;
-    const { data, error } = await supabase
-      .from("shop_customers")
-      .insert({ shop_id: shop.id, owner_id: shop.owner_id, name: name.trim(), phone: phone.trim() })
-      .select("id, name, phone")
-      .single();
+    const { data, error } = await supabase.rpc("insert_shop_customer", {
+      p_shop_id: shop.id,
+      p_owner_id: shop.owner_id,
+      p_name: name.trim(),
+      p_phone: phone.trim()
+    }).select().single();
     if (data) {
       setSavedCustomers(prev => {
         const next = [...prev, data as SavedCustomer].sort((a, b) => a.name.localeCompare(b.name));

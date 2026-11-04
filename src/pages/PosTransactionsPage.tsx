@@ -944,14 +944,12 @@ if (creditSaleIds.length > 0) {
       }
     }
 
-    if (newAgentIds.length > 0) {
-      const { data: agentData } = await supabase
-        .from("shop_agents")
-        .select("agent_id, agent_name, agent_code")
-        .eq("shop_id", shop.id)
-        .in("agent_id", newAgentIds);
+        if (newAgentIds.length > 0) {
+      // REVERT BACK TO RPC:
+      const { data: agentData } = await supabase.rpc("get_shop_sellers", { p_shop_id: shop.id });
+      
       for (const a of agentData ?? []) {
-        if (a.agent_name) existingSellerMap[a.agent_id] = { name: a.agent_name, code: a.agent_code ?? "" };
+        existingSellerMap[a.agent_id] = { name: a.agent_name, code: a.agent_code ?? "" };
       }
     }
 
@@ -1262,11 +1260,12 @@ setSummary(s ? {
           mpesa_ref:      tx.mpesa_ref ?? undefined,
         },
       });
-      const sent = !!data?.sent;
-      await supabase
-        .from("shop_transactions")
-        .update({ receipt_sent: sent, receipt_phone: phone })
-        .eq("id", tx.id);
+     const sent = !!data?.sent;
+      await supabase.rpc("update_shop_transaction_receipt", {
+        p_transaction_ids: [tx.id],
+        p_receipt_sent: sent,
+        p_receipt_phone: phone,
+      });
       setTransactions(prev =>
         prev.map(t => t.id === tx.id ? { ...t, receipt_sent: sent, receipt_phone: phone } : t)
       );
@@ -1299,13 +1298,14 @@ setSummary(s ? {
         mpesa_ref:      firstTx.mpesa_ref ?? undefined,
       },
     });
-    const sent = !!data?.sent;
+   const sent = !!data?.sent;
     const txIds = group.items.map(t => t.id);
 
-    await supabase
-      .from("shop_transactions")
-      .update({ receipt_sent: sent, receipt_phone: phone })
-      .in("id", txIds);
+    await supabase.rpc("update_shop_transaction_receipt", {
+      p_transaction_ids: txIds,
+      p_receipt_sent: sent,
+      p_receipt_phone: phone,
+    });
 
     setTransactions(prev => prev.map(t =>
       txIds.includes(t.id) ? { ...t, receipt_sent: sent, receipt_phone: phone } : t
@@ -1365,17 +1365,13 @@ setSummary(s ? {
 };
 
     // ── Full seller list (not paginated) ──
-    // ── Full seller list (not paginated) ──
   const [allSellers, setAllSellers] = useState<{ id: string; name: string }[]>([]);
 
   useEffect(() => {
     if (!shop?.id) return;
-    supabase
-      .from("shop_agents")
-      .select("agent_id, agent_name")
-      .eq("shop_id", shop.id)
-      .then(({ data, error }) => {
-        if (error) console.error("Error fetching sellers:", error);
+    // REVERT BACK TO RPC:
+    supabase.rpc("get_shop_sellers", { p_shop_id: shop.id })
+      .then(({ data }) => {
         setAllSellers(
           (data ?? []).map((s: any) => ({ id: s.agent_id, name: s.agent_name }))
         );

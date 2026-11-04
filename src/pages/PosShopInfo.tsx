@@ -385,13 +385,9 @@ useEffect(() => {
   try {
     const offset = (page - 1) * STOCK_PAGE_SIZE;
 
-    let query = supabase
-      .from("shop_allocations")
-      .select(
-        "id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, product:products(id, name, sku, price, unit, image_url, batch_label, expiry_date)",
-        { count: "exact" }
-      )
-      .eq("shop_id", shop.id)
+   let query = supabase
+  .rpc("get_shop_stock", { p_shop_id: shop.id })
+  .order("product_name", { ascending: true })
       .order("product_name", { ascending: true })
       .range(offset, offset + STOCK_PAGE_SIZE - 1);
 
@@ -408,21 +404,21 @@ useEffect(() => {
       return;
     }
 
-    const items: StockItem[] = (data || [])
-      .filter((a: any) => !!a.product_id || !!a.product)
+        const items: StockItem[] = (data || [])
+      .filter((a: any) => !!a.product_id)
       .map((a: any) => ({
         id: a.id,
         allocated: a.allocated,
         remaining: Math.max(0, a.remaining ?? 0),
         product: {
-          id:          a.product?.id          ?? a.product_id,
-          name:        a.product?.name        ?? a.product_name ?? "—",
-          sku:         a.product?.sku         ?? a.product_sku  ?? "",
-          price:       Number(a.product?.price ?? a.product_price ?? 0),
-          unit:        a.product?.unit        ?? a.product_unit  ?? "",
-          image_url:   a.product?.image_url ? productImageUrl(a.product.image_url) : null,
-          batch_label: a.product?.batch_label ?? null,
-          expiry_date: a.product?.expiry_date ?? null,
+          id:          a.product_id,
+          name:        a.product_name ?? "—",
+          sku:         a.product_sku ?? "",
+          price:       Number(a.product_price ?? 0),
+          unit:        a.product_unit ?? "",
+          image_url:   a.image_url ? productImageUrl(a.image_url) : null, // 👈 Now flat
+          batch_label: a.batch_label ?? null,                             // 👈 Now flat
+          expiry_date: a.expiry_date ?? null,                             // 👈 Now flat
         },
       }));
 
