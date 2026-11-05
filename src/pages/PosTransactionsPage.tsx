@@ -200,6 +200,11 @@ export default function PosTransactionsPage() {
     typeof window !== "undefined" ? window.innerWidth < 768 : false
   );
 
+    // ── Edit Date Flow ──
+  const [editDateModal, setEditDateModal] = useState<{ group: SaleGroup; newDate: string } | null>(null);
+  const [dateEditProcessing, setDateEditProcessing] = useState(false);
+  const [dateEditError, setDateEditError] = useState("");
+
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", onResize);
@@ -639,20 +644,20 @@ const newSaleRows = replaceOutgoing.map(o => {
 
     // Fetch outstanding balance for any credit items
     const creditSaleIds = [...new Set(items.map(i => i.credit_sale_id).filter(Boolean))] as string[];
-if (creditSaleIds.length > 0) {
-  const { data: creditRows } = await supabase
+   if (creditSaleIds.length > 0) {
+   const { data: creditRows } = await supabase
     .from("shop_credit_sales")
     .select("id, amount, amount_paid")
     .in("id", creditSaleIds);
 
-  // amount_paid is the source of truth for what the customer actually handed over.
-  // We do NOT trust `amount` here because some flows store the remaining balance in it.
-  const paidMap: Record<string, number> = {};
-  for (const cs of creditRows ?? []) {
+   // amount_paid is the source of truth for what the customer actually handed over.
+   // We do NOT trust `amount` here because some flows store the remaining balance in it.
+   const paidMap: Record<string, number> = {};
+   for (const cs of creditRows ?? []) {
     paidMap[cs.id] = Math.max(0, Number(cs.amount_paid) || 0);
-  }
+   }
 
-  items = items.map(item => {
+   items = items.map(item => {
     if (!item.credit_sale_id) return item;
     const paid = paidMap[item.credit_sale_id];
     if (paid === undefined) return item;
@@ -663,8 +668,8 @@ if (creditSaleIds.length > 0) {
     const outstanding = Math.max(0, saleValue - paid);
 
     return { ...item, amount_paid_for_sale: paid, outstanding };
-  });
-}
+   });
+    }
 
     setReturnModal({ group, items });
     setReturnReason("");
@@ -672,6 +677,45 @@ if (creditSaleIds.length > 0) {
     setReturnError("");
     setReturnSuccess(false);
     setReturnMethod(null); 
+   }
+
+     function openEditDateModal(group: SaleGroup) {
+    // Convert the UTC created_at to local ISO for the datetime-local input
+    const d = new Date(group.created_at);
+    const tzOffset = d.getTimezoneOffset() * 60000;
+    const localISOTime = new Date(d.getTime() - tzOffset).toISOString().slice(0, 16);
+    
+    setEditDateModal({ group, newDate: localISOTime });
+    setDateEditError("");
+  }
+
+  async function handleSaveDate() {
+    if (!editDateModal) return;
+    setDateEditProcessing(true);
+    setDateEditError("");
+    
+    try {
+      // Convert the local input date back to UTC ISO
+      const newDateIso = new Date(editDateModal.newDate).toISOString();
+      const txnIds = editDateModal.group.items.map(t => t.id);
+
+      const { error } = await supabase.rpc("update_shop_transaction_date", {
+        p_transaction_ids: txnIds,
+        p_new_date: newDateIso,
+      });
+
+      if (error) throw error;
+
+      setEditDateModal(null);
+      fetchTransactions(true); // Refresh the list to regroup
+      
+      // Notify other components (like reports or dashboard) that data changed
+      window.dispatchEvent(new CustomEvent("shop:new_sale", { detail: { shopId: shop?.id } })); 
+    } catch (e: any) {
+      setDateEditError(e.message || "Failed to update transaction date.");
+    } finally {
+      setDateEditProcessing(false);
+    }
   }
 
   function updateReplaceReturnQty(txn_id: string, qty: number) {
@@ -1351,6 +1395,7 @@ setSummary(s ? {
       balanceOwed: 0,
       isQueued: false,
       isBackdated: false,
+      shippingFee: 0,
     };
     
     setWaModalData(data);
@@ -2309,10 +2354,16 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                           </div>
                           {isOpen && (
                             <div className="expand-panel" onClick={e => e.stopPropagation()} style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-                              <div style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px" }}>
+                              <div style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div>
                                 <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Date &amp; Time</div>
                                 <div style={{ fontSize: 12, fontWeight: 600, fontFamily: theme.font.mono, color: theme.text.primary }}>{new Date(group.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
                               </div>
+                              <button onClick={() => openEditDateModal(group)} style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 6, padding: "4px 8px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 10, cursor: "pointer" }}>
+                                ✎ Edit Date
+                              </button>
+                            </div>
+
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
                                                                    {/* Loop only over real items, hiding the synthetic discount row */}
                                                             {group.items.map(tx => (
@@ -2557,8 +2608,7 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                                 {
                                   label: "Receipt",
                                   value: tx.receipt_sent === true ? `📱 Sent to ${tx.receipt_phone ?? tx.customer_phone}` : tx.receipt_sent === false ? "📵 Failed to send" : phone ? "📄 Not sent yet" : "— No phone on file",
-                                  full: true,
-                                  color: tx.receipt_sent === true ? "#34d399" : tx.receipt_sent === false ? "#fbbf24" : theme.text.muted,
+                                   color: tx.receipt_sent === true ? "#34d399" : tx.receipt_sent === false ? "#fbbf24" : theme.text.muted,
                                 },
                               ] as { label: string; value: string; full?: boolean; mono?: boolean; color?: string }[]).map(({ label, value, full, mono, color }) => (
                                 <div key={label} style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", gridColumn: full ? "1 / -1" : undefined }}>
@@ -2566,6 +2616,13 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                                   <div style={{ fontSize: 12, fontWeight: 600, color: color ?? theme.text.primary, fontFamily: mono ? theme.font.mono : theme.font.body }}>{value}</div>
                                 </div>
                               ))}
+
+                              {/* Edit Date Button */}
+                            <div style={{ marginTop: -4, marginBottom: 4 }}>
+                              <button onClick={() => openEditDateModal(group)} style={{ width: "100%", padding: "8px", background: "rgba(6,182,212,0.08)", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 8, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                ✎ Edit Transaction Date
+                              </button>
+                            </div>
                             </div>
                             {/* Commission clawback detail */}
                             {(() => {
@@ -2929,6 +2986,7 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
             })}
           </div>
         </div>
+
 
         {/* Replacing with section */}
         <div>
@@ -3817,6 +3875,84 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
     </div>
   </div>
 )} 
+
+              {/* ── Edit Date Modal ──────────────────────────────────────────────── */}
+      {editDateModal && (
+        <div
+          onClick={e => { if (e.target === e.currentTarget) setEditDateModal(null); }}
+          style={{
+            position: "fixed", inset: 0, zIndex: 100,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            padding: 16, background: "rgba(0,0,0,0.7)",
+            backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
+          }}
+        >
+          <div style={{
+            width: "min(400px, 100%)", background: theme.bg.card,
+            borderRadius: 20, border: `1px solid ${theme.border.default}`,
+            padding: "20px 18px 22px", display: "flex", flexDirection: "column", gap: 16,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 17 }}>📅 Fix Transaction Date</div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
+                  {editDateModal.group.items.length} item(s) · {fmt(editDateModal.group.total)}
+                </div>
+              </div>
+              <button onClick={() => setEditDateModal(null)} style={{ background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`, borderRadius: 10, width: 36, height: 36, cursor: "pointer", color: theme.text.muted, fontSize: 18, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                ×
+              </button>
+            </div>
+
+            <div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+                New Date &amp; Time
+              </div>
+              <input
+                type="datetime-local"
+                value={editDateModal.newDate}
+                onChange={e => setEditDateModal({ ...editDateModal, newDate: e.target.value })}
+                style={{ 
+                  width: "100%", boxSizing: "border-box", 
+                  padding: "12px 14px", background: theme.bg.input, 
+                  border: `1px solid ${theme.border.default}`, borderRadius: 12, 
+                  color: theme.text.primary, fontSize: 14, 
+                  fontFamily: theme.font.mono, outline: "none",
+                  colorScheme: theme.isDark ? "dark" : "light" // Fixes white calendar on dark mode
+                }}
+              />
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 8, lineHeight: 1.5 }}>
+                ⚠️ Changing this will move the transaction (and its items) to a different day in your reports and daily summaries.
+              </div>
+            </div>
+
+            {dateEditError && (
+              <div style={{ padding: "10px 14px", background: "rgba(248,113,113,0.08)", border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10, fontSize: 12, fontFamily: theme.font.mono, color: "#f87171" }}>
+                {dateEditError}
+              </div>
+            )}
+
+            <button
+              onClick={handleSaveDate}
+              disabled={dateEditProcessing || !editDateModal.newDate}
+              style={{
+                padding: "14px 20px", background: "linear-gradient(135deg,#0891b2,#06b6d4)",
+                border: "none", borderRadius: 14, color: "#fff",
+                fontFamily: theme.font.mono, fontSize: 14, fontWeight: 700,
+                cursor: (dateEditProcessing || !editDateModal.newDate) ? "not-allowed" : "pointer",
+                opacity: (dateEditProcessing || !editDateModal.newDate) ? 0.6 : 1,
+                display: "flex", alignItems: "center", justifyContent: "center", gap: 8
+              }}
+            >
+              {dateEditProcessing ? (
+                <><span style={{ width: 14, height: 14, border: "2px solid rgba(255,255,255,0.3)", borderTopColor: "#fff", borderRadius: "50%", display: "inline-block", animation: "spin 0.7s linear infinite" }} /> Saving...</>
+              ) : (
+                "Save New Date"
+              )}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── WhatsApp Modal ── */}
       {waModalData && (

@@ -30,6 +30,7 @@ export default function ReceiptSuccessScreen({
   backdatedISO,
   receiptStatus,
   biz,
+  shippingFee,
   theme,
   isMobile,
   onReset,
@@ -46,6 +47,7 @@ export default function ReceiptSuccessScreen({
   mpesaRef: string;
   initialPayment: number;
   savedBatchRef: string;
+  shippingFee?: number;
   saleTimestamp: string;
   wasQueued: boolean;
   isBackdated: boolean;
@@ -90,6 +92,7 @@ export default function ReceiptSuccessScreen({
         initialPayment,
         isQueued: wasQueued,
         isBackdated,
+        shippingFee: shippingFee || 0,
       }),
     [
       ref, receiptTimestamp, selectedAgentName, customerName, customerPhone, cart, grandTotal, 

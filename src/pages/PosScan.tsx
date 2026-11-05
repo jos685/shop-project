@@ -1361,6 +1361,8 @@ function CartRail({
   saleDiscount,      // bill-level discount (>= 0)
   amountReceived,
   setAmountReceived,
+  shippingFee,
+  setShippingFee,
   onClearAll,
   onCharge,
   onUpdateQty,
@@ -1375,6 +1377,8 @@ function CartRail({
   saleDiscount: number;
   amountReceived: string;
   setAmountReceived: (v: string) => void;
+  shippingFee: string;       
+  setShippingFee: (v: string) => void; 
   onClearAll: () => void;
   onCharge: () => void;
   onUpdateQty: (key: string, qty: number) => void;
@@ -1498,32 +1502,50 @@ function CartRail({
             {fmt(grandTotal)}
           </span>
         </div>
+{/* Side-by-side Row Container */}
+<div style={{ display: "flex", flexDirection: "row", gap: 10, alignItems: "flex-start" }}>
+  
+  {/* Left Column: Discount */}
+  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+    <label style={footerLabel}>Discount / Amount Received</label>
+    <input
+      className="ki"
+      type="text"
+      inputMode="numeric"
+      value={amountReceived}
+      onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
+      placeholder={String(grandTotal)}
+      style={{ marginTop: 4, border: `1px solid ${saleDiscount > 0 ? "#f87171" : theme.border.default}` }}
+    />
+    
+    {/* If a discount is applied, show it right below the input */}
+    {saleDiscount > 0 && (
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
+        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
+          Applied
+        </span>
+        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
+          −{fmt(saleDiscount)}
+        </span>
+      </div>
+    )}
+  </div>
 
-        {/* Discount input */}
-        <div>
-          <label style={footerLabel}>Discount / Amount Received</label>
-          <input
-            className="ki"
-            type="text"
-            inputMode="numeric"
-            value={amountReceived}
-            onChange={e => setAmountReceived(sanitizeAmount(e.target.value))}
-            placeholder={String(grandTotal)}
-            style={{ marginTop: 4, border: `1px solid ${saleDiscount > 0 ? "#f87171" : theme.border.default}` }}
-          />
-          
-          {/* If a discount is applied, show it right below the input */}
-          {saleDiscount > 0 && (
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6 }}>
-              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
-                Discount applied
-              </span>
-              <span style={{ fontSize: 11, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
-                −{fmt(saleDiscount)}
-              </span>
-            </div>
-          )}
-        </div>
+  {/* Right Column: Shipping Fee */}
+  <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
+    <label style={footerLabel}>Shipping Fee</label>
+    <input
+      className="ki"
+      type="text"
+      inputMode="numeric"
+      value={shippingFee}
+      onChange={e => setShippingFee(sanitizeAmount(e.target.value))}
+      placeholder="0"
+      style={{ marginTop: 4 }}
+    />
+  </div>
+
+</div>
 
 
         {/* Final total + button */}
@@ -2078,7 +2100,7 @@ const editUnlistedItem = (key: string) => {
   // checkout
   const [customerName,    setCustomerName]    = useState("");
   const [customerPhone,   setCustomerPhone]   = useState("");
-  
+  const [shippingFee, setShippingFee] = useState("");
 
   // saved customer contacts
   interface SavedCustomer { id?: string; name: string; phone: string; }
@@ -2828,7 +2850,9 @@ const exactSkuMatch = useMemo(() => {
     ? grandTotal
     : Math.min(grandTotal, Math.max(0, Number(amountReceived) || 0));
   const saleDiscount = Math.max(0, grandTotal - amountReceivedNum);
-  const netTotal     = amountReceivedNum; // == grandTotal - saleDiscount
+
+  const shippingFeeNum = Math.max(0, Number(shippingFee) || 0);
+  const netTotal     = amountReceivedNum + shippingFeeNum;
 
   // ── submit sale ───────────────────────────────────────────────────────
   const handleSubmitSale = async (verifiedAgent: LocalAgent) => {
@@ -3020,7 +3044,8 @@ const exactSkuMatch = useMemo(() => {
         }
     );
 
-    // Attribute the bill-level concession to the first line — no synthetic row.
+
+        // Attribute the bill-level concession to the first line — no synthetic row.
     const creditItemsWithDiscount = creditItems.map((it, idx) => {
       if (idx !== 0 || saleDiscount <= 0) return it;
       const extra = saleDiscount;
@@ -3029,10 +3054,26 @@ const exactSkuMatch = useMemo(() => {
         discount:  (it.discount ?? 0) + extra,
         subtotal:  it.subtotal - extra,
       };
-    });
+     });
 
-      // Credit sale total is the amount actually agreed (post bill-level discount).
-      const saleTotal = amountReceivedNum;
+    // 👇 5A: ADD SHIPPING FEE TO CREDIT ITEMS
+    if (shippingFeeNum > 0) {
+      creditItemsWithDiscount.push({
+        allocation_id:  null,
+        product_id:     null,
+        custom_item_id: null,
+        product_name:   "Shipping Fee",
+        is_unlisted:    true,
+        quantity:       1,
+        unit_price:     shippingFeeNum,
+        discount:       0,
+        base_price:     shippingFeeNum,
+        subtotal:       shippingFeeNum,
+      });
+    }
+
+      // 👇 Use netTotal (which includes shipping) instead of amountReceivedNum
+      const saleTotal = netTotal; 
       const initPaid = Math.min(Math.max(0, Number(initialPayment) || 0), saleTotal);
       const initCashPaid = Math.min(Math.max(0, Number(initialCashAmount) || 0), initPaid);
       const initMpesaPaid = initPaid - initCashPaid;
@@ -3117,16 +3158,26 @@ const exactSkuMatch = useMemo(() => {
             agent_name:      verifiedAgent.name,
             created_at:      backdateISO || undefined,
             customer_name:   customerName.trim() || null,
-            items: cart.map((item, idx) => {
-              const d = (item.discount ?? 0) + (idx === 0 ? saleDiscount : 0);
-              return {
-                name:       cartItemName(item),
-                quantity:   item.quantity,
-                unit_price: item.sellPrice,
-                discount:   d,
-                total:      item.sellPrice * item.quantity - d,
-              };
-            }),
+            items: [
+              ...cart.map((item, idx) => {
+                const d = (item.discount ?? 0) + (idx === 0 ? saleDiscount : 0);
+                return {
+                  name:       cartItemName(item),
+                  quantity:   item.quantity,
+                  unit_price: item.sellPrice,
+                  discount:   d,
+                  total:      item.sellPrice * item.quantity - d,
+                };
+              }),
+              // Add Shipping Fee if it exists
+              ...(shippingFeeNum > 0 ? [{
+                name:       "Shipping Fee",
+                quantity:   1,
+                unit_price: shippingFeeNum,
+                discount:   0,
+                total:      shippingFeeNum,
+              }] : [])
+            ],
             total_amount:   saleTotal,
             payment_method: "credit",
             amount_paid:    paid,
@@ -3219,6 +3270,32 @@ const exactSkuMatch = useMemo(() => {
         commission_earned: commEarned,
       };
     });
+    
+    if (shippingFeeNum > 0) {
+      txRows.push({
+        shop_id:           shop?.id,
+        owner_id:          shop?.owner_id,
+        seller_agent_id:   verifiedAgent.agent_id,
+        product_id:        null,
+        custom_item_id:    null,
+        product_name:      "Shipping Fee",
+        is_unlisted:       true,
+        is_discount:       false,
+        quantity:          1,
+        amount:            shippingFeeNum,
+        discount:          0,
+        customer_phone:    customerPhone.trim(),
+        payment_method:    payMethod,
+        cash_amount:       payMethod === "cash" ? shippingFeeNum : 0,
+        mpesa_amount:      payMethod === "mpesa" ? shippingFeeNum : 0,
+        mpesa_ref:         (payMethod === "mpesa" || payMethod === "split") ? mpesaRef.trim() || null : null,
+        status:            "ok",
+        unit_price:        shippingFeeNum,
+        base_price:        shippingFeeNum, // No markup on shipping
+        commission_rate:   0,
+        commission_earned: 0,
+      });
+    }
 
     // Inject the backdated timestamp into every row (only when backdate mode is on)
     const finalRows = backdateISO
@@ -3261,7 +3338,8 @@ const exactSkuMatch = useMemo(() => {
           business_name:  businessName,
           agent_name:     verifiedAgent.name,
           created_at:      backdateISO || undefined,
-            items: cart.map((item, idx) => {
+            items: [
+            ...cart.map((item, idx) => {
               const d = (item.discount ?? 0) + (idx === 0 ? saleDiscount : 0);
               return {
                 name:       cartItemName(item),
@@ -3271,6 +3349,15 @@ const exactSkuMatch = useMemo(() => {
                 total:      item.sellPrice * item.quantity - d,
               };
             }),
+            // Add Shipping Fee if it exists
+            ...(shippingFeeNum > 0 ? [{
+              name:       "Shipping Fee",
+              quantity:   1,
+              unit_price: shippingFeeNum,
+              discount:   0,
+              total:      shippingFeeNum,
+            }] : [])
+          ],
           total_amount:   netTotal,
           discount_total: saleDiscount,
           payment_method: payMethod,
@@ -3431,6 +3518,7 @@ const handleDesktopCharge = useCallback(() => {
       setPayMethod(null);
       setCashAmount(""); setMpesaAmount(""); setMpesaRef("");
       setAmountReceived("");
+      setShippingFee("");
       setError(""); setScanFeedback(""); setProcessing(false);
       setVerifyMethod("pin"); setReceiptStatus("idle"); setCartRestored(false); setWasQueued(false);
       setAuthOpen(false);
@@ -4193,6 +4281,8 @@ const renderVerifyStep = () => (
         netTotal={netTotal}
         saleDiscount={saleDiscount}
         amountReceived={amountReceived}
+        shippingFee={shippingFee}      
+        setShippingFee={setShippingFee}
         setAmountReceived={setAmountReceived}
         onClearAll={() => setClearCartOpen(true)}
         onCharge={handleDesktopCharge}
@@ -4237,6 +4327,7 @@ const renderVerifyStep = () => (
             preDiscountTotal={preDiscountTotal}
             lineDiscountTotal={lineDiscountTotal}
             saleDiscount={saleDiscount}
+            shippingFee={shippingFeeNum}
             payMethod={payMethod}
             selectedAgentName={selectedAgent?.name ?? ""}
             customerName={customerName}
@@ -4679,6 +4770,21 @@ const renderVerifyStep = () => (
               Sale discount: −{fmt(saleDiscount)}
             </div>
           )}
+        </div>
+
+         {/* SHIPPING FEE INPUT HERE */}
+        <div style={{ marginTop: 10 }}>
+          <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 4 }}>
+            Shipping Fee
+          </label>
+          <input
+            className="ki"
+            type="text"
+            inputMode="numeric"
+            value={shippingFee}
+            onChange={e => setShippingFee(sanitizeAmount(e.target.value))}
+            placeholder="0"
+          />
         </div>
 
           {/* ── Backdate row ─────────────────────────────────────────── */}

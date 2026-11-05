@@ -28,6 +28,7 @@ export interface ReceiptData {
   balanceOwed: number;
   isQueued: boolean;
   isBackdated: boolean;
+  shippingFee: number;
 }
 
 export function buildReceiptData(input: {
@@ -46,6 +47,7 @@ export function buildReceiptData(input: {
   initialPayment: number;
   isQueued: boolean;
   isBackdated: boolean;
+  shippingFee: number;
 }): ReceiptData {
   const isCredit = input.payMethod === "credit";
   const paid = isCredit ? Math.min(Math.max(0, input.initialPayment), input.total) : 0;
@@ -60,20 +62,32 @@ export function buildReceiptData(input: {
   const lineDiscountTotal = input.lineDiscountTotal ?? 0;
   const saleDiscount      = input.saleDiscount      ?? 0;
 
+    // 👇 Create the items array and push the shipping fee into it
+  const items: ReceiptItem[] = input.cart.map(item => ({
+    name: cartItemName(item),
+    qty: item.quantity,
+    unitPrice: item.sellPrice,
+    total: item.sellPrice * item.quantity - (item.discount ?? 0),
+    unlisted: item.kind === "unlisted",
+  }));
+
+  if (input.shippingFee > 0) {
+    items.push({
+      name: "Shipping Fee",
+      qty: 1,
+      unitPrice: input.shippingFee,
+      total: input.shippingFee,
+      unlisted: false,
+    });
+  }
+
   return {
     ref: input.ref,
     timestamp: input.timestamp,
     sellerName: input.sellerName,
     customerName: input.customerName,
     customerPhone: input.customerPhone,
-    items: input.cart.map(item => ({
-      name: cartItemName(item),
-      qty: item.quantity,
-      unitPrice: item.sellPrice,
-      // Per-line total already reflects the line discount — same figure the cart shows.
-      total: item.sellPrice * item.quantity - (item.discount ?? 0),
-      unlisted: item.kind === "unlisted",
-    })),
+    items,
     total: input.total,
     preDiscountTotal,
     lineDiscountTotal,
@@ -85,6 +99,7 @@ export function buildReceiptData(input: {
     balanceOwed: isCredit ? Math.max(0, input.total - paid) : 0,
     isQueued: input.isQueued,
     isBackdated: input.isBackdated,
+    shippingFee: input.shippingFee,
   };
 }
 
@@ -116,7 +131,7 @@ export function receiptToText(d: ReceiptData, biz: BusinessInfo): string {
   lines.push(`Served by: ${d.sellerName}`);
   lines.push("─────────────────────");
     for (const it of d.items) {
-    lines.push(`${it.qty}× ${it.name}`);
+    lines.push(it.name === "Shipping Fee" ? it.name : `${it.qty}× ${it.name}`);
     lines.push(`   ${ksh(it.total)}`);
   }
   lines.push("─────────────────────");
@@ -146,7 +161,7 @@ export function receiptToPrintHtml(d: ReceiptData, biz: BusinessInfo, logoDataUr
 
   const rows = d.items.map(it => `
     <div class="row">
-      <div class="name">${it.qty}× ${esc(it.name)}</div>
+      <div class="name">${it.name === "Shipping Fee" ? esc(it.name) : `${it.qty}× ${esc(it.name)}`}</div>
       <div class="amt">${ksh(it.total)}</div>
     </div>`).join("");
 
@@ -320,6 +335,9 @@ export function receiptToPrintHtml(d: ReceiptData, biz: BusinessInfo, logoDataUr
     <div class="center thanks" style="margin-top: 24px;">
       Thank you for shopping at<br/>
       <strong style="color:#0f172a;">${esc(biz.businessName || "")}</strong>
+      <div style="margin-top: 8px; font-size: 10px; color: #94a3b8;">
+        Powered by <a href="https://qashup.co.ke" style="color: #94a3b8; text-decoration: underline;">Qashup.co.ke</a>
+      </div>
     </div>
   </div>
 </body></html>`;
@@ -442,7 +460,9 @@ export async function receiptToPdf(
   };
 
   for (const it of d.items) {
-    const nameLines = doc.splitTextToSize(`${it.qty}× ${it.name}`, W * 0.7) as string[];
+    const displayName = it.name === "Shipping Fee" ? it.name : `${it.qty}× ${it.name}`;
+    
+    const nameLines = doc.splitTextToSize(displayName, W * 0.7) as string[];
     const rowH = Math.max(6, nameLines.length * 5);
     ensureSpace(rowH + 2);
 
@@ -560,6 +580,13 @@ export async function receiptToPdf(
     doc.text(line, PAGE_W / 2, y, { align: "center" });
     y += 5;
   }
+
+  y += 2;
+  doc.setFontSize(8);
+  doc.setTextColor(148, 163, 184); // Slate-400
+  doc.text("Powered by Qashup", PAGE_W / 2, y, { align: "center" });
+  y += 4;
+  doc.textWithLink("qashup.co.ke", PAGE_W / 2, y, { align: "center", url: "https://qashup.co.ke" });
 
   if (opts.save !== false) {
     doc.save(receiptFilename(biz.businessName, d.ref));

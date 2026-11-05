@@ -166,7 +166,7 @@ export default function ReceiptCard({
                 }}
                 title={it.name}
               >
-                {it.qty}× {it.name}
+                {it.name === "Shipping Fee" ? it.name : `${it.qty}× ${it.name}`}
               </div>
               {it.unlisted && (
                 <div
@@ -327,7 +327,7 @@ export default function ReceiptCard({
 
       <Divider color={borderCol} />
 
-      {/* ── Footer ── */}
+            {/* ── Footer ── */}
       <div
         style={{
           textAlign: "center",
@@ -342,6 +342,14 @@ export default function ReceiptCard({
         <span style={{ color: cPrimary, fontWeight: 700 }}>
           {biz.businessName || "us"}
         </span>
+        
+        {/* 👇 ADD THIS BLOCK */}
+        <div style={{ marginTop: 12, fontSize: 9, opacity: 0.6 }}>
+          Powered by Qashup<br/>
+          <a href="https://qashup.co.ke" target="_blank" rel="noopener noreferrer" style={{ color: cMuted, textDecoration: "underline" }}>
+            qashup.co.ke
+          </a>
+        </div>
       </div>
     </div>
   );
