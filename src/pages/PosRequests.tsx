@@ -107,6 +107,316 @@ function buildBalanceTimeline(
 
 const fmt = (n: number) => `KSh ${n.toLocaleString()}`;
 
+function expenseBucketize(expenses: Expense[], range: ChartRange): { label: string; value: number }[] {
+  const { start, end } = getChartRangeBounds(range);
+  const rows = expenses
+    .map(e => ({ e, d: new Date((e as any).expense_date || e.created_at) }))
+    .filter(x => inRange(x.d, start, end));
+
+  if (range === "today") {
+    const buckets = Array.from({ length: 8 }, (_, i) => ({ label: `${String(i * 3).padStart(2, "0")}h`, value: 0 }));
+    for (const { e } of rows) {
+      const h = new Date(e.created_at).getHours();
+      buckets[Math.floor(h / 3)].value += e.amount;
+    }
+    return buckets;
+  }
+  if (range === "week") {
+    const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const buckets = names.map(n => ({ label: n, value: 0 }));
+    for (const { d, e } of rows) buckets[d.getDay()].value += e.amount;
+    return buckets;
+  }
+  if (range === "month") {
+    const now = new Date();
+    const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const buckets = Array.from({ length: days }, (_, i) => ({ label: String(i + 1), value: 0 }));
+    for (const { d, e } of rows) buckets[d.getDate() - 1].value += e.amount;
+    return buckets;
+  }
+  if (range === "year") {
+    const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const buckets = names.map(n => ({ label: n, value: 0 }));
+    for (const { d, e } of rows) buckets[d.getMonth()].value += e.amount;
+    return buckets;
+  }
+  // all time
+  if (rows.length === 0) return [];
+  const minT = Math.min(...rows.map(r => r.d.getTime()));
+  const minD = new Date(minT);
+  const cursor = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  const buckets: { label: string; value: number }[] = [];
+  const now = new Date();
+  while (cursor <= now) {
+    buckets.push({ label: cursor.toLocaleDateString("en-KE", { month: "short", year: "2-digit" }), value: 0 });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  for (const { d, e } of rows) {
+    const idx = (d.getFullYear() - minD.getFullYear()) * 12 + (d.getMonth() - minD.getMonth());
+    if (idx >= 0 && idx < buckets.length) buckets[idx].value += e.amount;
+  }
+  return buckets;
+}
+
+function creditPaymentBuckets(
+  sales: CreditSale[],
+  paymentsBySale: Record<string, CreditPayment[]>,
+  range: ChartRange,
+): { label: string; cash: number; mpesa: number }[] {
+  const { start, end } = getChartRangeBounds(range);
+  const rows = sales
+    .flatMap(s => paymentsBySale[s.id] || [])
+    .map(p => ({ p, d: new Date(p.created_at) }))
+    .filter(x => inRange(x.d, start, end));
+
+  const push = (arr: { label: string; cash: number; mpesa: number }[], idx: number, p: CreditPayment) => {
+    if (idx < 0 || idx >= arr.length) return;
+    // Match existing payment-history display: "cash" → cash, everything else → mpesa.
+    if (p.payment_method === "cash") arr[idx].cash += Number(p.amount);
+    else arr[idx].mpesa += Number(p.amount);
+  };
+
+  if (range === "today") {
+    const buckets = Array.from({ length: 8 }, (_, i) => ({ label: `${String(i * 3).padStart(2, "0")}h`, cash: 0, mpesa: 0 }));
+    for (const { p, d } of rows) push(buckets, Math.floor(d.getHours() / 3), p);
+    return buckets;
+  }
+  if (range === "week") {
+    const names = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const buckets = names.map(n => ({ label: n, cash: 0, mpesa: 0 }));
+    for (const { p, d } of rows) push(buckets, d.getDay(), p);
+    return buckets;
+  }
+  if (range === "month") {
+    const now = new Date();
+    const days = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+    const buckets = Array.from({ length: days }, (_, i) => ({ label: String(i + 1), cash: 0, mpesa: 0 }));
+    for (const { p, d } of rows) push(buckets, d.getDate() - 1, p);
+    return buckets;
+  }
+  if (range === "year") {
+    const names = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+    const buckets = names.map(n => ({ label: n, cash: 0, mpesa: 0 }));
+    for (const { p, d } of rows) push(buckets, d.getMonth(), p);
+    return buckets;
+  }
+  // all time
+  if (rows.length === 0) return [];
+  const minT = Math.min(...rows.map(r => r.d.getTime()));
+  const minD = new Date(minT);
+  const cursor = new Date(minD.getFullYear(), minD.getMonth(), 1);
+  const buckets: { label: string; cash: number; mpesa: number }[] = [];
+  const now = new Date();
+  while (cursor <= now) {
+    buckets.push({ label: cursor.toLocaleDateString("en-KE", { month: "short", year: "2-digit" }), cash: 0, mpesa: 0 });
+    cursor.setMonth(cursor.getMonth() + 1);
+  }
+  for (const { p, d } of rows) {
+    const idx = (d.getFullYear() - minD.getFullYear()) * 12 + (d.getMonth() - minD.getMonth());
+    push(buckets, idx, p);
+  }
+  return buckets;
+}
+
+// ─── Chart primitives (hand-rolled SVG) ──────────────────────────────
+
+type ChartRange = "today" | "week" | "month" | "year" | "all";
+
+function getChartRangeBounds(range: ChartRange): { start: Date | null; end: Date | null } {
+  const now = new Date();
+  const end = new Date(now); end.setHours(23, 59, 59, 999);
+  let start: Date | null = null;
+  if (range === "today")      { start = new Date(now); start.setHours(0,0,0,0); }
+  else if (range === "week")  { start = new Date(now); start.setDate(now.getDate() - now.getDay()); start.setHours(0,0,0,0); }
+  else if (range === "month") { start = new Date(now.getFullYear(), now.getMonth(), 1); }
+  else if (range === "year")  { start = new Date(now.getFullYear(), 0, 1); }
+  return { start, end: range === "all" ? null : end };
+}
+const inRange = (d: Date, s: Date | null, e: Date | null) =>
+  (!s || d >= s) && (!e || d <= e);
+
+interface ChartSlice { label: string; value: number; color: string }
+
+function ChartCard({ title, sub, theme, children }: {
+  title: string; sub?: string; theme: any; children: React.ReactNode;
+}) {
+  return (
+    <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 14, padding: "14px 16px" }}>
+      <div style={{ marginBottom: 12 }}>
+        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", fontWeight: 700 }}>{title}</div>
+        {sub && <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2, opacity: 0.7 }}>{sub}</div>}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ChartDonut({ slices, size = 168, thickness = 24, centerLabel, centerSub, theme }: {
+  slices: ChartSlice[]; size?: number; thickness?: number;
+  centerLabel?: string; centerSub?: string; theme: any;
+}) {
+  const total = slices.reduce((s, x) => s + x.value, 0);
+  if (total <= 0) {
+    return <div style={{ textAlign: "center", padding: "28px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>No data in this period</div>;
+  }
+  const r = (size - thickness) / 2;
+  const c = size / 2;
+  const circ = 2 * Math.PI * r;
+  let acc = 0;
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} style={{ display: "block", margin: "0 auto" }}>
+      <circle cx={c} cy={c} r={r} fill="none" stroke={theme.border.default} strokeWidth={thickness} />
+      {slices.map((s, i) => {
+        if (s.value <= 0) return null;
+        const dash = circ * (s.value / total);
+        const el = (
+          <circle key={i} cx={c} cy={c} r={r} fill="none" stroke={s.color} strokeWidth={thickness}
+            strokeDasharray={`${dash} ${circ - dash}`} strokeDashoffset={-acc}
+            transform={`rotate(-90 ${c} ${c})`} />
+        );
+        acc += dash;
+        return el;
+      })}
+      {centerLabel && (
+        <text x={c} y={c - 2} textAnchor="middle"
+          style={{ fontFamily: "DM Mono, monospace", fontSize: 14, fontWeight: 800, fill: theme.text.primary }}>{centerLabel}</text>
+      )}
+      {centerSub && (
+        <text x={c} y={c + 14} textAnchor="middle"
+          style={{ fontFamily: "DM Mono, monospace", fontSize: 9, fill: theme.text.muted }}>{centerSub}</text>
+      )}
+    </svg>
+  );
+}
+
+function ChartLegend({ slices, format, theme }: { slices: ChartSlice[]; format: (n: number) => string; theme: any }) {
+  const total = slices.reduce((s, x) => s + x.value, 0);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 12 }}>
+      {slices.map((s, i) => {
+        const pct = total > 0 ? Math.round((s.value / total) * 100) : 0;
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 10, height: 10, borderRadius: 3, background: s.color, flexShrink: 0 }} />
+            <div style={{ flex: 1, fontSize: 11, fontFamily: theme.font.mono, color: theme.text.secondary }}>{s.label}</div>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, fontWeight: 700 }}>{format(s.value)}</div>
+            <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, minWidth: 32, textAlign: "right" }}>{pct}%</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function ChartBarsH({ items, format, theme }: {
+  items: { label: string; value: number; color: string; sub?: string }[];
+  format: (n: number) => string; theme: any;
+}) {
+  if (items.length === 0) {
+    return <div style={{ textAlign: "center", padding: "28px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>No data in this period</div>;
+  }
+  const max = Math.max(...items.map(i => i.value), 1);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {items.map((it, i) => (
+        <div key={i}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: theme.text.primary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, flex: 1 }}>
+              {it.label}{it.sub && <span style={{ color: theme.text.muted, marginLeft: 6 }}>· {it.sub}</span>}
+            </div>
+            <div style={{ fontSize: 11, fontFamily: theme.font.mono, color: it.color, fontWeight: 700, flexShrink: 0, marginLeft: 8 }}>{format(it.value)}</div>
+          </div>
+          <div style={{ width: "100%", height: 6, borderRadius: 3, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+            <div style={{ width: `${(it.value / max) * 100}%`, height: "100%", background: it.color, borderRadius: 3, transition: "width 0.4s ease" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ChartTrendArea({ points, color, format, theme }: {
+  points: { label: string; value: number }[]; color: string;
+  format: (n: number) => string; theme: any;
+}) {
+  if (points.length < 2 || points.every(p => p.value === 0)) {
+    return <div style={{ textAlign: "center", padding: "28px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>Not enough data — add more records to see a trend</div>;
+  }
+  const max = Math.max(...points.map(p => p.value), 1);
+  const W = 300, H = 100, padX = 2, padY = 8;
+  const innerW = W - padX * 2, innerH = H - padY * 2;
+  const stepX = innerW / (points.length - 1);
+  const xy = (i: number, v: number) => [padX + i * stepX, padY + innerH - (v / max) * innerH] as const;
+  const line = points.map((p, i) => { const [x, y] = xy(i, p.value); return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`; }).join(" ");
+  const area = `${line} L${(padX + innerW).toFixed(1)},${(padY + innerH).toFixed(1)} L${padX},${(padY + innerH).toFixed(1)} Z`;
+  const gradId = `trend-${color.replace(/[^a-z0-9]/gi, "")}`;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" style={{ display: "block", width: "100%", height: 110 }}>
+        <defs>
+          <linearGradient id={gradId} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={color} stopOpacity="0.35" />
+            <stop offset="100%" stopColor={color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        <line x1={padX} y1={padY + innerH} x2={padX + innerW} y2={padY + innerH} stroke={theme.border.default} strokeWidth="1" />
+        <path d={area} fill={`url(#${gradId})`} />
+        <path d={line} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+        <span>{points[0].label}</span>
+        <span>peak {format(max)}</span>
+        <span>{points[points.length - 1].label}</span>
+      </div>
+    </div>
+  );
+}
+
+function ChartStackedBars({ buckets, format, theme }: {
+  buckets: { label: string; cash: number; mpesa: number }[];
+  format: (n: number) => string; theme: any;
+}) {
+  const max = Math.max(...buckets.map(b => b.cash + b.mpesa), 1);
+  if (buckets.length === 0 || buckets.every(b => b.cash + b.mpesa === 0)) {
+    return <div style={{ textAlign: "center", padding: "28px 0", color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>No payments in this period</div>;
+  }
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 110, padding: "0 2px" }}>
+        {buckets.map((b, i) => {
+          const total = b.cash + b.mpesa;
+          const hPct = total / max;
+          const cPct = total > 0 ? (b.cash / total) * 100 : 0;
+          const mPct = total > 0 ? (b.mpesa / total) * 100 : 0;
+          return (
+            <div key={i} title={`${b.label}: ${format(total)}`}
+              style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", height: "100%", justifyContent: "flex-end", minWidth: 0 }}>
+              <div style={{ width: "100%", height: `${hPct * 100}%`, display: "flex", flexDirection: "column", borderRadius: 3, overflow: "hidden" }}>
+                {cPct > 0 && <div style={{ height: `${cPct}%`, background: "#34d399" }} />}
+                {mPct > 0 && <div style={{ height: `${mPct}%`, background: "#06b6d4" }} />}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6, fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted }}>
+        <span>{buckets[0].label}</span>
+        <span>{buckets[buckets.length - 1].label}</span>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginTop: 10, justifyContent: "center", fontSize: 10, fontFamily: theme.font.mono }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 2, background: "#34d399" }} />
+          <span style={{ color: theme.text.muted }}>Cash</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div style={{ width: 8, height: 8, borderRadius: 2, background: "#06b6d4" }} />
+          <span style={{ color: theme.text.muted }}>M-Pesa</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function useWindowWidth() {
   const [w, setW] = useState(window.innerWidth);
   useEffect(() => {
@@ -263,6 +573,164 @@ const EXPENSE_SOURCES: { value: ExpenseSource; label: string; icon: string }[] =
   { value: "other", label: "Other…",         icon: "✏️" },
 ];
 
+// ─── Expense charts view ──────────────────────────────────────────────
+function ExpensesCharts({ expenses, range, setRange, theme, isMobile, fmt }: {
+  expenses: Expense[];
+  range: ChartRange;
+  setRange: (r: ChartRange) => void;
+  theme: any;
+  isMobile: boolean;
+  fmt: (n: number) => string;
+}) {
+  const { start, end } = getChartRangeBounds(range);
+  const rows = expenses.filter(e => inRange(new Date((e as any).expense_date || e.created_at), start, end));
+
+  const trend = expenseBucketize(expenses, range);
+  const total = rows.reduce((s, e) => s + e.amount, 0);
+  const cash  = rows.reduce((s, e) => s + Number(e.cash_amount  || 0), 0);
+  const mpesa = rows.reduce((s, e) => s + Number(e.mpesa_amount || 0), 0);
+
+  const bySource: ChartSlice[] = (["shop","owner","loan","other"] as const).map(src => ({
+    label: src === "shop" ? "🏪 Shop" : src === "owner" ? "👤 Owner" : src === "loan" ? "🏦 Loan" : "✏️ Other",
+    value: rows.filter(e => e.source === src).reduce((s, e) => s + e.amount, 0),
+    color: src === "shop" ? "#f87171" : src === "owner" ? "#c084fc" : src === "loan" ? "#fbbf24" : "#6b7280",
+  }));
+
+  const byAgentMap = new Map<string, number>();
+  for (const e of rows) byAgentMap.set(e.logged_by_name, (byAgentMap.get(e.logged_by_name) || 0) + e.amount);
+  const byAgent = [...byAgentMap.entries()]
+    .map(([label, value]) => ({ label, value, color: "#06b6d4" }))
+    .sort((a, b) => b.value - a.value)
+    .slice(0, 8);
+
+  const cashSlices: ChartSlice[] = [
+    { label: "💵 Cash",   value: cash,  color: "#34d399" },
+    { label: "📱 M-Pesa", value: mpesa, color: "#06b6d4" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <RangeChips range={range} setRange={setRange} theme={theme} />
+
+      <ChartCard title="Spending trend" sub={`${fmt(total)} · ${rows.length} record${rows.length !== 1 ? "s" : ""}`} theme={theme}>
+        <ChartTrendArea points={trend} color="#f87171" format={fmt} theme={theme} />
+      </ChartCard>
+
+      <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
+        <ChartCard title="Cash vs M-Pesa" sub="how expenses were paid" theme={theme}>
+          <ChartDonut slices={cashSlices} centerLabel={fmt(total)} centerSub="total" theme={theme} />
+          <ChartLegend slices={cashSlices} format={fmt} theme={theme} />
+        </ChartCard>
+        <ChartCard title="By source" sub="whose money paid" theme={theme}>
+          <ChartDonut slices={bySource} centerLabel={fmt(total)} centerSub="total" theme={theme} />
+          <ChartLegend slices={bySource} format={fmt} theme={theme} />
+        </ChartCard>
+      </div>
+
+      <ChartCard title="By agent" sub="who spent the most" theme={theme}>
+        <ChartBarsH items={byAgent} format={fmt} theme={theme} />
+      </ChartCard>
+    </div>
+  );
+}
+
+// ─── Credit charts view ───────────────────────────────────────────────
+function CreditCharts({ creditSales, creditReturns, creditPayments, range, setRange, groupByCustomer, theme, fmt }: {
+  creditSales: CreditSale[];
+  creditReturns: Record<string, TransactionReturn[]>;
+  creditPayments: Record<string, CreditPayment[]>;
+  range: ChartRange;
+  setRange: (r: ChartRange) => void;
+  groupByCustomer: (sales: CreditSale[]) => CustomerCreditGroup[];
+  theme: any;
+  fmt: (n: number) => string;
+}) {
+  const { start, end } = getChartRangeBounds(range);
+  const inSales = creditSales.filter(s => inRange(new Date(s.created_at), start, end));
+
+  const paid        = inSales.reduce((s, x) => s + x.amount_paid, 0);
+  const outstanding = inSales.reduce((s, x) => s + owedByCustomer(x, creditReturns[x.id] || []), 0);
+  const weOwe       = inSales.reduce((s, x) => s + owedByShop(x,     creditReturns[x.id] || []), 0);
+
+  const momentumBuckets = creditPaymentBuckets(inSales, creditPayments, range);
+  const paymentsLoading = inSales.some(s => creditPayments[s.id] === undefined);
+
+  const groups = groupByCustomer(inSales)
+    .filter(g => g.totalOutstanding > 0)
+    .sort((a, b) => b.totalOutstanding - a.totalOutstanding)
+    .slice(0, 6);
+  const topDebtors = groups.map(g => ({
+    label: g.customer_name,
+    sub: g.customer_phone || "",
+    value: g.totalOutstanding,
+    color: "#f87171",
+  }));
+
+  const portfolioSlices: ChartSlice[] = [
+    { label: "✅ Collected",   value: paid,        color: "#34d399" },
+    { label: "⏳ Outstanding", value: outstanding, color: "#f87171" },
+    ...(weOwe > 0 ? [{ label: "💸 We owe customer", value: weOwe, color: "#c084fc" }] : []),
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <RangeChips range={range} setRange={setRange} theme={theme} />
+
+      <ChartCard title="Portfolio health" sub="collected · outstanding · owed to customers" theme={theme}>
+        <ChartDonut slices={portfolioSlices} centerLabel={fmt(paid + outstanding + weOwe)} centerSub="portfolio" theme={theme} />
+        <ChartLegend slices={portfolioSlices} format={fmt} theme={theme} />
+      </ChartCard>
+
+      <ChartCard title="Collection momentum" sub="cash vs M-Pesa payments" theme={theme}>
+        {paymentsLoading ? (
+          <div style={{ display: "flex", justifyContent: "center", padding: "28px 0" }}>
+            <div style={{ width: 18, height: 18, border: "2px solid rgba(52,211,153,0.2)", borderTopColor: "#34d399", borderRadius: "50%", animation: "spin 0.7s linear infinite" }} />
+          </div>
+        ) : (
+          <ChartStackedBars buckets={momentumBuckets} format={fmt} theme={theme} />
+        )}
+      </ChartCard>
+
+      <ChartCard title="Top debtors" sub={topDebtors.length === 0 ? "no outstanding balances" : `top ${topDebtors.length} by outstanding`} theme={theme}>
+        <ChartBarsH items={topDebtors} format={fmt} theme={theme} />
+      </ChartCard>
+    </div>
+  );
+}
+
+// ─── Shared small chip row ────────────────────────────────────────────
+function RangeChips({ range, setRange, theme }: {
+  range: ChartRange; setRange: (r: ChartRange) => void; theme: any;
+}) {
+  const opts: { key: ChartRange; label: string }[] = [
+    { key: "today", label: "Today"      },
+    { key: "week",  label: "This week"  },
+    { key: "month", label: "This month" },
+    { key: "year",  label: "This year"  },
+    { key: "all",   label: "All time"   },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+      {opts.map(o => {
+        const active = range === o.key;
+        return (
+          <button key={o.key} onClick={() => setRange(o.key)}
+            style={{
+              padding: "5px 11px", borderRadius: 20,
+              border: `1px solid ${active ? theme.accent.cyan : theme.border.default}`,
+              background: active ? "rgba(6,182,212,0.12)" : "transparent",
+              color: active ? theme.accent.cyan : theme.text.muted,
+              fontFamily: theme.font.mono, fontSize: 11,
+              fontWeight: active ? 700 : 500, cursor: "pointer",
+            }}>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
  // ── Component ─────────────────────────────────────────────────────────────────
 
  export default function PosRequests() {
@@ -274,6 +742,12 @@ const EXPENSE_SOURCES: { value: ExpenseSource; label: string; icon: string }[] =
   const isTablet = width < 1024;
 
     const [activeTab, setActiveTab] = useState<ActiveTab>("credit");
+
+        // ── Sub-tabs + chart ranges ──
+    const [expSubTab,          setExpSubTab]          = useState<"list" | "charts">("list");
+    const [creditSubTab,       setCreditSubTab]       = useState<"list" | "charts">("list");
+    const [expChartsRange,     setExpChartsRange]     = useState<ChartRange>("today");
+    const [creditChartsRange,  setCreditChartsRange]  = useState<ChartRange>("today");
 
    // Offline queued misc items (requests + expenses)
   const [queuedItems, setQueuedItems] = useState<(QueuedRequest | QueuedExpense)[]>([]);
@@ -678,6 +1152,13 @@ useEffect(() => {
     if (expandedCreditId === id) { setExpandedCreditId(null); }
     else { setExpandedCreditId(id); if (!creditPayments[id]) fetchPaymentsFor(id); }
   };
+
+  useEffect(() => {
+  if (creditSubTab !== "charts") return;
+  creditSales.forEach(s => {
+    if (creditPayments[s.id] === undefined) fetchPaymentsFor(s.id);
+  });
+}, [creditSubTab, creditSales, creditPayments, fetchPaymentsFor]);
 
   // ── Realtime for requests ─────────────────────────────────────────────
   useEffect(() => {
@@ -2199,10 +2680,39 @@ ${theme.kiCss}
           </div>
         </>
       )}
-
      {/* ══ EXPENSES TAB ══ */}
 {activeTab === "expenses" && (
   <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>
+
+    {/* ── Sub-tabs ── */}
+    <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${theme.border.default}` }}>
+      {(["list", "charts"] as const).map(k => (
+        <button key={k} onClick={() => setExpSubTab(k)}
+          style={{
+            padding: "10px 16px", border: "none",
+            borderBottom: `2px solid ${expSubTab === k ? theme.accent.cyan : "transparent"}`,
+            background: "transparent",
+            color: expSubTab === k ? theme.accent.cyan : theme.text.muted,
+            fontFamily: theme.font.mono, fontSize: 12,
+            fontWeight: expSubTab === k ? 700 : 500,
+            cursor: "pointer",
+          }}>
+          {k === "list" ? "📋 List" : "📊 Charts"}
+        </button>
+      ))}
+    </div>
+
+    {expSubTab === "charts" ? (
+      <ExpensesCharts
+        expenses={expenses}
+        range={expChartsRange}
+        setRange={setExpChartsRange}
+        theme={theme}
+        isMobile={isMobile}
+        fmt={fmt}
+      />
+    ) : (
+    <>
 
     {/* Log Expense button */}
     <div style={{ display: "flex", justifyContent: "center" }}>
@@ -2477,16 +2987,48 @@ ${theme.kiCss}
               Next →
             </button>
           </div>
-        )}
+         )}
       </>
+    )}
+    </>
     )}
   </div>
 )}
 
-      {/* ══ CREDIT TAB ══ */}
+            {/* ══ CREDIT TAB ══ */}
       {activeTab === "credit" && (
         <div style={{ padding: isMobile ? "16px 16px 100px" : "24px 40px 100px", display: "flex", flexDirection: "column", gap: 14 }}>     
-          {creditLoading ? (
+
+          {/* ── Sub-tabs ── */}
+          <div style={{ display: "flex", gap: 0, borderBottom: `1px solid ${theme.border.default}` }}>
+            {(["list", "charts"] as const).map(k => (
+              <button key={k} onClick={() => setCreditSubTab(k)}
+                style={{
+                  padding: "10px 16px", border: "none",
+                  borderBottom: `2px solid ${creditSubTab === k ? theme.accent.cyan : "transparent"}`,
+                  background: "transparent",
+                  color: creditSubTab === k ? theme.accent.cyan : theme.text.muted,
+                  fontFamily: theme.font.mono, fontSize: 12,
+                  fontWeight: creditSubTab === k ? 700 : 500,
+                  cursor: "pointer",
+                }}>
+                {k === "list" ? "📋 List" : "📊 Charts"}
+              </button>
+            ))}
+          </div>
+
+          {creditSubTab === "charts" ? (
+            <CreditCharts
+              creditSales={creditSales}
+              creditReturns={creditReturns}
+              creditPayments={creditPayments}
+              range={creditChartsRange}
+              setRange={setCreditChartsRange}
+              groupByCustomer={groupByCustomer}
+              theme={theme}
+              fmt={fmt}
+            />
+          ) : creditLoading ? (
             <div style={{ textAlign: "center", padding: "40px 0" }}>
               <div style={{ width: 22, height: 22, border: "3px solid rgba(248,113,113,0.2)", borderTopColor: theme.accent.red, borderRadius: "50%", animation: "spin 0.8s linear infinite", margin: "0 auto" }} />
             </div>
