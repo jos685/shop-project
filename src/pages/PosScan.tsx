@@ -169,6 +169,7 @@ function fuzzyMatch(query: string, text: string | null | undefined): boolean {
   return false;
 }
 
+
 function useWindowWidth() {
   const [w, setW] = useState(window.innerWidth);
   useEffect(() => {
@@ -3737,7 +3738,7 @@ const renderScanStep = () => (
             </div>
             <div style={{ 
               display: "grid", 
-              gridTemplateColumns: isDesktop ? "repeat(auto-fill, minmax(280px, 1fr))" : "1fr", 
+              gridTemplateColumns: isDesktop ? "repeat(auto-fill, minmax(220px, 1fr))" : "1fr", 
               gap: 8 
             }}>
               {[0,1,2,3,4,5].map(i => (

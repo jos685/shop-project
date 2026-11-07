@@ -7,8 +7,7 @@ import { useShopAuth } from "../context/ShopAuthContext";
 import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
 import { supabase, productImageUrl } from "../lib/supabase";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
+
 import {
   BarChart2, ClipboardList, History, PlusCircle, PackagePlus,
   Send, RotateCcw, Pencil,  Store, ShoppingCart,
@@ -738,8 +737,10 @@ const addCustomItem = () => {
     } finally {
       setLoading(false);
     }
-  }, [shop]);
-
+      }, [shop]);  
+      useEffect(() => {
+        fetchInfo();
+      }, [fetchInfo]);
 
 
 // ── Realtime stock updates from database ──
@@ -852,7 +853,7 @@ const addCustomItem = () => {
   };
 
   // ── Core PDF builder — used by fresh + historical invoices ──
-const buildInvoicePdf = (opts: {
+const buildInvoicePdf =  async (opts: {
   invoiceNumber: string;
   items: { name: string; price: number; unit: string; qty: number }[];
   customerName: string;
@@ -860,8 +861,12 @@ const buildInvoicePdf = (opts: {
   paymentMethod: string;
   paymentDetails: string;
   paymentAccount: string;
-}): { doc: jsPDF; filename: string } | null => {
+}) => {
   if (opts.items.length === 0) return null;
+
+  const { jsPDF } = await import("jspdf");
+  const { default: autoTable } = await import("jspdf-autotable");
+
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
 
   const biz        = shop?.name ?? "Shop";
@@ -1050,8 +1055,8 @@ useEffect(() => {
 }, [showInvoiceModal, invoiceTab, invoiceHistoryPage]);
 
 // ── Re-download a saved invoice ─────────────────────────
-const handleRedownloadInvoice = (inv: any) => {
-  const result = buildInvoicePdf({
+const handleRedownloadInvoice = async (inv: any) => { // 👈 Add async
+  const result = await buildInvoicePdf({ // ✅ FIXED
     invoiceNumber:  inv.invoice_number,
     items:          Array.isArray(inv.items) ? inv.items : [],
     customerName:   inv.customer_name   ?? "",
@@ -1158,9 +1163,9 @@ const handleSaveInvoiceEdit = async () => {
 };
 
 // ── Download the edited state ───────────────────────────
-const handleDownloadEdited = () => {
+const handleDownloadEdited = async () => { // 👈 Add async
   if (!viewingInvoice) return;
-  const result = buildInvoicePdf({
+  const result = await buildInvoicePdf({ // ✅ FIXED
     invoiceNumber:  viewingInvoice.invoice_number,
     items:          editInvoiceItems,
     customerName:   editCustomerName,
@@ -1175,7 +1180,7 @@ const handleDownloadEdited = () => {
 // ── Share the edited state ──────────────────────────────
 const handleShareEdited = async () => {
   if (!viewingInvoice) return;
-  const result = buildInvoicePdf({
+  const result = await buildInvoicePdf({
     invoiceNumber:  viewingInvoice.invoice_number,
     items:          editInvoiceItems,
     customerName:   editCustomerName,
@@ -1227,7 +1232,7 @@ const handleDeleteFromDetail = () => {
   
  // ── Download the current invoice + save to history ──────
 const handleDownloadInvoice = async () => {
-  const result = buildInvoicePdf({
+  const result = await buildInvoicePdf({
     invoiceNumber: currentInvoiceNumber || makeInvoiceNumber(),
     items: invoiceItems,
     customerName, customerPhone,
@@ -1243,7 +1248,7 @@ const handleDownloadInvoice = async () => {
 
 // ── Share the current invoice + save to history ─────────
 const handleShareInvoice = async () => {
-  const result = buildInvoicePdf({
+  const result = await buildInvoicePdf({
     invoiceNumber: currentInvoiceNumber || makeInvoiceNumber(),
     items: invoiceItems,
     customerName, customerPhone,
