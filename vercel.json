@@ -1,5 +1,19 @@
 {
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+   "routes": [
+    {
+      "src": "/sw.js",
+      "headers": {
+        "Content-Type": "application/javascript; charset=utf-8",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+        "Service-Worker-Allowed": "/"
+      },
+      "dest": "/sw.js"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ],
   "headers": [
     {
       "source": "/index.html",
