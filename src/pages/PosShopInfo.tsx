@@ -13,6 +13,8 @@ import {
   Send, RotateCcw, Pencil,  Store, ShoppingCart,
   AlertTriangle, Trash2,
 } from "lucide-react";
+import { hasPosPin, clearPosPin } from "../lib/posPinAuth";
+import PosPinSetupModal from "../components/PosPinSetupModal";
 
 const LOG_PAGE_SIZE = 12; // for activity log pagination
 const TX_PAGE_SIZE  = 12;   // for recent transactions pagination
@@ -51,7 +53,7 @@ interface ShopAgent {
   agent: { id: string; name: string; agent_id: string; avatar: string };
 }
 
-type ActiveTab = "stock" | "agents";
+type ActiveTab = "stock" | "agents" | "pin";
 
 // ── Custom themed select (avoids Android's native radio picker) ──
 interface CustomSelectOption {
@@ -370,6 +372,22 @@ useEffect(() => {
   const [loading,         setLoading]         = useState(true);
   const [isOfflineData,   setIsOfflineData]   = useState(false);
   const [tab,             setTab]             = useState<ActiveTab>("stock");
+
+    const [isPinSet, setIsPinSet] = useState(false);
+  const [showPinModal, setShowPinModal] = useState(false);
+
+  // Check if PIN is set when the component mounts or the tab changes
+  useEffect(() => {
+    setIsPinSet(hasPosPin());
+  }, [tab]);
+
+  const handleRemovePin = () => {
+    if (window.confirm("Are you sure you want to remove your Quick Login PIN? You will need to use your password next time.")) {
+      clearPosPin();
+      setIsPinSet(false);
+    }
+  };
+
   const [stockSearch, setStockSearch] = useState("");
   const [stockPage, setStockPage] = useState(1);
   const STOCK_PAGE_SIZE = 20;
@@ -1163,7 +1181,7 @@ const handleSaveInvoiceEdit = async () => {
 };
 
 // ── Download the edited state ───────────────────────────
-const handleDownloadEdited = async () => { // 👈 Add async
+const handleDownloadEdited = async () => { //  Add async
   if (!viewingInvoice) return;
   const result = await buildInvoicePdf({ // ✅ FIXED
     invoiceNumber:  viewingInvoice.invoice_number,
@@ -1394,6 +1412,7 @@ const handleShareInvoice = async () => {
         {([
           { key: "stock",  label: `📦 Stock (${serverPaging ? stockTotal : stock.length})`  },
           { key: "agents", label: `👤 Agents (${agents.length})` },
+          { key: "pin",    label: `🔐 Quick PIN` },
         ] as const).map(t => (
           <button key={t.key} onClick={() => setTab(t.key)}
             style={{ padding: "14px 18px", border: "none", borderBottom: `2px solid ${tab === t.key ? theme.accent.cyan : "transparent"}`, background: "transparent", color: tab === t.key ? theme.accent.cyan : theme.text.muted, fontFamily: theme.font.mono, fontSize: 12, cursor: "pointer", fontWeight: tab === t.key ? 600 : 400, whiteSpace: "nowrap" }}>
@@ -1999,6 +2018,92 @@ const handleShareInvoice = async () => {
                     })}
                   </div>
                 )}
+              </div>
+            )}
+
+                        {/* ══ PIN TAB ══ */}
+            {tab === "pin" && (
+              <div className="section" style={{ maxWidth: 600 }}>
+                <div style={{ background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 16, padding: 24 }}>
+                  
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 16 }}>
+                    <div>
+                      <div style={{ fontFamily: theme.font.display, fontWeight: 700, fontSize: 16, color: theme.text.primary }}>
+                        Device Quick Login
+                      </div>
+                      <div style={{ fontSize: 13, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 6, lineHeight: 1.6 }}>
+                        {isPinSet 
+                          ? "A 4-digit passcode is currently active on this device. You can log in without typing your password." 
+                          : "Set up a 4-digit passcode to open your terminal faster next time without typing your password."}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      {isPinSet ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setShowPinModal(true)}
+                            style={{
+                              background: "transparent",
+                              border: `1px solid ${theme.border.default}`,
+                              borderRadius: 8,
+                              padding: "10px 16px",
+                              color: theme.text.primary,
+                              fontFamily: theme.font.mono,
+                              fontSize: 12,
+                              cursor: "pointer"
+                            }}
+                          >
+                            Change PIN
+                          </button>
+                          <button
+                            type="button"
+                            onClick={handleRemovePin}
+                            style={{
+                              background: "rgba(248,113,113,0.08)",
+                              border: "1px solid rgba(248,113,113,0.25)",
+                              borderRadius: 8,
+                              padding: "10px 16px",
+                              color: theme.accent.red,
+                              fontFamily: theme.font.mono,
+                              fontSize: 12,
+                              cursor: "pointer"
+                            }}
+                          >
+                            Remove PIN
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => setShowPinModal(true)}
+                          style={{
+                            background: "linear-gradient(135deg,#f97316,#ea580c)",
+                            border: "none",
+                            borderRadius: 8,
+                            padding: "10px 20px",
+                            color: "#fff",
+                            fontWeight: 700,
+                            fontSize: 13,
+                            fontFamily: theme.font.display,
+                            cursor: "pointer",
+                            boxShadow: "0 4px 14px rgba(249,115,22,0.3)"
+                          }}
+                        >
+                          Set up PIN
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Optional: Show the shop name that will appear on the PIN screen */}
+                  <div style={{ marginTop: 24, padding: "12px 16px", background: "rgba(249,115,22,0.05)", border: "1px dashed rgba(249,115,22,0.3)", borderRadius: 10 }}>
+                     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Preview Greeting</div>
+                     <div style={{ fontSize: 14, fontWeight: 600, color: theme.text.primary }}>Welcome back, {shop?.name || "Shop"}</div>
+                  </div>
+
+                </div>
               </div>
             )}
           </>
@@ -3084,6 +3189,15 @@ const handleShareInvoice = async () => {
     </div>
   </div>
 )}
+
+ {/* ══ PIN SETUP MODAL ══ */}
+      {showPinModal && (
+        <PosPinSetupModal
+          isOpen={showPinModal}
+          onClose={() => setShowPinModal(false)}
+          onSuccess={() => setIsPinSet(true)}
+        />
+      )}
 
     </div>
   );

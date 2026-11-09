@@ -4,6 +4,10 @@ import { useTheme } from "../context/ThemeContext";
 import { useNetwork } from "../context/NetworkContext";
 import { useLoginSecurity } from "../lib/useLoginSecurity";
 import { sanitizeCode, sanitizePassword } from "../lib/sanitize";
+import { hasPosPin, getPosPinData } from "../lib/posPinAuth";
+import PosPinScreen from "./PosPinScreen";
+
+
 
 function getGreeting() {
   const h = new Date().getHours();
@@ -59,6 +63,9 @@ export default function PosLogin() {
   const [error,        setError]        = useState("");
   const [shake,        setShake]        = useState(false);
 
+  const [showPin, setShowPin] = useState(false);
+  const [cachedShopName, setCachedShopName] = useState("");
+
   const greeting = getGreeting();
 
   const triggerShake = () => { setShake(true); setTimeout(() => setShake(false), 400); };
@@ -92,9 +99,28 @@ export default function PosLogin() {
     }
   };
 
+   useEffect(() => {
+    if (hasPosPin()) {
+      const data = getPosPinData();
+      // A fallback to grab the name from the nested shop object
+      const name = data?.shopName || data?.shop?.name; 
+      
+      if (data && name) {
+        setCachedShopName(name);
+        setShowPin(true);
+      }
+    }
+  }, []);
+
+
+
   const attemptsLeft = Math.max(0, 5 - security.failures);
   const isLocked     = security.isLocked;
 
+
+  if (showPin) {
+  return <PosPinScreen shopName={cachedShopName} onCancel={() => setShowPin(false)} />;
+}
   
 
   return (

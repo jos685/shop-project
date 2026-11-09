@@ -15,7 +15,7 @@ import ShopSubscriptionGuard from "./components/ShopSubscriptionGuard";
 import ShopOnboardingTour  from "./components/ShopOnboardingTour";
 import ErrorBoundary       from "./components/ErrorBoundary";
 import { PwaUpdatePrompt, PwaInstallBanner, PwaReinstallNudge } from "./components/PwaPrompts";
-
+import PosPinSetupGate from "./components/PosPinSetupGate";
 import * as Sentry from "@sentry/react";
 
 const SentryRoutes = Sentry.wrapReactRouterRouting(Routes);
@@ -155,6 +155,8 @@ function PosApp() {
         </ShopSubscriptionGuard>
       </div>
       <BottomNav />
+
+      <PosPinSetupGate />
     </>
   );
 }

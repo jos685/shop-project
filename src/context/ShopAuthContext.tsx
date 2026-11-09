@@ -3,11 +3,13 @@ import { supabase } from "../lib/supabase";
 import type { ShopSession } from "../lib/supabase";
 import type { ReactNode } from "react";
 import { cachePosOfflineAuth, verifyPosOfflineCredentialsDetailed } from "../lib/offlineAuth";
+import { verifyPosPin, clearPosPin } from "../lib/posPinAuth";
 
 interface ShopAuthContextType {
   shop: ShopSession | null;
   loading: boolean;
   isOfflineMode: boolean;
+  signInWithPin: (pin: string) => Promise<string | null>;
   
   /** True when a local shop session exists (user is "logged in").
  *  Does NOT guarantee the JWT is currently valid — RLS-protected
@@ -21,6 +23,8 @@ hasAuthSession: boolean;
 }
 
 const ShopAuthContext = createContext<ShopAuthContextType | null>(null);
+
+
 
 const SESSION_KEY    = "pos_shop_session";
 // const TIMEOUT_MS     = 30 * 60 * 1000; // 30 minutes of inactivity
@@ -42,6 +46,43 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
   );
   // const lastActivityRef   = useRef<number>(Date.now());
   const sessionTokenRef   = useRef<string | null>(null);  // kept in sync for use in beforeunload
+
+  // In src/context/ShopAuthContext.tsx
+
+  const signInWithPin = async (pin: string): Promise<string | null> => {
+    const validData = await verifyPosPin(pin);
+    if (!validData) return "Incorrect passcode.";
+
+    try {
+      const { error } = await supabase.auth.setSession({
+        access_token: validData.accessToken,
+        refresh_token: validData.refreshToken,
+      });
+      if (error) throw error;
+
+      // 👇 Use the shop object saved inside the PIN
+      if (validData.shop) {
+        setShop(validData.shop);
+        // Re-save the session key so page refreshes work smoothly
+        localStorage.setItem(SESSION_KEY, JSON.stringify(validData.shop));
+        setHasAuthSession(true);
+        setIsOfflineMode(false);
+      } else {
+        // Fallback just in case
+        const storedSession = localStorage.getItem(SESSION_KEY);
+        if (storedSession) {
+          setShop(JSON.parse(storedSession));
+          setHasAuthSession(true);
+          setIsOfflineMode(false);
+        }
+      }
+      return null;
+    } catch (err) {
+      console.error("POS PIN login failed:", err);
+      clearPosPin();
+      return "Session expired. Please sign in with password.";
+    }
+  };
 
   // Keep sessionTokenRef + hasAuthSession in sync with Supabase auth state.
   // Also write authProvisioned=true into localStorage whenever a real session appears,
@@ -178,18 +219,23 @@ export function ShopAuthProvider({ children }: { children: ReactNode }) {
     }).catch(() => {});
   }, []);
 
-  const logout = useCallback(() => {
-    // Clear presence immediately so the owner dashboard stops showing this shop as online
+   const logout = useCallback(() => {
     setShop(current => {
       if (current) clearLastSeen(current.id);
       return null;
     });
     localStorage.removeItem(SESSION_KEY);
     setIsOfflineMode(false);
-    // Sign out from Supabase Auth so the JWT is revoked server-side.
-    // The POS gained a real Auth session via signInWithPassword on login;
-    // without this call the token stays valid until expiry (~1 h).
-    supabase.auth.signOut().catch(() => {});
+
+    // Use local scope so the refresh_token survives for the PIN to use later
+    supabase.auth.signOut({ scope: 'local' }).catch(() => {});
+    
+    // Clear Supabase auth keys but DO NOT clear the POS PIN
+    Object.keys(localStorage).forEach((key) => {
+      if (key.startsWith("sb-") && key.endsWith("-auth-token")) {
+        localStorage.removeItem(key);
+      }
+    });
   }, [clearLastSeen]);
 
   // Reset the inactivity clock on any user interaction
@@ -371,7 +417,7 @@ const authErr = await ensureShopAuth();
   };
 
   return (
-    <ShopAuthContext.Provider value={{ shop, loading, isOfflineMode, hasAuthSession, login, logout, refreshAuthSession }}>
+    <ShopAuthContext.Provider value={{ shop, loading, isOfflineMode, hasAuthSession, login, logout, refreshAuthSession, signInWithPin }}>
       {children}
     </ShopAuthContext.Provider>
   );
