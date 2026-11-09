@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useRegisterSW } from "virtual:pwa-register/react";
 import { useTheme } from "../context/ThemeContext";
+import { createSwUpdateChecker } from "../lib/swUpdate";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 const isStandalone = () =>
@@ -116,7 +117,8 @@ export function PwaUpdatePrompt() {
 
 useEffect(() => {
   if (!("serviceWorker" in navigator)) return;
-  const check = () => navigator.serviceWorker.getRegistration().then((r) => r?.update());
+  // Guarded, non-overlapping update check; never leaves a rejection unhandled.
+  const check = createSwUpdateChecker();
   const onVisible = () => { if (document.visibilityState === "visible") check(); };
   const onOnline  = () => check();
 
