@@ -183,8 +183,9 @@ function useWindowWidth() {
 interface LocalProduct {
   id: string; name: string; sku: string; price: number; unit: string;
   image_url: string | null;
-   batch_label?: string | null; 
-  expiry_date?: string | null;   
+  batch_label?: string | null; 
+  expiry_date?: string | null; 
+  attributes?: { Size?: string; Color?: string; [key: string]: string | undefined } | null;  
 }
 interface LocalAlloc {
   id: string; allocated: number; remaining: number; product_id: string; product: LocalProduct;
@@ -2363,7 +2364,7 @@ useEffect(() => {
       let productsMap: Record<string, any> = {};
       if (productIds.length > 0) {
         const { data: prodsData } = await supabase
-          .from("products").select("id, name, sku, price, unit, image_url, batch_label, expiry_date").in("id", productIds); 
+          .from("products").select("id, name, sku, price, unit, image_url, batch_label, expiry_date, attributes").in("id", productIds); 
         for (const p of prodsData || []) productsMap[p.id] = p;
       }
 
@@ -2384,6 +2385,7 @@ useEffect(() => {
               image_url: p.image_url ? productImageUrl(p.image_url) : null,
               batch_label: p.batch_label || null,  
               expiry_date: p.expiry_date || null, 
+              attributes: p.attributes || null,
             },
           };
         });
@@ -3839,7 +3841,14 @@ const renderScanStep = () => (
   onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}>
   <ProductImage imageUrl={alloc.product.image_url} productName={alloc.product.name} size={30} />
   <div style={{ flex: 1, minWidth: 0 }}>
-    <div style={{ fontSize: 13, fontWeight: 600, color: isOOS ? theme.text.muted : theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isOOS ? "line-through" : "none" }}>{alloc.product.name}</div>
+    <div style={{ fontSize: 13, fontWeight: 600, color: isOOS ? theme.text.muted : theme.text.primary, marginBottom: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", textDecoration: isOOS ? "line-through" : "none" }}>
+        {alloc.product.name}
+        {alloc.product.attributes && (
+          <span style={{ color: theme.accent.cyan, marginLeft: 4 }}>
+            · {[alloc.product.attributes.Size, alloc.product.attributes.Color].filter(Boolean).join(" / ")}
+          </span>
+        )}
+      </div>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, flexWrap: "wrap" }}>
       <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
         {alloc.product.sku} · {fmt(alloc.product.price)}

@@ -258,7 +258,7 @@ export default function PosTransactionsPage() {
   // Reload queued sales whenever the queue changes
   useEffect(() => { setQueuedSales(getQueue()); }, [pendingCount]);
 
-  const productMapRef = useRef<Record<string, { name: string; sku: string }>>({});
+  const productMapRef = useRef<Record<string, { name: string; sku: string; image_url?: string | null; batch_label?: string | null; attributes?: any }>>({});
   const sellerMapRef  = useRef<Record<string, { name: string; code: string }>>({});
 
     // ── Fetch business name + expiry setting ─────────────────────────────
@@ -949,7 +949,7 @@ const newSaleRows = replaceOutgoing.map(o => {
 
   const enrichRows = useCallback(async (
     txData: any[],
-    existingProductMap: Record<string, { name: string; sku: string; image_url?: string | null; batch_label?: string | null }>,
+    existingProductMap: Record<string, { name: string; sku: string; image_url?: string | null; batch_label?: string | null; attributes?: any }>, 
     existingSellerMap: Record<string, { name: string; code: string }>,
   ): Promise<LocalTransaction[]> => {
     if (!shop) return [];
@@ -960,14 +960,15 @@ const newSaleRows = replaceOutgoing.map(o => {
         if (newProductIds.length > 0) {
       const { data: prodsData } = await supabase
         .from("products")
-        .select("id, name, sku, image_url, batch_label") 
+        .select("id, name, sku, image_url, batch_label, attributes") 
         .in("id", newProductIds);
       for (const p of prodsData ?? []) {
         existingProductMap[p.id] = { 
           name: p.name, 
           sku: p.sku ?? "", 
           image_url: productImageUrl(p.image_url),
-          batch_label: p.batch_label 
+          batch_label: p.batch_label,
+          attributes: p.attributes 
         };
       }
     }
@@ -1000,6 +1001,13 @@ const newSaleRows = replaceOutgoing.map(o => {
     return txData.map((t: any) => {
       const lookupId = t.product_id ?? t.custom_item_id ?? null;
       const resolved = lookupId ? existingProductMap[lookupId] : undefined;
+
+      let baseName = resolved?.name ?? t.product_name ?? "—";
+      if (resolved?.attributes) {
+        const attrs = [resolved.attributes.Size, resolved.attributes.Color].filter(Boolean).join(" / ");
+        if (attrs) baseName = `${baseName} · ${attrs}`;
+      }
+      
       return {
         id:             t.id,
         amount:         t.amount,
@@ -1012,7 +1020,7 @@ const newSaleRows = replaceOutgoing.map(o => {
         product_name:
           t.status === "credit_partial" ? "Credit Sale (Partial Payment)"
           : t.status === "credit"       ? "Credit Sale (Unpaid)"
-          : resolved?.name              ?? t.product_name ?? "—",
+          : baseName,
         product_sku:       resolved?.sku       ?? "",
         product_image_url: resolved?.image_url ?? null,
         product_id:        t.product_id        ?? null,

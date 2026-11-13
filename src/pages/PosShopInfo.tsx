@@ -42,7 +42,8 @@ interface StockItem {
   product: { 
     id: string; name: string; sku: string; price: number; unit: string; image_url?: string | null;
     batch_label?: string | null;   
-    expiry_date?: string | null;    
+    expiry_date?: string | null; 
+    attributes?: { Size?: string; Color?: string } | null;   
   };
 }
 
@@ -430,12 +431,13 @@ useEffect(() => {
         product: {
           id:          a.product_id,
           name:        a.product_name ?? "—",
+          attributes:  a.attributes || null, // 👈 ADD THIS
           sku:         a.product_sku ?? "",
           price:       Number(a.product_price ?? 0),
           unit:        a.product_unit ?? "",
-          image_url:   a.image_url ? productImageUrl(a.image_url) : null, // 👈 Now flat
-          batch_label: a.batch_label ?? null,                             // 👈 Now flat
-          expiry_date: a.expiry_date ?? null,                             // 👈 Now flat
+          image_url:   a.image_url ? productImageUrl(a.image_url) : null,
+          batch_label: a.batch_label ?? null,
+          expiry_date: a.expiry_date ?? null,
         },
       }));
 
@@ -606,7 +608,7 @@ const addCustomItem = () => {
         if (items?.length) {
           setStock(items.map((a: any) => ({
             id: a.id, allocated: a.allocated, remaining: a.remaining ?? 0,
-            product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
+            product: { id: a.product.id, name: a.product.name, attributes: a.product.attributes || null, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
           })));
         }
       } else if (cacheKey) {
@@ -617,7 +619,7 @@ const addCustomItem = () => {
           if (products?.length) {
             setStock(products.map((a: any) => ({
               id: a.id, allocated: a.allocated, remaining: a.remaining,
-              product: { id: a.product.id, name: a.product.name, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
+              product: { id: a.product.id, name: a.product.name, attributes: a.product.attributes || null, sku: a.product.sku, price: a.product.price, unit: a.product.unit },
             })));
           }
         }
@@ -663,7 +665,7 @@ const addCustomItem = () => {
       if (productIds.length > 0) {
         const { data: prodsData, error: prodsError } = await supabase
           .from("products")
-          .select("id, name, sku, price, unit, image_url, batch_label, expiry_date") 
+          .select("id, name, sku, price, unit, image_url, batch_label, expiry_date, attributes") 
           .in("id", productIds);
         if (prodsError) console.error("products fetch error:", prodsError.message);
         for (const p of prodsData || []) productsMap[p.id] = p;
@@ -703,6 +705,7 @@ const addCustomItem = () => {
           product: {
             id:        a.product_id,
             name:      productsMap[a.product_id]?.name      || a.product_name  || "—",
+            attributes: productsMap[a.product_id]?.attributes || null,
             sku:       productsMap[a.product_id]?.sku       || a.product_sku   || "",
             price:     Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
             unit:      productsMap[a.product_id]?.unit      || a.product_unit  || "",
@@ -724,6 +727,7 @@ const addCustomItem = () => {
         product: {
           id: item.product.id,
           name: item.product.name,
+          attributes: item.product.attributes || null, // 👈 ADD THIS
           sku: item.product.sku,
           price: item.product.price,
           unit: item.product.unit,
@@ -1565,6 +1569,13 @@ const handleShareInvoice = async () => {
                                                   <div style={{ minWidth: 0 }}>
                                                   <div style={{ fontWeight: 600, fontSize: isMobile ? 14 : 15, marginBottom: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", lineHeight: 1.3 }}>
                                                     {item.product.name}
+
+                                                    {item.product.attributes && (
+                                                      <span style={{ color: theme.accent.cyan, fontWeight: 600 }}>
+                                                        · {[item.product.attributes.Size, item.product.attributes.Color].filter(Boolean).join(" / ")}
+                                                      </span>
+                                                    )}
+
                                                     {expiryTracking && item.product.batch_label && (
                                                       <span style={{ fontSize: 9, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 5px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
                                                         {item.product.batch_label}
