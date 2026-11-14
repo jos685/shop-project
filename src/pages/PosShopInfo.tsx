@@ -396,57 +396,70 @@ useEffect(() => {
   const [stockTotal,    setStockTotal]    = useState(0);
   const [serverPaging,  setServerPaging]  = useState(false);  // true → use DB paging; false → use loaded array
 
-  const fetchStockPage = useCallback(async (page: number, search: string) => {
-  if (!shop) return;
-  setLoading(true);
-  setServerPaging(true);   // ← NEW: always paged once we start fetching
-  try {
-    const offset = (page - 1) * STOCK_PAGE_SIZE;
+    const fetchStockPage = useCallback(async (page: number, search: string) => {
+    if (!shop) return;
+    setLoading(true);
+    setServerPaging(true);
+    try {
+      const offset = (page - 1) * STOCK_PAGE_SIZE;
 
-   let query = supabase
-  .rpc("get_shop_stock", { p_shop_id: shop.id })
-  .order("product_name", { ascending: true })
-      .order("product_name", { ascending: true })
-      .range(offset, offset + STOCK_PAGE_SIZE - 1);
+      let query = supabase
+        .rpc("get_shop_stock", { p_shop_id: shop.id })
+        .order("product_name", { ascending: true })
+        .range(offset, offset + STOCK_PAGE_SIZE - 1);
 
-    if (search.trim()) {
-      query = query.or(
-        `product_name.ilike.%${search.trim()}%,product_sku.ilike.%${search.trim()}%`
-      );
+      if (search.trim()) {
+        query = query.or(
+          `product_name.ilike.%${search.trim()}%,product_sku.ilike.%${search.trim()}%`
+        );
+      }
+
+      const { data, error, count } = await query;
+
+      if (error) {
+        console.error("fetchStockPage error:", error);
+        return;
+      }
+
+      // 👈 NEW: Manually fetch attributes for the products returned by the RPC
+      const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
+      let prodsMap: Record<string, any> = {};
+      if (productIds.length > 0) {
+        const { data: prodsData } = await supabase
+          .from("products")
+          .select("id, attributes, image_url, batch_label, expiry_date")
+          .in("id", productIds);
+        for (const p of prodsData || []) prodsMap[p.id] = p;
+      }
+
+      const items: StockItem[] = (data || [])
+        .filter((a: any) => !!a.product_id)
+        .map((a: any) => ({
+          id: a.id,
+          allocated: a.allocated,
+          remaining: Math.max(0, a.remaining ?? 0),
+          product: {
+            id:          a.product_id,
+            name:        a.product_name ?? "—",
+            // 👈 Use the freshly fetched attributes & details
+            attributes:  prodsMap[a.product_id]?.attributes || a.attributes || null,
+            sku:         a.product_sku ?? "",
+            price:       Number(a.product_price ?? 0),
+            unit:        a.product_unit ?? "",
+            image_url:   (prodsMap[a.product_id]?.image_url || a.image_url) 
+                           ? productImageUrl(prodsMap[a.product_id]?.image_url || a.image_url) 
+                           : null,
+            batch_label: prodsMap[a.product_id]?.batch_label || a.batch_label || null,
+            expiry_date: prodsMap[a.product_id]?.expiry_date || a.expiry_date || null,
+          },
+        }));
+
+      setStock(items);
+      setStockTotal(count ?? items.length);
+    } finally {
+      setLoading(false);
     }
-
-    const { data, error, count } = await query;
-
-    if (error) {
-      console.error("fetchStockPage error:", error);
-      return;
-    }
-
-        const items: StockItem[] = (data || [])
-      .filter((a: any) => !!a.product_id)
-      .map((a: any) => ({
-        id: a.id,
-        allocated: a.allocated,
-        remaining: Math.max(0, a.remaining ?? 0),
-        product: {
-          id:          a.product_id,
-          name:        a.product_name ?? "—",
-          attributes:  a.attributes || null, // 👈 ADD THIS
-          sku:         a.product_sku ?? "",
-          price:       Number(a.product_price ?? 0),
-          unit:        a.product_unit ?? "",
-          image_url:   a.image_url ? productImageUrl(a.image_url) : null,
-          batch_label: a.batch_label ?? null,
-          expiry_date: a.expiry_date ?? null,
-        },
-      }));
-
-    setStock(items);
-    setStockTotal(count ?? items.length);
-  } finally {
-    setLoading(false);
-  }
-}, [shop]);
+  }, [shop]);
 
 // Debounce the search — otherwise every keystroke fires a Supabase query
 useEffect(() => {
