@@ -484,7 +484,7 @@ function BackdatePickerModal({
     <div
       onClick={onClose}
       style={{
-        position: "fixed", inset: 0, zIndex: 95,
+        position: "fixed", inset: 0, zIndex: 9999,
         background: "rgba(0,0,0,0.7)",
         backdropFilter: "blur(4px)", WebkitBackdropFilter: "blur(4px)",
         display: "flex",
