@@ -1099,7 +1099,6 @@ function CartItemsList({
   onRemove: (key: string) => void;
   maxHeight?: number | string;
 }) {
-  // Anything narrower than the desktop cart column gets the card layout.
   const [isNarrow, setIsNarrow] = useState(() =>
     typeof window !== "undefined" ? window.innerWidth < 640 : false
   );
@@ -1109,11 +1108,15 @@ function CartItemsList({
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
+  // Calculate the max height limit. If it's "100%", we ignore it and let flex: 1 do the work.
+  const limit = maxHeight === "100%" ? undefined : (maxHeight ?? "min(260px, 40vh)");
+
   // ── MOBILE / narrow: card per item ─────────────────────────────
   if (isNarrow) {
     return (
       <div style={{
-        maxHeight: maxHeight ?? "min(260px, 40vh)",
+        flex: 1,
+        minHeight: 0,
         overflowY: "auto",
         overflowX: "hidden",
         paddingRight: 4,
@@ -1121,6 +1124,7 @@ function CartItemsList({
         display: "flex",
         flexDirection: "column",
         gap: 8,
+        ...(limit ? { maxHeight: limit } : {}),
       }}>
         {cart.map(item => {
           const isListed  = item.kind === "listed";
@@ -1190,12 +1194,8 @@ function CartItemsList({
                 >✕</button>
               </div>
 
-                                        {/* Row 2: Qty · Price · Total */}
-              <div style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 1fr 1fr",
-                gap: 6,
-              }}>
+              {/* Row 2: Qty · Price · Total */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6 }}>
                 <div>
                   <div style={{
                     fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
@@ -1233,15 +1233,9 @@ function CartItemsList({
                     textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3,
                   }}>Total</div>
                   <div style={{
-                    fontFamily: theme.font.mono,
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: theme.accent.gold,
-                    textAlign: "right",
-                    padding: "5px 0",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    fontFamily: theme.font.mono, fontSize: 13, fontWeight: 700,
+                    color: theme.accent.gold, textAlign: "right", padding: "5px 0",
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
                   }}>
                     {fmt(item.sellPrice * item.quantity)}
                   </div>
@@ -1257,16 +1251,19 @@ function CartItemsList({
   // ── DESKTOP / wide: original sticky-table layout ────────────────
   return (
     <div style={{
-      maxHeight: maxHeight ?? "min(260px, 40vh)",
+      flex: 1,
+      minHeight: 0,
       overflowY: "auto",
       overflowX: "hidden",
       paddingRight: 4,
       WebkitOverflowScrolling: "touch",
+      boxSizing: "border-box",
+      ...(limit ? { maxHeight: limit } : {}),
     }}>
       {/* Column headers */}
-            <div style={{
+      <div style={{
         display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px", // Reduced from 6 to 5 columns
+        gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
         gap: 6, alignItems: "center",
         fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
         textTransform: "uppercase", letterSpacing: "0.06em",
@@ -1287,9 +1284,9 @@ function CartItemsList({
         const remaining = isListed ? item.allocation.remaining : 9999;
         const minPrice  = isListed ? item.allocation.product.price : 0;
         return (
-                    <div key={item.key} style={{
+          <div key={item.key} style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px", // 5 columns
+            gridTemplateColumns: "minmax(0, 1fr) 52px 76px 72px 22px",
             gap: 6, alignItems: "center",
             padding: "7px 0",
             borderBottom: `1px solid ${theme.border.default}`,
@@ -1398,14 +1395,6 @@ function CartRail({
     textTransform: "uppercase" as const,
     letterSpacing: "0.06em",
   };
-  
-  const footerValueBig = {
-    fontFamily: theme.font.display,
-    fontWeight: 800,
-    fontSize: 26,
-    color: theme.accent.gold,
-    lineHeight: 1,
-  };
 
   return (
     <aside style={{
@@ -1448,7 +1437,7 @@ function CartRail({
       </div>
 
       {/* ── Items (flex:1, scrolls) ── */}
-      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "8px 14px" }}>
+      <div style={{ flex: 1, minHeight: 0, overflow: "hidden", padding: "8px 14px", display: "flex", flexDirection: "column" }}>
         {empty ? (
           <div style={{
             height: "100%",
@@ -1481,7 +1470,7 @@ function CartRail({
       <div style={{
         borderTop: `1px solid ${theme.border.default}`,
         padding: "16px",
-        paddingBottom: "32px", // Added to push the button up
+        
         display: "flex", flexDirection: "column", gap: 14,
         flexShrink: 0,
         background: theme.bg.card,
@@ -1509,7 +1498,7 @@ function CartRail({
   
   {/* Left Column: Discount */}
   <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 4 }}>
-    <label style={footerLabel}>Discount / Amount Received</label>
+    <label style={footerLabel}> Amount Received</label>
     <input
       className="ki"
       type="text"
@@ -1524,7 +1513,7 @@ function CartRail({
     {saleDiscount > 0 && (
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2 }}>
         <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
-          Applied
+          Discount Applied
         </span>
         <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#f87171", fontWeight: 600 }}>
           −{fmt(saleDiscount)}
@@ -1550,12 +1539,6 @@ function CartRail({
 </div>
 
 
-        {/* Final total + button */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-          <span style={footerLabel}>Total</span>
-          <span style={footerValueBig}>{fmt(netTotal)}</span>
-        </div>
-
         <button
           onClick={onCharge}
           style={{
@@ -1566,7 +1549,7 @@ function CartRail({
             cursor: "pointer",
             boxShadow: "0 4px 14px rgba(6,182,212,0.3)",
             transition: "transform 0.1s",
-            marginBottom: "16px",
+            
           }}
           onMouseDown={e => e.currentTarget.style.transform = "scale(0.98)"}
           onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
@@ -3543,7 +3526,7 @@ const handleDesktopCharge = useCallback(() => {
     };
 
 const renderScanStep = () => (
-  <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+  <div className="section" style={{ display: "flex", flexDirection: "column", gap: 12, ...(isDesktop ? { flex: 1, minHeight: 0 } : {}), }}>
 
     {/* ── Backdate banner ── */}
     {backdate && (
@@ -3597,7 +3580,7 @@ const renderScanStep = () => (
     )}
 
     {/* Manual / Camera toggle — desktop & tablet only */}
-{!isMobile && (
+{false && !isMobile && (
   <div style={{ display: "flex", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 12, padding: 4, gap: 4 }}>
     {(["manual", "camera"] as const).map(m => (
       <button key={m} onClick={() => { setMode(m); setError(""); setAddingProduct(null); }}
@@ -3606,7 +3589,7 @@ const renderScanStep = () => (
       </button>
     ))}
   </div>
-)}
+)} 
 
     {/* Camera: locked */}
     {mode === "camera" && !canScan && (
@@ -3644,7 +3627,7 @@ const renderScanStep = () => (
 
     {/* Manual mode */}
     {mode === "manual" && (
-      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, ...(isDesktop ? { flex: 1, minHeight: 0 } : {}), }}>
 {/* Search + Sell unlisted row — equal 50/50 split on all viewports */}
 <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
 
@@ -3764,8 +3747,9 @@ const renderScanStep = () => (
             </div>
           </div>
         ) : (
-          <div>
-            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          
+  <div style={isDesktop ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
+    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
              <span>
                   {searchQuery.trim()
                     ? `${filteredProducts.length} of ${myProducts.length} products`
@@ -3794,12 +3778,18 @@ const renderScanStep = () => (
               </div>
             )}
 
-            <div style={{ maxHeight: isMobile ? "52vh" : 520, overflowY: "auto", overflowX: "hidden", paddingRight: 2, WebkitOverflowScrolling: "touch", paddingBottom: step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? 80 : 12 }}>
+            <div style={{
+                  ...(isDesktop ? { flex: 1, minHeight: 0 } : { maxHeight: isMobile ? "52vh" : 520 }),
+                  overflowY: "auto", overflowX: "hidden", paddingRight: 2,
+                  WebkitOverflowScrolling: "touch",
+                  paddingBottom: isDesktop ? 24 : (step === "scan" && cart.length > 0 && !payOpen && !addingProduct ? 80 : 12),
+                }}>
               <div style={{ 
                 display: "grid", 
                 gridTemplateColumns: isDesktop ? "repeat(auto-fill, minmax(280px, 1fr))" : "1fr", 
                 gap: 8 
               }}>
+
                 {filteredProducts.map(alloc => {
   const isOOS      = alloc.remaining <= 0;
   const sc         = alloc.remaining <= 3 ? "#f87171" : alloc.remaining <= 10 ? "#fbbf24" : "#34d399";
@@ -4043,7 +4033,12 @@ const renderVerifyStep = () => (
 
 
   return (
-    <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
+    <div style={{
+      height: isDesktop ? "calc(100dvh - 58px)" : "auto",
+      minHeight: isDesktop ? 0 : "100vh",
+      background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body,
+      overflow: isDesktop ? "hidden" : "visible",
+    }}>
 
      {/* Offline banner */}
         {!isOnline && (
@@ -4240,16 +4235,23 @@ const renderVerifyStep = () => (
     // 1fr takes remaining space. cartWidth is the exact pixel width of the cart.
     // The 12px in the middle is for the drag handle.
     gridTemplateColumns: `minmax(0, 1fr) 12px ${cartWidth}px`, 
+    gridTemplateRows: "minmax(0, 1fr)",
     gap: 16, // Restored proper spacing between left, handle, and right
     height: "calc(100dvh - 58px)",
     maxWidth: 1600, // Increased maxWidth so it stretches on big screens
     margin: "0 auto",
-    padding: "24px 24px", // Tighter padding around the edges
+    padding: "24px 24px 55px", // Tighter padding around the edges
     overflow: "hidden",
+    boxSizing: "border-box",
   }}>
     
     {/* LEFT — scan/verify content */}
-    <div style={{ minWidth: 0, minHeight: 0, overflowY: "auto", overflowX: "hidden" }}>
+      <div style={{
+        minWidth: 0, minHeight: 0,
+        overflowX: "hidden",
+        overflowY: step === "scan" ? "hidden" : "auto",   // scan step: no outer scrollbar
+        display: "flex", flexDirection: "column",
+      }}>
       {step === "scan" && renderScanStep()}
       {step === "verify" && renderVerifyStep()}
     </div>
