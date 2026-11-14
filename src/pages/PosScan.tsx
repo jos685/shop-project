@@ -468,7 +468,7 @@ function BackdatePickerModal({
   };
 
   const presets = [
-    { label: "Yesterday",    fn: () => setPreset(1, 14, 0) },
+    { label: "Yester-day",    fn: () => setPreset(1, 14, 0) },
     { label: "2 days ago",   fn: () => setPreset(2, 14, 0) },
     { label: "3 days ago",   fn: () => setPreset(3, 14, 0) },
     { label: "Last week",    fn: () => setPreset(7, 14, 0) },
