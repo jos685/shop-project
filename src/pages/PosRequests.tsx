@@ -793,15 +793,24 @@ function RangeChips({ range, setRange, theme }: {
       unit_price: number;
       return_qty: number;
     }[]>([]);
+        // Update this state to allow null product_id and add buying_price
     const [replaceOutgoing, setReplaceOutgoing] = useState<{
-      product_id: string;
+      product_id: string | null; // Changed to allow null for custom items
       name: string;
       sku: string;
       price: number;
       unit: string;
       remaining: number;
       qty: number;
+      buying_price: number | null; //  Added for profit tracking
     }[]>([]);
+
+    // 👇 ADD THESE NEW STATES FOR CUSTOM ITEMS
+    const [replaceCustomOpen,  setReplaceCustomOpen]  = useState(false);
+    const [replaceCustomName,  setReplaceCustomName]  = useState("");
+    const [replaceCustomPrice, setReplaceCustomPrice] = useState("");
+    const [replaceCustomQty,   setReplaceCustomQty]   = useState("1");
+    const [replaceCustomUnit,  setReplaceCustomUnit]  = useState("pc");
     const [replaceStock,    setReplaceStock]    = useState<{
       product_id: string;
       name: string;
@@ -809,6 +818,7 @@ function RangeChips({ range, setRange, theme }: {
       price: number;
       unit: string;
       remaining: number;
+      buying_price: number | null;
     }[]>([]);
     const [replacePickerOpen,  setReplacePickerOpen]  = useState(false);
     const [replacePickerQuery, setReplacePickerQuery] = useState("");
@@ -915,6 +925,11 @@ function RangeChips({ range, setRange, theme }: {
     const [creditFilter, setCreditFilter] = useState<"all" | "open" | "settled" | "returns">("all");
     const [creditPage,   setCreditPage]   = useState(1);
     const CREDIT_PAGE_SIZE = 15;
+
+    const [productAttrs, setProductAttrs] = useState<Record<string, {
+      base_name: string;
+      attributes: { Size?: string; Color?: string; [k: string]: string | undefined } | null;
+    }>>({});
     
 
     const [businessName,    setBusinessName]    = useState("");
@@ -1108,6 +1123,30 @@ useEffect(() => {
     setCreditReturns(returnsMap);
     setCreditLoading(false);
   }, [shop]);
+
+  useEffect(() => {
+  if (!shop) return;
+  const ids = [...new Set(
+    creditSales.flatMap(cs => cs.items.map(i => i.product_id)).filter(Boolean)
+  )];
+  if (ids.length === 0) return;
+
+  supabase
+    .from("products")
+    .select("id, name, attributes")
+    .in("id", ids)
+    .then(({ data }) => {
+      const map: typeof productAttrs = {};
+      for (const p of data || []) {
+        map[p.id] = {
+          base_name: (p as any).name,
+          attributes: (p as any).attributes ?? null,
+        };
+      }
+      setProductAttrs(map);
+    });
+}, [creditSales, shop]);
+
 
 
   useEffect(() => { fetchCreditSales(); }, [fetchCreditSales]);
@@ -1606,22 +1645,42 @@ const loadReplaceStock = useCallback(async () => {
 
   const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
   const productsMap: Record<string, any> = {};
+  
   if (productIds.length > 0) {
     const { data: prods } = await supabase
-      .from("products").select("id, name, sku, price, unit").in("id", productIds);
+      .from("products")
+      .select("id, name, sku, price, unit, attributes") // 👈 ADDED attributes
+      .in("id", productIds);
     for (const p of prods || []) productsMap[p.id] = p;
   }
 
   return (data || [])
     .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
-    .map((a: any) => ({
-      product_id: a.product_id,
-      name:       productsMap[a.product_id]?.name  || a.product_name  || "—",
-      sku:        productsMap[a.product_id]?.sku   || a.product_sku   || "",
-      price:      Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
-      unit:       productsMap[a.product_id]?.unit  || a.product_unit  || "units",
-      remaining:  Math.max(0, a.remaining ?? 0),
-    }));
+    .map((a: any) => {
+      const p = productsMap[a.product_id];
+      let baseName = p?.name || a.product_name || "—";
+      
+      // 👇 Appends Size/Color to the name
+      if (p?.attributes && typeof p.attributes === "object") {
+        const bits: string[] = [];
+        if (p.attributes.Size) bits.push(p.attributes.Size);
+        if (p.attributes.Color) bits.push(p.attributes.Color);
+        for (const [k, v] of Object.entries(p.attributes)) {
+          if (k !== "Size" && k !== "Color" && v) bits.push(`${k}: ${v}`);
+        }
+        if (bits.length > 0) baseName += ` · ${bits.join(" · ")}`;
+      }
+
+      return {
+        product_id: a.product_id,
+        name:       baseName, 
+        sku:        p?.sku   || a.product_sku   || "",
+        price:      Number(p?.price ?? a.product_price ?? 0),
+        unit:       p?.unit  || a.product_unit  || "units",
+        remaining:  Math.max(0, a.remaining ?? 0),
+        buying_price: Number(p?.buying_price ?? 0) || null,
+      };
+    });
 }, [shop]);
 
 // ── Open the replace modal ────────────────────────────────
@@ -1672,9 +1731,45 @@ const openReplaceModal = async (cs: CreditSale) => {
   setReplaceAgent(null);
   setReplacePin("");
   setReplacePinError("");
+  setReplaceCustomOpen(false);
+  setReplaceCustomName("");
+  setReplaceCustomPrice("");
+  setReplaceCustomQty("1");
+  setReplaceCustomUnit("pc");
   setReplaceError("");
   setReplaceSuccess(false);
 };
+
+function addReplaceCustomItem() {
+  const name  = replaceCustomName.trim();
+  const price = Number(replaceCustomPrice);
+  const qty   = parseInt(replaceCustomQty, 10) || 0;
+  const unit  = replaceCustomUnit.trim() || "pc";
+
+  if (!name) { setReplaceError("Enter an item name."); return; }
+  if (!Number.isFinite(price) || price < 0) { setReplaceError("Enter a valid price."); return; }
+  if (qty < 1) { setReplaceError("Quantity must be at least 1."); return; }
+
+  setReplaceOutgoing(prev => [
+    ...prev,
+    {
+      product_id: null,               //  Tells the DB this is unlisted/custom
+      name,
+      sku: `custom-${Date.now()}`,    // Used only as a React key
+      price,
+      unit,
+      remaining: 0,                   // No allocation to draw down
+      qty,
+      buying_price: null,             // Unknown cost
+    },
+  ]);
+
+  setReplaceError("");
+  setReplaceCustomName("");
+  setReplaceCustomPrice("");
+  setReplaceCustomQty("1");
+  setReplaceCustomOpen(false);
+}
 
 // ── Submit ────────────────────────────────────────────────
 const handleReplace = async (agent: ShopAgent) => {
@@ -1684,7 +1779,9 @@ const handleReplace = async (agent: ShopAgent) => {
   if (itemsToReturn.length === 0) { setReplaceError("Select at least one item to return."); return; }
   if (replaceOutgoing.length  === 0) { setReplaceError("Add at least one replacement item."); return; }
 
+  // 👇 1. Skip stock check for custom items (null product_id)
   for (const out of replaceOutgoing) {
+    if (!out.product_id) continue; 
     const s = replaceStock.find(x => x.product_id === out.product_id);
     if (!s || s.remaining < out.qty) {
       setReplaceError(`Not enough stock for ${out.name} — only ${s?.remaining ?? 0} left.`);
@@ -1719,7 +1816,7 @@ const handleReplace = async (agent: ShopAgent) => {
       p_owner_id:       shop.owner_id,
       p_return_items:   itemsToReturn.map(it => ({
         product_id:        it.product_id,
-        product_name:      it.product_name,
+        product_name:      displayItemName(it, productAttrs),
         quantity_returned: it.return_qty,
         unit_price:        it.unit_price,
       })),
@@ -1776,6 +1873,11 @@ const resetReplaceModal = () => {
   setReplaceSuccess(false);
   setReplaceProcessing(false);
   resetPinLockout();
+  setReplaceCustomOpen(false);
+  setReplaceCustomName("");
+  setReplaceCustomPrice("");
+  setReplaceCustomQty("1");
+  setReplaceCustomUnit("pc");
 };
 
   const handleMarkReturned = async (_agent: ShopAgent) => {
@@ -1832,7 +1934,7 @@ if (tot > refundable + 0.5) {
     try {
       // Build a product_id → name map for the activity log note
       const productNames: Record<string, string> = {};
-      for (const it of selectedItems) productNames[it.product_id] = it.product_name;
+      for (const it of selectedItems) productNames[it.product_id] = displayItemName(it, productAttrs);
 
       const { data: result, error } = await supabase.functions.invoke(
         "record-credit-return",
@@ -2040,7 +2142,6 @@ const pagedExpenses = filteredExpenses.slice((safeExpPage - 1) * EXP_PAGE_SIZE, 
   }
 
   // Returns each item with the quantity still owed after returns,
-// priced at the ACTUAL sale price (subtotal / quantity), not the catalog price.
 function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; total: number }[] {
   const returnsForSale = creditReturns[cs.id] || [];
   const returnedMap: Record<string, number> = {};
@@ -2056,22 +2157,49 @@ function getOutstandingItems(cs: CreditSale): { name: string; quantity: number; 
       const remaining = item.quantity - alreadyReturned;
       if (remaining <= 0) return null;
 
-      // Prefer the real sold price: subtotal ÷ quantity.
-      // This is what fixes 399-vs-350 — the customer paid 399, so 399 is
-      // what we owe them back / what we show on the statement.
       const soldPrice =
         item.quantity > 0
           ? Math.round(item.subtotal / item.quantity)
           : item.unit_price;
 
       return {
-        name:     item.product_name,
+        name:     displayItemName(item, productAttrs),   // ← this is what shows on card + statement
         quantity: remaining,
         total:    remaining * soldPrice,
       };
     })
     .filter((x): x is NonNullable<typeof x> => x !== null);
 }
+
+function displayItemName(
+  item: { product_id: string; product_name: string },
+  attrsMap: Record<string, {
+    base_name: string;
+    attributes: { [k: string]: string | undefined } | null | undefined;
+  }>,
+): string {
+  const stored = item.product_name || "";
+  const meta   = attrsMap[item.product_id];
+  const base   = meta?.base_name || stored;
+
+  // Already variant-aware — trust it.
+  if (stored && stored !== base && stored.startsWith(base)) return stored;
+  if (stored.includes(" · ")) return stored;
+
+  const a = meta?.attributes;
+  if (!a) return stored || base;
+
+  const bits: string[] = [];
+  if (a.Size)  bits.push(a.Size);
+  if (a.Color) bits.push(a.Color);
+  for (const [k, v] of Object.entries(a)) {
+    if (k === "Size" || k === "Color") continue;
+    if (v) bits.push(`${k}: ${v}`);
+  }
+
+  return bits.length ? `${base} · ${bits.join(" · ")}` : (stored || base);
+}
+
 
 // How much the SHOP owes the CUSTOMER on a single sale.
 // Positive only when the customer has paid more than their current balance
@@ -5030,12 +5158,7 @@ ${theme.kiCss}
   const mpesa = Math.round(Number(replaceMpesa) || 0);
   const money = cash + mpesa;
 
-  const filteredStock = replaceStock.filter(s => {
-    const q = replacePickerQuery.trim().toLowerCase();
-    if (!q) return true;
-    return s.name.toLowerCase().includes(q) || s.sku.toLowerCase().includes(q);
-  });
-
+  
   const needsPayment = paymentCap > 0;
   const needsRefund  = refundCap   > 0;
 
@@ -5163,114 +5286,145 @@ ${theme.kiCss}
             </div>
           </div>
 
-          {/* Receiving section */}
-          <div>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted,
-                textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                Customer is receiving
+        {/* CUSTOMER IS RECEIVING */}
+<div style={{ marginTop: 16 }}>
+  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em" }}>
+      Customer is receiving
+    </div>
+    {replaceOutgoing.length > 0 && (
+      <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.accent.cyan }}>
+        {replaceOutgoing.length} item(s) added
+      </span>
+    )}
+  </div>
+
+  {/* Toggle Buttons: Stock vs Custom */}
+  <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+    <button
+      onClick={() => { setReplacePickerOpen(true); setReplaceCustomOpen(false); }}
+      style={{
+        flex: 1, padding: "8px", borderRadius: 8,
+        border: `1px solid ${replacePickerOpen ? theme.accent.cyan : theme.border.default}`,
+        background: replacePickerOpen ? "rgba(6,182,212,0.1)" : "transparent",
+        color: replacePickerOpen ? theme.accent.cyan : theme.text.muted,
+        fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer"
+      }}
+    >
+      📦 From Stock
+    </button>
+    <button
+      onClick={() => { setReplaceCustomOpen(true); setReplacePickerOpen(false); }}
+      style={{
+        flex: 1, padding: "8px", borderRadius: 8,
+        border: `1px solid ${replaceCustomOpen ? "#c084fc" : theme.border.default}`,
+        background: replaceCustomOpen ? "rgba(192,132,252,0.1)" : "transparent",
+        color: replaceCustomOpen ? "#c084fc" : theme.text.muted,
+        fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer"
+      }}
+    >
+      ✏️ Custom Item
+    </button>
+  </div>
+
+  {/* --- STOCK PICKER UI --- */}
+  {replacePickerOpen && (
+    <div style={{ border: `1px solid ${theme.border.default}`, borderRadius: 10, padding: 10, background: theme.bg.input }}>
+      <input
+        type="text"
+        placeholder="Search stock..."
+        value={replacePickerQuery}
+        onChange={e => setReplacePickerQuery(e.target.value)}
+        style={{ width: "100%", padding: "8px 12px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 12, marginBottom: 8 }}
+      />
+      <div style={{ maxHeight: 180, overflowY: "auto" }}>
+        {replaceStock
+          .filter(s => !replacePickerQuery || s.name.toLowerCase().includes(replacePickerQuery.toLowerCase()) || s.sku.toLowerCase().includes(replacePickerQuery.toLowerCase()))
+          .map(s => (
+            <div key={s.product_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px", borderBottom: `1px solid ${theme.border.default}` }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: theme.text.primary }}>{s.name}</div>
+                <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>{fmt(s.price)} · {s.remaining} left</div>
               </div>
-              <button type="button" onClick={() => setReplacePickerOpen(v => !v)}
-                style={{ background: "rgba(167,139,250,0.1)", border: "1px solid rgba(167,139,250,0.35)",
-                  borderRadius: 7, padding: "4px 10px", color: "#a78bfa",
-                  fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
-                {replacePickerOpen ? "✕ Close" : "+ Add item"}
+              <button
+                onClick={() => {
+                  setReplaceOutgoing(prev => {
+                    const existing = prev.find(o => o.product_id === s.product_id);
+                    if (existing) return prev.map(o => o.product_id === s.product_id ? { ...o, qty: o.qty + 1 } : o);
+                    return [...prev, { product_id: s.product_id, name: s.name, sku: s.sku, price: s.price, unit: s.unit, remaining: s.remaining, qty: 1, buying_price: s.buying_price || null }];
+                  });
+                }}
+                style={{ padding: "4px 10px", borderRadius: 6, background: "rgba(6,182,212,0.15)", color: theme.accent.cyan, border: "none", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+              >
+                + Add
               </button>
             </div>
+          ))}
+      </div>
+    </div>
+  )}
 
-            {replacePickerOpen && (
-              <div style={{ background: theme.bg.input, border: `1px solid ${theme.border.default}`,
-                borderRadius: 10, padding: 8, marginBottom: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                <input placeholder="Search stock…" value={replacePickerQuery}
-                  onChange={e => setReplacePickerQuery(e.target.value)}
-                  style={{ width: "100%", boxSizing: "border-box", background: theme.bg.base,
-                    border: `1px solid ${theme.border.default}`, borderRadius: 7,
-                    padding: "8px 10px", color: theme.text.primary,
-                    fontFamily: theme.font.mono, fontSize: 12, outline: "none" }} />
-                <div style={{ maxHeight: 200, overflowY: "auto", display: "flex", flexDirection: "column", gap: 3 }}>
-                  {filteredStock.length === 0 ? (
-                    <div style={{ padding: 12, textAlign: "center",
-                      color: theme.text.muted, fontFamily: theme.font.mono, fontSize: 11 }}>
-                      {replaceStock.length === 0 ? "No stock available" : "No matches"}
-                    </div>
-                  ) : filteredStock.map(s => {
-                    const alreadyPicked = replaceOutgoing.some(o => o.product_id === s.product_id);
-                    return (
-                      <button key={s.product_id} type="button" disabled={alreadyPicked}
-                        onClick={() => {
-                          setReplaceOutgoing(prev => [...prev, {
-                            product_id: s.product_id, name: s.name, sku: s.sku,
-                            price: s.price, unit: s.unit, remaining: s.remaining, qty: 1,
-                          }]);
-                          setReplacePickerOpen(false);
-                        }}
-                        style={{ display: "flex", alignItems: "center", gap: 8,
-                          padding: "8px 10px", border: "none",
-                          background: alreadyPicked ? "transparent" : theme.bg.base,
-                          borderRadius: 7, cursor: alreadyPicked ? "not-allowed" : "pointer",
-                          opacity: alreadyPicked ? 0.4 : 1, textAlign: "left" }}>
-                        <span style={{ flex: 1, fontSize: 12, color: theme.text.primary }}>{s.name}</span>
-                        <span style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
-                          {fmt(s.price)} · {s.remaining} left
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+  {/* --- CUSTOM ITEM FORM UI --- */}
+  {replaceCustomOpen && (
+    <div style={{ border: `1px solid rgba(192,132,252,0.3)`, borderRadius: 10, padding: 12, background: "rgba(192,132,252,0.02)", display: "flex", flexDirection: "column", gap: 8 }}>
+      <input
+        type="text"
+        placeholder="Item Name (e.g., Nike Air)"
+        value={replaceCustomName}
+        onChange={e => setReplaceCustomName(e.target.value)}
+        style={{ width: "100%", padding: "8px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 12 }}
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="Price"
+          value={replaceCustomPrice}
+          onChange={e => setReplaceCustomPrice(e.target.value.replace(/[^0-9]/g, ""))}
+          style={{ flex: 1, padding: "8px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 12 }}
+        />
+        <input
+          type="text"
+          inputMode="numeric"
+          placeholder="Qty"
+          value={replaceCustomQty}
+          onChange={e => setReplaceCustomQty(e.target.value.replace(/[^0-9]/g, ""))}
+          style={{ width: 60, padding: "8px 12px", background: theme.bg.input, border: `1px solid ${theme.border.default}`, borderRadius: 8, color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 12, textAlign: "center" }}
+        />
+      </div>
+      <button
+        onClick={addReplaceCustomItem}
+        style={{ marginTop: 4, padding: "10px", borderRadius: 8, background: "#c084fc", color: "#000", border: "none", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 800, cursor: "pointer" }}
+      >
+        Add Custom Item to Exchange
+      </button>
+    </div>
+  )}
 
-            {replaceOutgoing.length === 0 ? (
-              <div style={{ textAlign: "center", padding: 12, color: theme.text.muted,
-                fontFamily: theme.font.mono, fontSize: 11, background: theme.bg.input,
-                borderRadius: 10, border: `1px dashed ${theme.border.default}` }}>
-                Add at least one item the customer is receiving
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {replaceOutgoing.map((o, idx) => (
-                  <div key={o.product_id} style={{ background: theme.bg.input, borderRadius: 10,
-                    padding: "10px 12px", border: `1px solid ${theme.border.default}` }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden",
-                          textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.name}</div>
-                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>
-                          {fmt(o.price)}/unit · {o.remaining} left
-                        </div>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
-                          i === idx ? { ...x, qty: Math.max(1, x.qty - 1) } : x))}
-                          style={{ width: 26, height: 26, borderRadius: 6,
-                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
-                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>−</button>
-                        <input type="text" inputMode="numeric" value={o.qty}
-                          onChange={e => {
-                            const v = Math.max(1, Math.min(o.remaining, parseInt(e.target.value) || 1));
-                            setReplaceOutgoing(prev => prev.map((x, i) =>
-                              i === idx ? { ...x, qty: v } : x));
-                          }}
-                          style={{ width: 42, textAlign: "center", padding: "4px 6px",
-                            background: theme.bg.base, border: `1px solid ${theme.border.default}`,
-                            borderRadius: 6, color: theme.text.primary,
-                            fontFamily: theme.font.mono, fontSize: 12, outline: "none" }} />
-                        <button onClick={() => setReplaceOutgoing(prev => prev.map((x, i) =>
-                          i === idx ? { ...x, qty: Math.min(x.remaining, x.qty + 1) } : x))}
-                          style={{ width: 26, height: 26, borderRadius: 6,
-                            background: "rgba(255,255,255,0.06)", border: `1px solid ${theme.border.default}`,
-                            color: theme.text.primary, fontSize: 14, cursor: "pointer" }}>+</button>
-                        <button onClick={() => setReplaceOutgoing(prev => prev.filter((_, i) => i !== idx))}
-                          style={{ width: 26, height: 26, borderRadius: 6,
-                            background: "rgba(248,113,113,0.1)", border: "1px solid rgba(248,113,113,0.3)",
-                            color: "#f87171", fontSize: 13, cursor: "pointer" }}>✕</button>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
+  {/* --- ADDED OUTGOING ITEMS LIST --- */}
+  {replaceOutgoing.length > 0 && (
+    <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+      {replaceOutgoing.map((o, idx) => (
+        <div key={idx} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 12px", background: theme.bg.card, border: `1px solid ${theme.border.default}`, borderRadius: 8 }}>
+          <div>
+            <div style={{ fontSize: 12, fontWeight: 600, color: theme.text.primary }}>
+              {o.name} {!o.product_id && <span style={{ fontSize: 9, color: "#c084fc" }}>(custom)</span>}
+            </div>
+            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted }}>
+              {o.qty} × {fmt(o.price)}
+            </div>
           </div>
+          <button
+            onClick={() => setReplaceOutgoing(prev => prev.filter((_, i) => i !== idx))}
+            style={{ color: "#f87171", background: "transparent", border: "none", fontSize: 16, cursor: "pointer" }}
+          >
+            ✕
+          </button>
+        </div>
+      ))}
+    </div>
+  )}
+</div>
 
           {/* Price comparison */}
           <div style={{ padding: "12px 14px", background: "rgba(167,139,250,0.06)",

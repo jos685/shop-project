@@ -355,7 +355,7 @@ function returnStatusBadge(status: ReturnStatus) {
 }
 
 
-  const loadReplaceStock = useCallback(async () => {
+ const loadReplaceStock = useCallback(async () => {
   if (!shop) return [];
   const { data } = await supabase
     .from("shop_allocations")
@@ -364,26 +364,49 @@ function returnStatusBadge(status: ReturnStatus) {
 
   const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
   const productsMap: Record<string, any> = {};
+  
   if (productIds.length > 0) {
     const { data: prods } = await supabase
       .from("products")
-      .select("id, name, sku, price, unit, image_url, buying_price")
+      .select("id, name, sku, price, unit, image_url, buying_price, attributes") // 👈 Added attributes
       .in("id", productIds);
     for (const p of prods || []) productsMap[p.id] = p;
   }
 
   return (data || [])
     .filter((a: any) => a.product_id && (a.remaining ?? 0) > 0)
-    .map((a: any) => ({
-      product_id: a.product_id,
-      name:       productsMap[a.product_id]?.name  || a.product_name  || "—",
-      sku:        productsMap[a.product_id]?.sku   || a.product_sku   || "",
-      price:      Number(productsMap[a.product_id]?.price ?? a.product_price ?? 0),
-      unit:       productsMap[a.product_id]?.unit  || a.product_unit  || "units",
-      remaining:  Math.max(0, a.remaining ?? 0),
-      image_url:  productImageUrl(productsMap[a.product_id]?.image_url),
-       buying_price: Number(productsMap[a.product_id]?.buying_price ?? 0) || null,
-    }));
+    .map((a: any) => {
+      const p = productsMap[a.product_id];
+      
+      // 👇 Start with the base name
+      let fullName = p?.name || a.product_name || "—";
+
+      // 👇 Append variant attributes (Size, Color, etc.)
+      if (p?.attributes && typeof p.attributes === "object") {
+        const bits: string[] = [];
+        if (p.attributes.Size) bits.push(p.attributes.Size);
+        if (p.attributes.Color) bits.push(p.attributes.Color);
+        
+        for (const [k, v] of Object.entries(p.attributes)) {
+          if (k !== "Size" && k !== "Color" && v) bits.push(`${k}: ${v}`);
+        }
+        
+        if (bits.length > 0) {
+          fullName += ` · ${bits.join(" · ")}`;
+        }
+      }
+
+      return {
+        product_id:   a.product_id,
+        name:         fullName, 
+        sku:          p?.sku   || a.product_sku   || "",
+        price:        Number(p?.price ?? a.product_price ?? 0),
+        unit:         p?.unit  || a.product_unit  || "units",
+        remaining:    Math.max(0, a.remaining ?? 0),
+        image_url:    productImageUrl(p?.image_url),
+        buying_price: Number(p?.buying_price ?? 0) || null,
+      };
+    });
 }, [shop]);
 
 async function openReplaceModal(group: SaleGroup) {
@@ -999,14 +1022,34 @@ const newSaleRows = replaceOutgoing.map(o => {
     }
 
     return txData.map((t: any) => {
-      const lookupId = t.product_id ?? t.custom_item_id ?? null;
-      const resolved = lookupId ? existingProductMap[lookupId] : undefined;
+  const lookupId = t.product_id ?? t.custom_item_id ?? null;
+  const resolved = lookupId ? existingProductMap[lookupId] : undefined;
 
-      let baseName = resolved?.name ?? t.product_name ?? "—";
-      if (resolved?.attributes) {
-        const attrs = [resolved.attributes.Size, resolved.attributes.Color].filter(Boolean).join(" / ");
-        if (attrs) baseName = `${baseName} · ${attrs}`;
+  // Priority order:
+  //   1. t.product_name — the name that was actually stored on the sale
+  //      row. Newer sales carry the full variant ("Nike · 32 · red"),
+  //      older sales carry only the parent ("Nike") and will be enriched
+  //      below.
+  //   2. resolved.name — current name in the products table (fallback
+  //      if the sale row has no name at all).
+  //   3. "—"
+  let baseName = t.product_name ?? resolved?.name ?? "—";
+
+  // Append attributes only if they aren't already in the name.
+  // This avoids "Nike · 32 · red · 32 / red" for new sales where
+  // product_name was already stored variant-aware.
+  if (resolved?.attributes && typeof resolved.attributes === "object") {
+    const size  = resolved.attributes.Size;
+    const color = resolved.attributes.Color;
+    const bits  = [size, color].filter(Boolean);
+
+    if (bits.length > 0) {
+      const alreadyHasAll = bits.every(b => baseName.includes(String(b)));
+      if (!alreadyHasAll) {
+        baseName = `${baseName} · ${bits.join(" · ")}`;
       }
+    }
+  }
       
       return {
         id:             t.id,

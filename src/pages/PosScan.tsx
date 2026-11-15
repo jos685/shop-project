@@ -2529,7 +2529,7 @@ const refreshProducts = useCallback(async () => {
     if (productIds.length > 0) {
       const { data: prodsData } = await supabase
         .from("products")
-        .select("id, name, sku, price, unit, image_url")
+        .select("id, name, sku, price, unit, image_url, attributes")
         .in("id", productIds);
       for (const p of prodsData || []) productsMap[p.id] = p;
     }
@@ -2550,6 +2550,7 @@ const refreshProducts = useCallback(async () => {
             price: Number(p.price ?? a.product_price ?? 0),
             unit:  p.unit  || a.product_unit  || "",
             image_url: p.image_url ? productImageUrl(p.image_url) : null,
+            attributes: p.attributes || null,
             batch_label: p.batch_label || null,  
             expiry_date: p.expiry_date || null, 
           },
@@ -2597,7 +2598,7 @@ const refreshProducts = useCallback(async () => {
 
     if (!data?.product_id) return null;
     const { data: prod } = await supabase
-      .from("products").select("id, name, sku, price, unit, image_url").eq("id", data.product_id).single();
+      .from("products").select("id, name, sku, price, unit, image_url, attributes").eq("id", data.product_id).single();
     return {
       id: data.id, allocated: data.allocated,
       remaining: Math.max(0, data.remaining ?? 0),
@@ -2609,6 +2610,7 @@ const refreshProducts = useCallback(async () => {
         price: Number(prod?.price ?? data.product_price ?? 0),
         unit:  prod?.unit  || data.product_unit  || "",
         image_url: prod?.image_url ? productImageUrl(prod.image_url) : null,
+        attributes: prod?.attributes || null,
       },
     };
   }, [shop, myProducts]);
@@ -2637,7 +2639,9 @@ const refreshProducts = useCallback(async () => {
     }
     
     setChargeError("");
-    const existing = cart.find(i => i.kind === "listed" && i.allocation.product_id === alloc.product_id);
+    const existing = cart.find(
+        i => i.kind === "listed" && i.allocation.id === alloc.id
+      );
     if (existing) {
       // Re-tap = increment quantity by 1
       setCart(prev => prev.map(i =>
@@ -2713,27 +2717,29 @@ const exactSkuMatch = useMemo(() => {
     }
 
     setCart(prev => {
-      const existing = prev.find(
-        i => i.kind === "listed" && i.allocation.product_id === product.product_id
-      );
-      if (existing) {
-        const cap = sp * qty;
-        return prev.map(i =>
-          i.kind === "listed" && i.allocation.product_id === product.product_id
-            ? { ...i, quantity: qty, sellPrice: sp, discount: Math.min(i.discount ?? 0, cap) }
-            : i
-        );
-      }
-      const newItem: ListedCartItem = {
-        kind: "listed",
-        key: product.id,
-        allocation: product,
-        quantity: qty,
-        sellPrice: sp,
-        discount: 0,
-      };
-      return [...prev, newItem];
-    });
+  const existing = prev.find(
+    i => i.kind === "listed" && i.allocation.id === product.id
+  );
+
+  if (existing) {
+    const cap = sp * qty;
+    return prev.map(i =>
+      i.kind === "listed" && i.allocation.id === product.id
+        ? { ...i, quantity: qty, sellPrice: sp, discount: Math.min(i.discount ?? 0, cap) }
+        : i
+    );
+  }
+
+  const newItem: ListedCartItem = {
+    kind: "listed",
+    key: product.id,
+    allocation: product,
+    quantity: qty,
+    sellPrice: sp,
+    discount: 0,
+  };
+  return [...prev, newItem];
+});
 
     setAddingProduct(null);
     setAddQty("1");
@@ -2894,7 +2900,7 @@ const exactSkuMatch = useMemo(() => {
         isUnlisted:  false,
         allocationId: item.allocation.id,
         productId:    item.allocation.product.id,
-        productName:  item.allocation.product.name,
+        productName:  cartItemName(item),
         productImage: item.allocation.product.image_url,
         quantity:     item.quantity,
         sellPrice:    item.sellPrice,
@@ -3021,7 +3027,7 @@ const exactSkuMatch = useMemo(() => {
           allocation_id:  item.allocation.id,
           product_id:     item.allocation.product.id,
           custom_item_id: null,
-          product_name:   item.allocation.product.name,
+          product_name:   cartItemName(item),
           is_unlisted:    false,
           quantity:       item.quantity,
           unit_price:     item.sellPrice,
@@ -3238,7 +3244,7 @@ const exactSkuMatch = useMemo(() => {
         seller_agent_id:   verifiedAgent.agent_id,
         product_id:        item.allocation.product.id,
         custom_item_id:    null,
-        product_name:      item.allocation.product.name,
+        product_name:      cartItemName(item),
         is_unlisted:       false,
         is_discount:       false,             // never synthetic
         quantity:          item.quantity,
