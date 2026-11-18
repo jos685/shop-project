@@ -205,6 +205,16 @@ export default function PosTransactionsPage() {
   const [dateEditProcessing, setDateEditProcessing] = useState(false);
   const [dateEditError, setDateEditError] = useState("");
 
+  // ── Change payment method flow ──
+  const [pmModal, setPmModal]     = useState<{ group: SaleGroup } | null>(null);
+  const [pmNewMethod, setPmNewMethod] = useState<"cash" | "mpesa" | "split" | null>(null);
+  const [pmCash, setPmCash]       = useState("");
+  const [pmMpesa, setPmMpesa]     = useState("");
+  const [pmMpesaRef, setPmMpesaRef] = useState("");
+  const [pmProcessing, setPmProcessing] = useState(false);
+  const [pmError, setPmError]     = useState("");
+  const [pmSuccess, setPmSuccess] = useState(false);
+
   useEffect(() => {
     const onResize = () => setIsMobile(window.innerWidth < 768);
     window.addEventListener("resize", onResize);
@@ -711,6 +721,111 @@ const newSaleRows = replaceOutgoing.map(o => {
     setEditDateModal({ group, newDate: localISOTime });
     setDateEditError("");
   }
+  // Can this group's payment method be edited?
+function canEditPayment(group: SaleGroup): boolean {
+  const first = group.items[0];
+  if (!first) return false;
+  if (first.status === "credit" || first.status === "credit_partial") return false;
+  if (first.payment_method === "exchange") return false;
+  // Fully returned → refunds already happened on the old method
+  const anyReturnable = group.items.some(
+    t => (t.product_id || t.custom_item_id) && t.unit_price != null
+  );
+  if (anyReturnable) {
+    const allFull = group.items
+      .filter(t => (t.product_id || t.custom_item_id) && t.unit_price != null)
+      .every(t => {
+        const ret = (returnsMap[t.id] ?? []).reduce((s, r) => s + r.quantity_returned, 0);
+        return t.quantity > 0 && ret >= t.quantity;
+      });
+    if (allFull) return false;
+  }
+  return true;
+}
+
+function openPaymentModal(group: SaleGroup) {
+  const first = group.items[0];
+  const existing = first.payment_method;
+  const cash  = group.items.reduce((s, t) => s + (t.cash_amount  ?? 0), 0);
+  const mpesa = group.items.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
+
+  setPmModal({ group });
+  setPmNewMethod(existing === "split" ? "split" : (existing as "cash" | "mpesa"));
+  setPmCash(cash > 0 ? String(cash) : (existing === "cash" ? String(group.total) : ""));
+  setPmMpesa(mpesa > 0 ? String(mpesa) : (existing === "mpesa" ? String(group.total) : ""));
+  setPmMpesaRef(first.mpesa_ref ?? "");
+  setPmError("");
+  setPmSuccess(false);
+}
+
+async function handleSavePayment() {
+  if (!pmModal || !shop || !pmNewMethod) return;
+  const group = pmModal.group;
+  const total = group.total;
+  const cashAmt  = Math.round(Number(pmCash)  || 0);
+  const mpesaAmt = Math.round(Number(pmMpesa) || 0);
+
+  // Validation — mirror the checkout rules
+  if (pmNewMethod === "cash") {
+    if (cashAmt !== total) { setPmError(`Cash must equal ${fmt(total)}.`); return; }
+  } else if (pmNewMethod === "mpesa") {
+  if (mpesaAmt !== total) { setPmError(`M-Pesa must equal ${fmt(total)}.`); return; }
+} else if (pmNewMethod === "split") {
+  if (cashAmt + mpesaAmt !== total) { setPmError(`Split total must equal ${fmt(total)}.`); return; }
+}
+
+  setPmProcessing(true);
+  setPmError("");
+
+  try {
+    // Allocate cash/mpesa per line so the DB stays consistent
+    let allocCash = 0, allocMpesa = 0;
+    const updates = group.items.map((t, idx) => {
+      const isLast = idx === group.items.length - 1;
+      let rowCash: number, rowMpesa: number;
+      if (isLast) {
+        rowCash  = cashAmt  - allocCash;
+        rowMpesa = mpesaAmt - allocMpesa;
+      } else {
+        const ratio = total > 0 ? t.amount / total : 0;
+        rowCash  = Math.round(cashAmt  * ratio);
+        rowMpesa = Math.round(mpesaAmt * ratio);
+        allocCash  += rowCash;
+        allocMpesa += rowMpesa;
+      }
+      return {
+        id: t.id,
+        payment_method: pmNewMethod,
+        cash_amount:  rowCash,
+        mpesa_amount: rowMpesa,
+        mpesa_ref: pmNewMethod !== "cash" ? (pmMpesaRef.trim() || null) : null,
+      };
+    });
+
+    const { error } = await supabase.rpc("update_shop_transaction_payment", { p_rows: updates });
+    if (error) throw error;
+
+    // Optimistic update
+    setTransactions(prev => prev.map(t => {
+      const u = updates.find(x => x.id === t.id);
+      return u ? { ...t, ...u } : t;
+    }));
+
+    setPmSuccess(true);
+    setTimeout(() => {
+      setPmModal(null);
+      setPmSuccess(false);
+      fetchTransactions(true);   // refresh summary cards (cash/mpesa totals)
+    }, 1200);
+
+    // Notify dashboard / reports widgets
+    window.dispatchEvent(new CustomEvent("shop:new_sale", { detail: { shopId: shop.id } }));
+  } catch (e: any) {
+    setPmError(e.message ?? "Failed to update payment method");
+  } finally {
+    setPmProcessing(false);
+  }
+}
 
   async function handleSaveDate() {
     if (!editDateModal) return;
@@ -2331,7 +2446,35 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                     const isMulti      = group.items.length > 1;
                     const isOpen       = expanded === group.key;
                     const isCredit     = group.items.some(t => t.status === "credit_partial" || t.status === "credit");
-                    const badge        = methodBadge(group.payment_method, isCredit ? (group.items[0].status) : null);
+                    const badge = methodBadge(
+                        group.payment_method,
+                        isCredit ? group.items[0].status : null
+                      );
+
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{
+                          background: `${badge.color}15`,
+                          border: `1px solid ${badge.color}40`,
+                          color: badge.color, borderRadius: 20,
+                          padding: "2px 9px", fontSize: 10,
+                          fontFamily: theme.font.mono, fontWeight: 700,
+                        }}>
+                          {badge.icon} {badge.label}
+                        </span>
+
+                        {canEditPayment(group) && (
+                          <button
+                            title="Change payment method"
+                            onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
+                            style={{
+                              background: "none", border: "none", cursor: "pointer",
+                              color: theme.text.muted, fontSize: 12, padding: 2, lineHeight: 1,
+                            }}
+                          >
+                            ✎
+                          </button>
+                        )}
+                      </div>
                     const returnStatus = getReturnStatus(group);
                     const isLast = _di === dayItems.length - 1;
 
@@ -2346,7 +2489,9 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                             <div style={{ flex: 1, minWidth: 0 }}>
                               <div style={{ fontWeight: 600, fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{label}</div>
                               <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{group.seller_name} · {new Date(group.created_at).toLocaleString("en-KE", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}</div>
-                              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5 }}>
+                              
+                              {/* ⬇️ THIS IS THE BADGE ROW ⬇️ */}
+                              <div style={{ display: "flex", gap: 5, flexWrap: "wrap", marginTop: 5, alignItems: "center" }}>
                                 <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: theme.accent.cyan, background: "rgba(6,182,212,0.10)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 20, padding: "2px 8px" }}>
                                   {group.items.length} items
                                 </span>
@@ -2355,6 +2500,28 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                                     {group.items.some(t => t.status === "credit_partial") ? "📝 Credit · Partial Payment" : "📝 Credit · Unpaid"}
                                   </span>
                                 )}
+                                
+                                {/* ⬇️ NEW: PAYMENT BADGE + EDIT BUTTON ⬇️ */}
+                                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                                  <span style={{ fontSize: 9, fontFamily: theme.font.mono, fontWeight: 700, color: badge.color, background: `${badge.color}15`, border: `1px solid ${badge.color}40`, borderRadius: 20, padding: "2px 8px" }}>
+                                    {badge.icon} {badge.label}
+                                  </span>
+                                  
+                                  {canEditPayment(group) && (
+                                    <button
+                                      title="Change payment method"
+                                      onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
+                                      style={{
+                                        background: "none", border: "none", cursor: "pointer",
+                                        color: theme.text.muted, fontSize: 11, padding: 0, lineHeight: 1,
+                                      }}
+                                    >
+                                      ✎
+                                    </button>
+                                  )}
+                                </div>
+                               
+                        
 
                                 {(() => {
                                   const b = returnStatusBadge(returnStatus);
@@ -2631,7 +2798,16 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                           </div>
                           <div style={{ textAlign: "right", flexShrink: 0 }}>
                           {renderTxAmount(tx, 14)}
-                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2 }}>{tx.quantity}× · {badge.label}</div>
+                            <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5 }}>
+                              <span>{tx.quantity}× · {badge.label}</span>
+                              {canEditPayment(group) && (
+                                <button
+                                  title="Change payment method"
+                                  onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: theme.text.muted, fontSize: 13, padding: 0, lineHeight: 1 }}
+                                >✎</button>
+                              )}
+                            </div>
                             <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                           </div>
                         </div>
@@ -2673,6 +2849,13 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                               <button onClick={() => openEditDateModal(group)} style={{ width: "100%", padding: "8px", background: "rgba(6,182,212,0.08)", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 8, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
                                 ✎ Edit Transaction Date
                               </button>
+
+                              {canEditPayment(group) && (
+                                <button onClick={() => openPaymentModal(group)}
+                                  style={{ width: "100%", marginTop: 6, padding: "8px", background: "rgba(251,191,36,0.08)", border: "1px dashed rgba(251,191,36,0.35)", borderRadius: 8, color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                  ✎ Change Payment Method
+                                </button>
+                              )}
                             </div>
                             </div>
                             {/* Commission clawback detail */}
@@ -4016,6 +4199,148 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
           isMobile={isMobile}
         />
       )}
+
+     
+      {/* ── Change Payment Method Modal ── */}
+      {pmModal && (
+        <div style={{
+          position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          zIndex: 200, padding: 16,
+        }} onClick={() => !pmProcessing && setPmModal(null)}>
+          <div
+            onClick={e => e.stopPropagation()}
+            style={{
+              background: theme.bg.card, border: `1px solid ${theme.border.default}`,
+              borderRadius: 18, padding: 20, width: "100%", maxWidth: 420,
+            }}
+          >
+            {pmSuccess ? (
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>✅</div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 13, color: "#34d399" }}>
+                  Payment method updated
+                </div>
+              </div>
+            ) : (
+              <>
+                <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16, marginBottom: 4 }}>
+                  Change Payment Method
+                </div>
+                <div style={{ fontFamily: theme.font.mono, fontSize: 11, color: theme.text.muted, marginBottom: 14 }}>
+                  Sale total: <strong style={{ color: theme.accent.gold }}>{fmt(pmModal.group.total)}</strong>
+                </div>
+
+                <div style={{ display: "flex", gap: 6, marginBottom: 14 }}>
+                  {([
+                    { key: "cash",  icon: "💵", label: "Cash",  color: "#34d399" },
+                    { key: "mpesa", icon: "📱", label: "M-Pesa", color: theme.accent.cyan },
+                    { key: "split", icon: "⚡", label: "Split",  color: "#fbbf24" },
+                  ] as const).map(({ key, icon, label, color }) => (
+                    <button key={key}
+                      onClick={() => {
+                        setPmNewMethod(key);
+                        if (key === "cash")  { setPmCash(String(pmModal.group.total)); setPmMpesa(""); setPmMpesaRef(""); }
+                        if (key === "mpesa") { setPmMpesa(String(pmModal.group.total)); setPmCash(""); }
+                        if (key === "split") { setPmCash(""); setPmMpesa(""); }
+                      }}
+                      style={{
+                        flex: 1, padding: "10px 0", borderRadius: 10,
+                        border: `1px solid ${pmNewMethod === key ? color : theme.border.default}`,
+                        background: pmNewMethod === key ? `${color}18` : "transparent",
+                        color: pmNewMethod === key ? color : theme.text.muted,
+                        fontFamily: theme.font.mono, fontSize: 12,
+                        fontWeight: pmNewMethod === key ? 700 : 500, cursor: "pointer",
+                      }}>
+                      {icon} {label}
+                    </button>
+                  ))}
+                </div>
+
+                {pmNewMethod === "cash" && (
+                  <input type="number" placeholder="Cash amount"
+                    value={pmCash} onChange={e => setPmCash(e.target.value)}
+                    style={{ width: "100%", boxSizing: "border-box",
+                      padding: "10px 12px", background: theme.bg.input,
+                      border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                      color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                      outline: "none", marginBottom: 10 }} />
+                )}
+
+                {pmNewMethod === "mpesa" && (
+                  <>
+                    <input type="number" placeholder="M-Pesa amount"
+                      value={pmMpesa} onChange={e => setPmMpesa(e.target.value)}
+                      style={{ width: "100%", boxSizing: "border-box",
+                        padding: "10px 12px", background: theme.bg.input,
+                        border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                        color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                        outline: "none", marginBottom: 8 }} />
+                    <input type="text" placeholder="M-Pesa reference (e.g. QGH7XYZ1AB)"
+                      value={pmMpesaRef} onChange={e => setPmMpesaRef(e.target.value)}
+                      style={{ width: "100%", boxSizing: "border-box",
+                        padding: "10px 12px", background: theme.bg.input,
+                        border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                        color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                        outline: "none", marginBottom: 10 }} />
+                  </>
+                )}
+
+                {pmNewMethod === "split" && (
+                  <>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                      <input type="number" placeholder="Cash"
+                        value={pmCash} onChange={e => setPmCash(e.target.value)}
+                        style={{ flex: 1, padding: "10px 12px", background: theme.bg.input,
+                          border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                          color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                          outline: "none" }} />
+                      <input type="number" placeholder="M-Pesa"
+                        value={pmMpesa} onChange={e => setPmMpesa(e.target.value)}
+                        style={{ flex: 1, padding: "10px 12px", background: theme.bg.input,
+                          border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                          color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                          outline: "none" }} />
+                    </div>
+                    <input type="text" placeholder="M-Pesa reference"
+                      value={pmMpesaRef} onChange={e => setPmMpesaRef(e.target.value)}
+                      style={{ width: "100%", boxSizing: "border-box",
+                        padding: "10px 12px", background: theme.bg.input,
+                        border: `1px solid ${theme.border.default}`, borderRadius: 10,
+                        color: theme.text.primary, fontFamily: theme.font.mono, fontSize: 13,
+                        outline: "none", marginBottom: 10 }} />
+                  </>
+                )}
+
+                {pmError && (
+                  <div style={{ fontSize: 11, color: "#f87171",
+                    fontFamily: theme.font.mono, marginBottom: 10 }}>
+                    {pmError}
+                  </div>
+                )}
+
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setPmModal(null)} disabled={pmProcessing}
+                    style={{ flex: 1, padding: "11px 0", borderRadius: 10,
+                      background: "transparent", border: `1px solid ${theme.border.default}`,
+                      color: theme.text.muted, fontFamily: theme.font.mono,
+                      fontSize: 12, cursor: "pointer" }}>
+                    Cancel
+                  </button>
+                  <button onClick={handleSavePayment} disabled={pmProcessing}
+                    style={{ flex: 2, padding: "11px 0", borderRadius: 10,
+                      background: pmProcessing ? "rgba(6,182,212,0.3)" : "linear-gradient(135deg,#0891b2,#06b6d4)",
+                      border: "none", color: "#fff", fontFamily: theme.font.mono,
+                      fontSize: 12, fontWeight: 700, cursor: pmProcessing ? "not-allowed" : "pointer" }}>
+                    {pmProcessing ? "Saving…" : "Update Payment"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
   </div>
   );
 }

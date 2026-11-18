@@ -741,6 +741,8 @@ function RangeChips({ range, setRange, theme }: {
    const isMobile = width < 640;
   const isTablet = width < 1024;
 
+  
+
     const [activeTab, setActiveTab] = useState<ActiveTab>("credit");
 
         // ── Sub-tabs + chart ranges ──
