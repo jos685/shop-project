@@ -398,8 +398,11 @@ useEffect(() => {
 
     const fetchStockPage = useCallback(async (page: number, search: string) => {
     if (!shop) return;
-    setLoading(true);
+    
+    // Only show the big spinner if we don't have any stock loaded yet
+    if (stock.length === 0) setLoading(true);
     setServerPaging(true);
+
     try {
       const offset = (page - 1) * STOCK_PAGE_SIZE;
 
@@ -421,7 +424,7 @@ useEffect(() => {
         return;
       }
 
-      // 👈 NEW: Manually fetch attributes for the products returned by the RPC
+      // 👈 Manually fetch attributes for the products returned by the RPC
       const productIds = (data || []).map((a: any) => a.product_id).filter(Boolean);
       let prodsMap: Record<string, any> = {};
       if (productIds.length > 0) {
@@ -441,7 +444,6 @@ useEffect(() => {
           product: {
             id:          a.product_id,
             name:        a.product_name ?? "—",
-            // 👈 Use the freshly fetched attributes & details
             attributes:  prodsMap[a.product_id]?.attributes || a.attributes || null,
             sku:         a.product_sku ?? "",
             price:       Number(a.product_price ?? 0),
@@ -457,18 +459,23 @@ useEffect(() => {
       setStock(items);
       setStockTotal(count ?? items.length);
     } finally {
-      setLoading(false);
+      setLoading(false); // 👈 This will now just silently turn off if it was on
     }
-  }, [shop]);
+  }, [shop, stock.length]); // 👈 added stock.length to deps
 
+// Debounce the search — otherwise every keystroke fires a Supabase query
 // Debounce the search — otherwise every keystroke fires a Supabase query
 useEffect(() => {
   const t = setTimeout(() => {
-    setStockPage(1);
-    fetchStockPage(1, stockSearch);
+    // Reset to page 1 when search changes
+    if (stockPage !== 1) {
+      setStockPage(1); // This will trigger the other useEffect to fetch
+    } else {
+      fetchStockPage(1, stockSearch);
+    }
   }, 350);
   return () => clearTimeout(t);
-}, [stockSearch, fetchStockPage]);
+}, [stockSearch, fetchStockPage, stockPage]); // 👈 added stockPage
 
 // When the user changes page, fetch that page
 useEffect(() => {
@@ -1523,11 +1530,11 @@ const handleShareInvoice = async () => {
                       </div>
                     )}
                     
-                    {/* REMOVED the redundant inner check. We go straight to the grid. */}
                     <div style={{
                       display: "grid",
                       gridTemplateColumns: isWide ? "repeat(2, minmax(0, 1fr))" : "1fr",
                       gap: 12,
+                      padding: 12, // 👈 ADD THIS LINE
                     }}>
                       {displayStock.map(item => {
                         
