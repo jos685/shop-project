@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { toBlob } from "html-to-image";
 import { createPortal } from "react-dom";
 import type { ReceiptData } from "../lib/receipt";
 import { receiptToText } from "../lib/receipt";
@@ -25,6 +26,10 @@ export default function WhatsAppSendModal({
   const [vw, setVw] = useState<number>(() =>
     typeof window !== "undefined" ? window.innerWidth : 400
   );
+
+  
+  const receiptRef = useRef<HTMLDivElement>(null);
+const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -76,6 +81,61 @@ export default function WhatsAppSendModal({
     window.open(url, "_blank");
     onClose();
   };
+
+
+const canPickContact =
+  typeof navigator !== "undefined" && "contacts" in navigator && "ContactsManager" in window;
+
+// Android Chrome only (needs HTTPS). Opens the phone's contact list.
+const pickContact = async () => {
+  try {
+    const res = await (navigator as any).contacts.select(["tel"], { multiple: false });
+    const tel = res?.[0]?.tel?.[0];
+    if (tel) { setPhone(String(tel).replace(/[^0-9+]/g, "")); setError(""); }
+  } catch { /* user cancelled */ }
+};
+
+const makeImageFile = async (): Promise<File | null> => {
+  if (!receiptRef.current) return null;
+  const blob = await toBlob(receiptRef.current, {
+    pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff",
+  });
+  return blob ? new File([blob], `${data.ref}.png`, { type: "image/png" }) : null;
+};
+
+const handleSendImage = async () => {
+  setBusy(true); setError("");
+  try {
+    const file = await makeImageFile();
+    if (!file) { setError("Couldn't create the receipt image."); return; }
+
+    // 1) Phones: share sheet, user picks the WhatsApp contact there
+    const nav = navigator as any;
+    if (nav.canShare?.({ files: [file] })) {
+      try {
+        await nav.share({ files: [file], title: "Receipt", text: `Receipt ${data.ref}` });
+        onClose();
+        return;
+      } catch (e: any) {
+        if (e?.name === "AbortError") return;   // user closed the sheet
+      }
+    }
+
+    // 2) Desktop fallback: copy image, open chat, user pastes
+    const clean = cleanPhone(phone);
+    try {
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": file })]);
+      if (clean) window.open(`https://wa.me/${clean}`, "_blank");
+      setError(clean
+        ? "Image copied. Paste it into the WhatsApp chat (Ctrl+V)."
+        : "Image copied. Open WhatsApp and paste it (Ctrl+V).");
+    } catch {
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(file); a.download = file.name; a.click();
+      setError("Image downloaded. Attach it in WhatsApp.");
+    }
+  } finally { setBusy(false); }
+};
 
   return createPortal(
     <div
@@ -150,6 +210,14 @@ export default function WhatsAppSendModal({
             >
               Enter the customer's number
             </div>
+            {canPickContact && (
+              <button type="button" onClick={pickContact}
+                style={{ marginTop: 8, padding: "8px 12px", borderRadius: 10, cursor: "pointer",
+                  background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.3)",
+                  color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700 }}>
+                👤 Pick from contacts
+              </button>
+            )}
           </div>
           <button
             onClick={onClose}
@@ -256,6 +324,7 @@ export default function WhatsAppSendModal({
             Message preview
           </div>
           <div
+          ref={receiptRef}
             style={{
               background: "rgba(255,255,255,0.02)",
               border: `1px solid ${theme.border.default}`,
@@ -295,27 +364,13 @@ export default function WhatsAppSendModal({
             >
               Cancel
             </button>
-            <button
-              onClick={handleSend}
-              style={{
-                flex: 2,
-                padding: "13px 14px",
-                background: "linear-gradient(135deg,#25D366,#128C7E)",
-                border: "none",
-                borderRadius: 12,
-                color: "#fff",
-                fontFamily: theme.font.display,
-                fontSize: 14,
-                fontWeight: 800,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: 6,
-              }}
-            >
-              📱 Open WhatsApp
+            <button onClick={handleSendImage} disabled={busy}
+              style={{ flex: 2, padding: "13px 14px", background: "linear-gradient(135deg,#25D366,#128C7E)",
+                border: "none", borderRadius: 12, color: "#fff", fontFamily: theme.font.display,
+                fontSize: 14, fontWeight: 800, cursor: busy ? "wait" : "pointer", opacity: busy ? 0.7 : 1 }}>
+              {busy ? "Preparing…" : "🖼 Send as image"}
             </button>
+            
           </div>
         </div>
       </div>
