@@ -165,11 +165,31 @@ function getCustomRange(mode: CustomMode, value: string): { start: Date; end: Da
   return null;
 }
 
+
+function EditChip({ children, onClick, color, title }: {
+  children: React.ReactNode; onClick: () => void; color: string; title?: string;
+}) {
+  return (
+    <button type="button" title={title}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      style={{
+        display: "inline-flex", alignItems: "center", gap: 8, minHeight: 34,
+        padding: "5px 10px", borderRadius: 9, cursor: "pointer",
+        background: `${color}14`, border: `1px solid ${color}55`, color,
+        fontSize: 12, fontWeight: 700, textAlign: "left",
+      }}>
+      <span>{children}</span>
+      <span style={{ fontSize: 10, borderLeft: `1px solid ${color}55`, paddingLeft: 8 }}>✎ Edit</span>
+    </button>
+  );
+}
+
 export default function PosTransactionsPage() {
   const { shop } = useShopAuth();
   const { theme } = useTheme();
   const { pendingCount } = useNetwork();
   const navigate = useNavigate();
+  const [receiptChoice, setReceiptChoice] = useState<SaleGroup | null>(null);
 
   const [queuedSales, setQueuedSales]   = useState<QueuedSale[]>([]);
   const [expandedQ,   setExpandedQ]     = useState<string | null>(null);
@@ -742,6 +762,7 @@ function canEditPayment(group: SaleGroup): boolean {
   }
   return true;
 }
+
 
 function openPaymentModal(group: SaleGroup) {
   const first = group.items[0];
@@ -1443,12 +1464,7 @@ setSummary(s ? {
     };
   }, [shop, transactions]);
 
-  // ── Resend receipt ────────────────────────────────────────────────────
-  function openResendModal(tx: LocalTransaction) {
-    setResendModal(tx);
-    setResendPhone(tx.receipt_phone ?? tx.customer_phone ?? "");
-  }
-
+  
   async function handleResend(tx: LocalTransaction, phoneOverride?: string) {
     const phone = phoneOverride ?? tx.receipt_phone ?? tx.customer_phone ?? "";
     if (!phone) return;
@@ -1830,6 +1846,115 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
     marginBottom: 10,
   });
 
+  const renderSaleDetails = (group: SaleGroup, returnStatus: ReturnStatus, isLast: boolean) => {
+  const first = group.items[0];
+  const isCredit = group.items.some(t => t.status === "credit" || t.status === "credit_partial");
+  const badge = methodBadge(group.payment_method, isCredit ? first.status : null);
+  const cash  = group.items.reduce((s, t) => s + (t.cash_amount  ?? 0), 0);
+  const mpesa = group.items.reduce((s, t) => s + (t.mpesa_amount ?? 0), 0);
+  const canReturn = returnStatus !== "full" && group.items.some(t => t.product_id || t.custom_item_id);
+  const phone = first.receipt_phone ?? first.customer_phone;
+  const smsFailed = group.items.some(t => t.receipt_sent === false);
+  const commEarned  = group.items.reduce((s, t) => s + (t.commission_earned ?? 0), 0);
+  const commClawed  = group.items.reduce((s, t) => s + calcClawback(t), 0);
+
+ const field = (label: string, value: React.ReactNode, mono = false) => (
+  <div style={{ background: theme.bg.input, borderRadius: 8, padding: "7px 10px", minWidth: 0 }}>
+    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
+      textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+    <div style={{ fontSize: 12, fontWeight: 600, fontFamily: mono ? theme.font.mono : theme.font.body,
+      overflow: "hidden", textOverflow: "ellipsis" }}>{value}</div>
+  </div>
+);
+
+const paidText = [cash > 0 && `💵 ${fmt(cash)}`, mpesa > 0 && `📱 ${fmt(mpesa)}`]
+  .filter(Boolean).join("  ·  ") || "—";
+const retBadge = returnStatusBadge(returnStatus);
+
+return (
+  <div className="expand-panel" onClick={e => e.stopPropagation()}
+    style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`,
+      background: "rgba(255,255,255,0.01)", padding: "12px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
+
+    <div className="sale-grid">
+      {/* Row 1 */}
+      {field("Transaction", (group.items.length > 1 ? `${group.items.length} items · ` : "") + "TXN-" + first.id.slice(0, 8).toUpperCase(), true)}
+      {field("Date & Time",
+        <EditChip color={theme.accent.cyan} title="Edit date" onClick={() => openEditDateModal(group)}>
+          📅 {new Date(group.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}
+        </EditChip>)}
+      {field("Seller", group.seller_name ?? "—")}
+
+      {/* Row 2 */}
+      {field("Total", <span style={{ color: theme.accent.gold, fontFamily: theme.font.mono }}>{fmt(group.total)}</span>)}
+      {field("Payment",
+        canEditPayment(group)
+          ? <EditChip color={badge.color} title="Change payment method" onClick={() => openPaymentModal(group)}>
+              {badge.icon} {badge.label}
+            </EditChip>
+          : <span style={{ color: badge.color }}>{badge.icon} {badge.label}</span>)}
+      {field("Paid via", paidText, true)}
+
+      {/* Row 3 */}
+      {field("Receipt",
+        first.receipt_sent === true ? `📱 Sent to ${first.receipt_phone ?? first.customer_phone}`
+        : first.receipt_sent === false ? "📵 Failed to send"
+        : phone ? "📄 Not sent yet" : "— No phone on file")}
+      {first.customer_phone && field("Customer Phone", first.customer_phone, true)}
+      {first.mpesa_ref && field("M-Pesa Ref", first.mpesa_ref, true)}
+      {commEarned > 0 && field("Commission",
+        <span style={{ color: commClawed > 0 ? "#fb923c" : "#34d399" }}>
+          {fmt(commEarned - commClawed)}{commClawed > 0 && ` (was ${fmt(commEarned)})`}
+        </span>)}
+      {retBadge && field("Returns", <span style={{ color: retBadge.color }}>{retBadge.label}</span>)}
+
+      {/* Items: full width, 3 per row on laptop */}
+      <div className="sale-items">
+        {group.items.map(tx => (
+          <div key={tx.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 10px",
+            background: theme.bg.input, borderRadius: 8, minWidth: 0 }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {tx.product_name ?? "—"}
+                {expiryTracking && tx.batch_label && <span style={{ marginLeft: 6, fontSize: 9, color: theme.accent.cyan }}>{tx.batch_label}</span>}
+              </div>
+              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 1 }}>
+                {tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}
+              </div>
+            </div>
+            <div style={{ flexShrink: 0 }}>{renderTxAmount(tx, 12)}</div>
+          </div>
+        ))}
+      </div>
+    </div>
+
+    {/* Actions */}
+    <div className="sale-actions">
+      <button onClick={() => setReceiptChoice(group)}
+        style={{ padding: "10px 8px", borderRadius: 10, cursor: "pointer", fontFamily: theme.font.mono,
+          fontSize: 12, fontWeight: 700,
+          background: smsFailed ? "rgba(234,179,8,0.08)" : "rgba(37,211,102,0.08)",
+          border: `1px solid ${smsFailed ? "rgba(234,179,8,0.3)" : "rgba(37,211,102,0.3)"}`,
+          color: smsFailed ? "#fbbf24" : "#25D366" }}>
+        {smsFailed ? "⚠️ Resend Receipt" : "🧾 Send Receipt"}
+      </button>
+      {canReturn ? (
+        <button onClick={() => openReturnModal(group)}
+          style={{ padding: "10px 8px", borderRadius: 10, cursor: "pointer", fontFamily: theme.font.mono,
+            fontSize: 12, fontWeight: 700, background: "rgba(248,113,113,0.08)",
+            border: "1px solid rgba(248,113,113,0.3)", color: "#f87171" }}>↩ Return</button>
+      ) : <div />}
+      {canReturn ? (
+        <button onClick={() => openReplaceModal(group)}
+          style={{ padding: "10px 8px", borderRadius: 10, cursor: "pointer", fontFamily: theme.font.mono,
+            fontSize: 12, fontWeight: 700, background: "rgba(167,139,250,0.08)",
+            border: "1px solid rgba(167,139,250,0.35)", color: "#a78bfa" }}>🔁 Replace</button>
+      ) : <div />}
+    </div>
+  </div>
+);
+};
+
   return (
     <div style={{ minHeight: "100vh", background: theme.bg.base, color: theme.text.primary, fontFamily: theme.font.body }}>
       <style>{`
@@ -1842,6 +1967,19 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
         .filter-pill { transition: all 0.15s; cursor: pointer; }
         .filter-pill:hover { opacity: 0.85; }
         .expand-panel { animation: slideDown 0.18s ease; }
+
+        .sale-grid { display: grid; grid-template-columns: 1fr; gap: 8px; }
+          .sale-items { display: grid; grid-template-columns: 1fr; gap: 8px; grid-column: 1 / -1; }
+          .sale-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
+          @media (min-width: 900px) {
+            .sale-grid    { grid-template-columns: repeat(3, 1fr); }
+            .sale-items   { grid-template-columns: repeat(3, 1fr); }
+            .sale-actions { grid-template-columns: repeat(3, 1fr); }
+          }
+          @media (min-width: 480px) and (max-width: 899px) {
+            .sale-grid, .sale-items { grid-template-columns: 1fr 1fr; }
+            .sale-actions { grid-template-columns: repeat(3, 1fr); }
+          }
       `}</style>
 
       {/* Header */}
@@ -2451,30 +2589,6 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                         isCredit ? group.items[0].status : null
                       );
 
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{
-                          background: `${badge.color}15`,
-                          border: `1px solid ${badge.color}40`,
-                          color: badge.color, borderRadius: 20,
-                          padding: "2px 9px", fontSize: 10,
-                          fontFamily: theme.font.mono, fontWeight: 700,
-                        }}>
-                          {badge.icon} {badge.label}
-                        </span>
-
-                        {canEditPayment(group) && (
-                          <button
-                            title="Change payment method"
-                            onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
-                            style={{
-                              background: "none", border: "none", cursor: "pointer",
-                              color: theme.text.muted, fontSize: 12, padding: 2, lineHeight: 1,
-                            }}
-                          >
-                            ✎
-                          </button>
-                        )}
-                      </div>
                     const returnStatus = getReturnStatus(group);
                     const isLast = _di === dayItems.length - 1;
 
@@ -2507,18 +2621,7 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                                     {badge.icon} {badge.label}
                                   </span>
                                   
-                                  {canEditPayment(group) && (
-                                    <button
-                                      title="Change payment method"
-                                      onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
-                                      style={{
-                                        background: "none", border: "none", cursor: "pointer",
-                                        color: theme.text.muted, fontSize: 11, padding: 0, lineHeight: 1,
-                                      }}
-                                    >
-                                      ✎
-                                    </button>
-                                  )}
+
                                 </div>
                                
                         
@@ -2570,165 +2673,7 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                               <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                             </div>
                           </div>
-                          {isOpen && (
-                            <div className="expand-panel" onClick={e => e.stopPropagation()} style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-                              <div style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                              <div>
-                                <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Date &amp; Time</div>
-                                <div style={{ fontSize: 12, fontWeight: 600, fontFamily: theme.font.mono, color: theme.text.primary }}>{new Date(group.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" })}</div>
-                              </div>
-                              <button onClick={() => openEditDateModal(group)} style={{ background: "rgba(6,182,212,0.1)", border: "1px solid rgba(6,182,212,0.3)", borderRadius: 6, padding: "4px 8px", color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 10, cursor: "pointer" }}>
-                                ✎ Edit Date
-                              </button>
-                            </div>
-
-                              <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 2 }}>Items in this sale</div>
-                                                                   {/* Loop only over real items, hiding the synthetic discount row */}
-                                                            {group.items.map(tx => (
-                                <div key={tx.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: theme.bg.input, borderRadius: 10 }}>
-                                  <div style={{ width: 32, height: 32, borderRadius: 8, overflow: "hidden", flexShrink: 0, background: "rgba(255,255,255,0.05)", border: `1px solid ${theme.border.default}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 14, position: "relative" }}>
-                                    <span style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>📦</span>
-                                    {tx.product_image_url && (
-                                      <img src={tx.product_image_url} alt="" style={{ position: "absolute", top: 0, left: 0, width: "100%", height: "100%", objectFit: "cover" }}
-                                        onError={e => { (e.currentTarget as HTMLImageElement).style.visibility = "hidden"; }} />
-                                    )}
-                                  </div>
-                                                                    <div style={{ flex: 1, minWidth: 0 }}>
-                                    <div style={{ fontWeight: 600, fontSize: 12, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "flex", alignItems: "center", gap: 6 }}>
-                                      {tx.product_name ?? "—"}
-                                      {expiryTracking && tx.batch_label && (
-                                        <span style={{ fontSize: 8, fontFamily: theme.font.mono, background: "rgba(6,182,212,0.1)", color: theme.accent.cyan, padding: "1px 4px", borderRadius: 4, border: "1px solid rgba(6,182,212,0.25)", fontWeight: 700 }}>
-                                          {tx.batch_label}
-                                        </span>
-                                      )}
-                                    </div>
-                                    <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, marginTop: 2 }}>{tx.quantity}× · {tx.unit_price != null ? fmt(tx.unit_price) : "—"}/unit</div>
-                                    <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(255,255,255,0.2)", marginTop: 1 }}>TXN-{tx.id.slice(0, 8).toUpperCase()}</div>
-                                  </div>
-                                  <div style={{ flexShrink: 0 }}>{renderTxAmount(tx, 13)}</div>
-                                </div>
-                              ))}
-                              <div style={{ display: "flex", justifyContent: "space-between", padding: "10px 14px", background: "rgba(6,182,212,0.06)", border: "1px solid rgba(6,182,212,0.15)", borderRadius: 10, marginTop: 2 }}>
-                                <span style={{ fontSize: 12, fontFamily: theme.font.mono, color: theme.text.muted }}>Sale Total · {badge.label}</span>
-                                {(() => {
-                                const groupReturned = group.items.reduce((s, t) => s + txReturnedValue(t), 0);
-                                const groupFull = group.items.length > 0 && group.items.every(t => isFullyReturned(t));
-                                if (groupFull && group.total > 0) {
-                                  return (
-                                    <span style={{ textAlign: "right" }}>
-                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 13, color: "rgba(248,113,113,0.55)", textDecoration: "line-through", marginRight: 6 }}>{fmt(group.total)}</span>
-                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: "#f87171" }}>−{fmt(groupReturned || group.total)}</span>
-                                    </span>
-                                  );
-                                }
-                                if (groupReturned > 0) {
-                                  return (
-                                    <span style={{ textAlign: "right" }}>
-                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 12, color: "rgba(255,255,255,0.35)", textDecoration: "line-through", marginRight: 6 }}>{fmt(group.total)}</span>
-                                      <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(Math.max(0, group.total - groupReturned))}</span>
-                                    </span>
-                                  );
-                                }
-                                return <span style={{ fontFamily: theme.font.mono, fontWeight: 700, fontSize: 14, color: theme.accent.gold }}>{fmt(group.total)}</span>;
-                              })()}
-                              </div>
-
-                              {/* Group commission summary */}
-                              {(() => {
-                                const groupCommissionEarned = group.items.reduce((s, t) => s + (t.commission_earned ?? 0), 0);
-                                const groupCommissionClawed = group.items.reduce((s, t) => s + calcClawback(t), 0);
-                                if (groupCommissionEarned === 0) return null;
-                                return (
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", background: groupCommissionClawed > 0 ? "rgba(251,146,60,0.06)" : "rgba(52,211,153,0.06)", border: `1px solid ${groupCommissionClawed > 0 ? "rgba(251,146,60,0.25)" : "rgba(52,211,153,0.2)"}`, borderRadius: 10 }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <span style={{ fontSize: 14 }}>{groupCommissionClawed > 0 ? "💸" : "✨"}</span>
-                                      <div>
-                                        <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: groupCommissionClawed > 0 ? "#fb923c" : "#34d399", fontWeight: 700 }}>
-                                          Commission {groupCommissionClawed > 0 ? (groupCommissionClawed >= groupCommissionEarned ? "Cancelled" : "Reduced") : "Earned"}
-                                        </div>
-                                        {groupCommissionClawed > 0 && (
-                                          <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.65)", marginTop: 1 }}>
-                                            Was {fmt(groupCommissionEarned)} · -{fmt(groupCommissionClawed)} clawed back
-                                          </div>
-                                        )}
-                                      </div>
-                                    </div>
-                                    <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: groupCommissionClawed > 0 ? "#fb923c" : "#34d399" }}>
-                                      {groupCommissionClawed > 0 ? fmt(groupCommissionEarned - groupCommissionClawed) : fmt(groupCommissionEarned)}
-                                    </div>
-                                  </div>
-                                );
-                              })()}
-
-                             {/* ── 2x2 Action Grid ── */}
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
-                              
-                              {/* 1. WhatsApp */}
-                                <button
-                                  onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    openWhatsAppModal(group); 
-                                  }}
-                                style={{
-                                  padding: "12px 8px", background: "rgba(37,211,102,0.08)",
-                                  border: "1px solid rgba(37,211,102,0.3)", borderRadius: 10,
-                                  color: "#25D366", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                }}
-                              >
-                                📱 WhatsApp
-                              </button>
-
-                              {/* 2. SMS / Resend */}
-                                <button
-                                  onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    openWhatsAppModal(group); 
-                                  }}
-                                style={{
-                                  padding: "12px 8px", 
-                                  background: group.items.some(t => t.receipt_sent === false) ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
-                                  border: `1px solid ${group.items.some(t => t.receipt_sent === false) ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
-                                  borderRadius: 10, color: group.items.some(t => t.receipt_sent === false) ? "#fbbf24" : theme.accent.cyan,
-                                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                }}
-                              >
-                                {group.items.some(t => t.receipt_sent === false) ? "⚠️ Retry SMS" : "✉️ SMS Receipt"}
-                              </button>
-
-                              {/* 3. Return */}
-                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) ? (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); openReturnModal(group); }}
-                                  style={{
-                                    padding: "12px 8px", background: "rgba(248,113,113,0.08)",
-                                    border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
-                                    color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                  }}
-                                >
-                                  ↩ Return
-                                </button>
-                              ) : <div />}
-
-                              {/* 4. Replace */}
-                              {returnStatus !== "full" && group.items.some(tx => tx.product_id || tx.custom_item_id) ? (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); openReplaceModal(group); }}
-                                  style={{
-                                    padding: "12px 8px", background: "rgba(167,139,250,0.08)",
-                                    border: "1px solid rgba(167,139,250,0.35)", borderRadius: 10,
-                                    color: "#a78bfa", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                  }}
-                                >
-                                  🔁 Replace
-                                </button>
-                              ) : <div />}
-                            </div>
-                            </div>
-                          )}
+                          {isOpen && renderSaleDetails(group, returnStatus, isLast)}
                         </div>
                       );
                     }
@@ -2736,7 +2681,7 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                     // Single-item group — same display as before
                     const tx        = group.items[0];
                     const rcpt      = receiptBadge(tx);
-                    const phone     = tx.receipt_phone ?? tx.customer_phone;
+                    
 
                     return (
                       <div key={group.key} className="tx-row" onClick={() => setExpanded(isOpen ? null : group.key)} style={{ cursor: "pointer" }}>
@@ -2800,149 +2745,13 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
                           {renderTxAmount(tx, 14)}
                             <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: badge.color, marginTop: 2, display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 5 }}>
                               <span>{tx.quantity}× · {badge.label}</span>
-                              {canEditPayment(group) && (
-                                <button
-                                  title="Change payment method"
-                                  onClick={(e) => { e.stopPropagation(); openPaymentModal(group); }}
-                                  style={{ background: "none", border: "none", cursor: "pointer", color: theme.text.muted, fontSize: 13, padding: 0, lineHeight: 1 }}
-                                >✎</button>
-                              )}
+                              
                             </div>
                             <div style={{ fontSize: 10, color: theme.text.muted, marginTop: 3 }}>{isOpen ? "▲" : "▼"}</div>
                           </div>
                         </div>
 
-                        {isOpen && (
-                          <div className="expand-panel" onClick={e => e.stopPropagation()} style={{ cursor: "default", borderBottom: isLast ? "none" : `1px solid ${theme.border.default}`, background: "rgba(255,255,255,0.01)", padding: "14px 18px", display: "flex", flexDirection: "column", gap: 10 }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-                              {([
-                                { label: "Transaction ID", value: "TXN-" + tx.id.slice(0, 8).toUpperCase(), full: true, mono: true },
-                                { label: "Date & Time", value: new Date(tx.created_at).toLocaleString("en-KE", { weekday: "short", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" }), full: true, mono: true },
-                                ...(tx.status === "credit_partial" ? [{ label: "Sale Type", value: "Credit Sale · Partial Payment", full: true, color: "#c084fc" }] : []),
-                                ...(tx.status === "credit" ? [{ label: "Sale Type", value: "Credit Sale · No Payment Yet", full: true, color: "#c084fc" }] : []),
-                                { label: "Product",    value: tx.product_name ?? "—" },
-                                { label: "SKU",        value: tx.product_sku  || "—", mono: true },
-                                { label: "Unit Price", value: tx.unit_price != null ? fmt(tx.unit_price) : "—" },
-                                { label: "Qty",        value: String(tx.quantity) },
-                                { label: "Total",      value: fmt(tx.amount), color: theme.accent.gold },
-                                ...(tx.commission_earned && tx.commission_earned > 0 ? [{ label: "Commission Earned", value: fmt(tx.commission_earned), color: "#34d399" }] : []),
-                                { label: "Payment",    value: tx.payment_method === "mpesa" ? "📱 M-Pesa" : tx.payment_method === "split" ? "⚡ Split" : "💵 Cash" },
-                                ...(tx.cash_amount  && tx.cash_amount  > 0 ? [{ label: "Cash",       value: fmt(tx.cash_amount)  }] : []),
-                                ...(tx.mpesa_amount && tx.mpesa_amount > 0 ? [{ label: "M-Pesa",     value: fmt(tx.mpesa_amount) }] : []),
-                                ...(tx.mpesa_ref                            ? [{ label: "M-Pesa Ref", value: tx.mpesa_ref, mono: true }] : []),
-                                { label: "Seller",     value: tx.seller_name ?? "—" },
-                                ...(tx.customer_phone ? [{ label: "Customer Phone", value: tx.customer_phone }] : []),
-                                {
-                                  label: "Receipt",
-                                  value: tx.receipt_sent === true ? `📱 Sent to ${tx.receipt_phone ?? tx.customer_phone}` : tx.receipt_sent === false ? "📵 Failed to send" : phone ? "📄 Not sent yet" : "— No phone on file",
-                                   color: tx.receipt_sent === true ? "#34d399" : tx.receipt_sent === false ? "#fbbf24" : theme.text.muted,
-                                },
-                              ] as { label: string; value: string; full?: boolean; mono?: boolean; color?: string }[]).map(({ label, value, full, mono, color }) => (
-                                <div key={label} style={{ background: theme.bg.input, borderRadius: 8, padding: "9px 12px", gridColumn: full ? "1 / -1" : undefined }}>
-                                  <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
-                                  <div style={{ fontSize: 12, fontWeight: 600, color: color ?? theme.text.primary, fontFamily: mono ? theme.font.mono : theme.font.body }}>{value}</div>
-                                </div>
-                              ))}
-
-                              {/* Edit Date Button */}
-                            <div style={{ marginTop: -4, marginBottom: 4 }}>
-                              <button onClick={() => openEditDateModal(group)} style={{ width: "100%", padding: "8px", background: "rgba(6,182,212,0.08)", border: "1px dashed rgba(6,182,212,0.3)", borderRadius: 8, color: theme.accent.cyan, fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-                                ✎ Edit Transaction Date
-                              </button>
-
-                              {canEditPayment(group) && (
-                                <button onClick={() => openPaymentModal(group)}
-                                  style={{ width: "100%", marginTop: 6, padding: "8px", background: "rgba(251,191,36,0.08)", border: "1px dashed rgba(251,191,36,0.35)", borderRadius: 8, color: "#fbbf24", fontFamily: theme.font.mono, fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-                                  ✎ Change Payment Method
-                                </button>
-                              )}
-                            </div>
-                            </div>
-                            {/* Commission clawback detail */}
-                            {(() => {
-                              const totalClawed = calcClawback(tx);
-                              if (totalClawed === 0) return null;
-                              const isFullReturn = returnStatus === "full";
-                              return (
-                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 14px", background: "rgba(251,146,60,0.06)", border: "1px solid rgba(251,146,60,0.25)", borderRadius: 10 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                    <span style={{ fontSize: 16 }}>💸</span>
-                                    <div>
-                                      <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: "#fb923c", fontWeight: 700 }}>
-                                        Commission {isFullReturn ? "Cancelled" : "Reduced"}
-                                      </div>
-                                      <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: "rgba(251,146,60,0.65)", marginTop: 1 }}>
-                                        Due to product return · was {fmt(tx.commission_earned ?? 0)}
-                                      </div>
-                                    </div>
-                                  </div>
-                                  <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 13, color: "#fb923c" }}>-{fmt(totalClawed)}</div>
-                                </div>
-                              );
-                            })()}
-                            {/* ── 2x2 Action Grid ── */}
-                            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 4 }}>
-                              
-                              {/* 1. WhatsApp */}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); openWhatsAppModal(group) }}
-                                style={{
-                                  padding: "12px 8px", background: "rgba(37,211,102,0.08)",
-                                  border: "1px solid rgba(37,211,102,0.3)", borderRadius: 10,
-                                  color: "#25D366", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                }}
-                              >
-                                📱 WhatsApp Receipt
-                              </button>
-
-                              {/* 2. SMS / Resend */}
-                              <button
-                                onClick={(e) => { e.stopPropagation(); openResendModal(tx); }}
-                                style={{
-                                  padding: "12px 8px", 
-                                  background: tx.receipt_sent === false ? "rgba(234,179,8,0.08)" : "rgba(6,182,212,0.08)",
-                                  border: `1px solid ${tx.receipt_sent === false ? "rgba(234,179,8,0.3)" : "rgba(6,182,212,0.25)"}`,
-                                  borderRadius: 10, color: tx.receipt_sent === false ? "#fbbf24" : theme.accent.cyan,
-                                  fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                }}
-                              >
-                                {tx.receipt_sent === false ? "⚠️ Retry SMS" : "✉️ SMS Receipt"}
-                              </button>
-
-                              {/* 3. Return */}
-                              {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) ? (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); openReturnModal(group); }}
-                                  style={{
-                                    padding: "12px 8px", background: "rgba(248,113,113,0.08)",
-                                    border: "1px solid rgba(248,113,113,0.3)", borderRadius: 10,
-                                    color: "#f87171", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                  }}
-                                >
-                                  ↩ Return
-                                </button>
-                              ) : <div />}
-
-                              {/* 4. Replace */}
-                              {returnStatus !== "full" && (tx.product_id || tx.custom_item_id) ? (
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); openReplaceModal(group); }}
-                                  style={{
-                                    padding: "12px 8px", background: "rgba(167,139,250,0.08)",
-                                    border: "1px solid rgba(167,139,250,0.35)", borderRadius: 10,
-                                    color: "#a78bfa", fontFamily: theme.font.mono, fontSize: 12, fontWeight: 700,
-                                    cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6
-                                  }}
-                                >
-                                  🔁 Replace
-                                </button>
-                              ) : <div />}
-                            </div>
-                          </div>
-                        )}
+                        {isOpen && renderSaleDetails(group, returnStatus, isLast)}
                       </div>
                     );
                   })}
@@ -4340,6 +4149,32 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
           </div>
         </div>
       )}
+
+      {receiptChoice && (
+  <div onClick={e => { if (e.target === e.currentTarget) setReceiptChoice(null); }}
+    style={{ position: "fixed", inset: 0, zIndex: 100, display: "flex", alignItems: "center",
+      justifyContent: "center", padding: 16, background: "rgba(0,0,0,0.7)" }}>
+    <div style={{ width: "min(340px, 100%)", background: theme.bg.card, borderRadius: 20,
+      border: `1px solid ${theme.border.default}`, padding: 20, display: "flex", flexDirection: "column", gap: 10 }}>
+      <div style={{ fontFamily: theme.font.display, fontWeight: 800, fontSize: 16 }}>Send receipt via</div>
+      <button onClick={() => { openWhatsAppModal(receiptChoice); setReceiptChoice(null); }}
+        style={{ padding: 14, borderRadius: 12, cursor: "pointer", fontFamily: theme.font.mono, fontWeight: 700,
+          background: "rgba(37,211,102,0.08)", border: "1px solid rgba(37,211,102,0.3)", color: "#25D366" }}>
+        📱 WhatsApp
+      </button>
+      <button onClick={() => {
+          const f = receiptChoice.items[0];
+          setResendGroupPhone(f.receipt_phone ?? f.customer_phone ?? "");
+          setResendGroupModal(receiptChoice);
+          setReceiptChoice(null);
+        }}
+        style={{ padding: 14, borderRadius: 12, cursor: "pointer", fontFamily: theme.font.mono, fontWeight: 700,
+          background: "rgba(6,182,212,0.08)", border: "1px solid rgba(6,182,212,0.25)", color: theme.accent.cyan }}>
+        ✉️ SMS
+      </button>
+    </div>
+  </div>
+)}
 
   </div>
   );
