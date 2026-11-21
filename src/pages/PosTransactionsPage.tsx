@@ -1858,8 +1858,9 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
   const commEarned  = group.items.reduce((s, t) => s + (t.commission_earned ?? 0), 0);
   const commClawed  = group.items.reduce((s, t) => s + calcClawback(t), 0);
 
- const field = (label: string, value: React.ReactNode, mono = false) => (
-  <div style={{ background: theme.bg.input, borderRadius: 8, padding: "7px 10px", minWidth: 0 }}>
+ const field = (label: string, value: React.ReactNode, mono = false, span2 = false) => (
+  <div className={span2 ? "span-2" : undefined}
+    style={{ background: theme.bg.input, borderRadius: 8, padding: "7px 10px", minWidth: 0 }}>
     <div style={{ fontSize: 9, fontFamily: theme.font.mono, color: theme.text.muted,
       textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
     <div style={{ fontSize: 12, fontWeight: 600, fontFamily: mono ? theme.font.mono : theme.font.body,
@@ -1867,8 +1868,12 @@ const cpMpesa       = creditPaymentRows.reduce((s, c) => s + c.mpesa_amount, 0);
   </div>
 );
 
-const paidText = [cash > 0 && `💵 ${fmt(cash)}`, mpesa > 0 && `📱 ${fmt(mpesa)}`]
-  .filter(Boolean).join("  ·  ") || "—";
+const amountText =
+  group.payment_method === "split"
+    ? `💵 ${fmt(cash)} + 📱 ${fmt(mpesa)}`
+    : group.payment_method === "mpesa"
+      ? fmt(mpesa || group.total)
+      : fmt(cash || group.total);
 const retBadge = returnStatusBadge(returnStatus);
 
 return (
@@ -1886,20 +1891,23 @@ return (
       {field("Seller", group.seller_name ?? "—")}
 
       {/* Row 2 */}
+      {/* Row 2 */}
       {field("Total", <span style={{ color: theme.accent.gold, fontFamily: theme.font.mono }}>{fmt(group.total)}</span>)}
       {field("Payment",
         canEditPayment(group)
-          ? <EditChip color={badge.color} title="Change payment method" onClick={() => openPaymentModal(group)}>
-              {badge.icon} {badge.label}
+          ? <EditChip color={badge.color} title="Change payment method or amounts" onClick={() => openPaymentModal(group)}>
+              {badge.icon} {badge.label} · {amountText}
             </EditChip>
-          : <span style={{ color: badge.color }}>{badge.icon} {badge.label}</span>)}
-      {field("Paid via", paidText, true)}
+          : <span style={{ color: badge.color }}>
+              {badge.icon} {badge.label}{!isCredit && ` · ${amountText}`}
+            </span>,
+        false, true)}
 
       {/* Row 3 */}
-      {field("Receipt",
+      {(phone || first.receipt_sent != null) && field("Receipt",
         first.receipt_sent === true ? `📱 Sent to ${first.receipt_phone ?? first.customer_phone}`
         : first.receipt_sent === false ? "📵 Failed to send"
-        : phone ? "📄 Not sent yet" : "— No phone on file")}
+        : "📄 Not sent yet")}
       {first.customer_phone && field("Customer Phone", first.customer_phone, true)}
       {first.mpesa_ref && field("M-Pesa Ref", first.mpesa_ref, true)}
       {commEarned > 0 && field("Commission",
@@ -1979,6 +1987,9 @@ return (
           @media (min-width: 480px) and (max-width: 899px) {
             .sale-grid, .sale-items { grid-template-columns: 1fr 1fr; }
             .sale-actions { grid-template-columns: repeat(3, 1fr); }
+          }
+            @media (min-width: 480px) {
+            .span-2 { grid-column: span 2; }
           }
       `}</style>
 
