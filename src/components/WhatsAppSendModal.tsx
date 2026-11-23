@@ -27,8 +27,11 @@ export default function WhatsAppSendModal({
     typeof window !== "undefined" ? window.innerWidth : 400
   );
 
+  // New ref, separate from receiptRef (which stays as the visible preview)
+const captureRef = useRef<HTMLDivElement>(null);
+
   
-  const receiptRef = useRef<HTMLDivElement>(null);
+  // const receiptRef = useRef<HTMLDivElement>(null);
 const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -84,22 +87,44 @@ const [busy, setBusy] = useState(false);
 
 
 const canPickContact =
-  typeof navigator !== "undefined" && "contacts" in navigator && "ContactsManager" in window;
+  typeof navigator !== "undefined" &&
+  !!(navigator as any).contacts?.select &&
+  "ContactsManager" in window &&
+  // The picker only exists on Android Chrome
+  /Android/i.test(navigator.userAgent);
 
-// Android Chrome only (needs HTTPS). Opens the phone's contact list.
 const pickContact = async () => {
   try {
     const res = await (navigator as any).contacts.select(["tel"], { multiple: false });
     const tel = res?.[0]?.tel?.[0];
     if (tel) { setPhone(String(tel).replace(/[^0-9+]/g, "")); setError(""); }
-  } catch { /* user cancelled */ }
+  } catch (e: any) {
+    if (e?.name === "AbortError") return;               // user cancelled — fine
+    console.error("[Contacts Picker]", e);
+    setError(
+      e?.name === "SecurityError"
+        ? "Contacts requires HTTPS."
+        : e?.name === "NotAllowedError"
+        ? "Contacts permission was denied."
+        : e?.name === "NotSupportedError"
+        ? "Contact picker isn't supported on this browser."
+        : `Couldn't open contacts: ${e?.message ?? e?.name ?? "unknown error"}`
+    );
+  }
 };
 
+
 const makeImageFile = async (): Promise<File | null> => {
-  if (!receiptRef.current) return null;
-  const blob = await toBlob(receiptRef.current, {
-    pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff",
-  });
+  const node = captureRef.current;
+  if (!node) return null;
+
+  await (document as any).fonts?.ready;
+  await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+  const opts = { pixelRatio: 2, cacheBust: true, backgroundColor: "#ffffff" };
+  await toBlob(node, opts).catch(() => null);   // warm-up pass
+  const blob = await toBlob(node, opts);
+
   return blob ? new File([blob], `${data.ref}.png`, { type: "image/png" }) : null;
 };
 
@@ -323,55 +348,91 @@ const handleSendImage = async () => {
           >
             Message preview
           </div>
-          <div
-          ref={receiptRef}
-            style={{
-              background: "rgba(255,255,255,0.02)",
-              border: `1px solid ${theme.border.default}`,
-              borderRadius: 14,
-              padding: 10,
-              maxHeight: isMobile ? "38vh" : 320,
-              overflowY: "auto",
-              overflowX: "hidden",
-              WebkitOverflowScrolling: "touch",
-            }}
-          >
-            <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} compact />
-          </div>
+
+          {/* Off-screen wrapper (offset lives here) */}
+              <div
+                aria-hidden="true"
+                style={{ position: "fixed", left: -9999, top: 0, pointerEvents: "none" }}
+              >
+                {/* Captured node: no position/left/top */}
+                <div
+                  ref={captureRef}
+                  style={{
+                    width: isMobile ? 360 : 400,
+                    background: theme.bg.card,
+                  }}
+                >
+                  <ReceiptCard data={data} biz={biz} theme={theme} isMobile={isMobile} compact />
+                </div>
+              </div>
 
           {/* Actions */}
-          <div
-            style={{
-              display: "flex",
-              gap: 8,
-              flexDirection: isTiny ? "column-reverse" : "row",
-            }}
-          >
-            <button
-              onClick={onClose}
-              style={{
-                flex: 1,
-                padding: "13px 14px",
-                border: `1px solid ${theme.border.default}`,
-                background: "transparent",
-                borderRadius: 12,
-                color: theme.text.secondary,
-                fontFamily: theme.font.mono,
-                fontSize: 12,
-                fontWeight: 600,
-                cursor: "pointer",
-              }}
-            >
-              Cancel
-            </button>
-            <button onClick={handleSendImage} disabled={busy}
-              style={{ flex: 2, padding: "13px 14px", background: "linear-gradient(135deg,#25D366,#128C7E)",
-                border: "none", borderRadius: 12, color: "#fff", fontFamily: theme.font.display,
-                fontSize: 14, fontWeight: 800, cursor: busy ? "wait" : "pointer", opacity: busy ? 0.7 : 1 }}>
-              {busy ? "Preparing…" : "🖼 Send as image"}
-            </button>
-            
-          </div>
+<div
+  style={{
+    display: "flex",
+    gap: 8,
+    flexDirection: isTiny ? "column-reverse" : "row",
+  }}
+>
+  <button
+    onClick={onClose}
+    style={{
+      flex: 1,
+      padding: "13px 14px",
+      border: `1px solid ${theme.border.default}`,
+      background: "transparent",
+      borderRadius: 12,
+      color: theme.text.secondary,
+      fontFamily: theme.font.mono,
+      fontSize: 12,
+      fontWeight: 600,
+      cursor: "pointer",
+    }}
+  >
+    Cancel
+  </button>
+
+  <button
+    onClick={handleSend}
+    disabled={busy}
+    style={{
+      flex: 2,
+      padding: "13px 14px",
+      background: "linear-gradient(135deg,#25D366,#128C7E)",
+      border: "none",
+      borderRadius: 12,
+      color: "#fff",
+      fontFamily: theme.font.display,
+      fontSize: 14,
+      fontWeight: 800,
+      cursor: "pointer",
+      opacity: busy ? 0.7 : 1,
+    }}
+  >
+    💬 Send as text
+  </button>
+
+  <button
+    onClick={handleSendImage}
+    disabled={busy}
+    style={{
+      flex: 2,
+      padding: "13px 14px",
+      background: "transparent",
+      border: "1.5px solid #25D366",
+      borderRadius: 12,
+      color: "#25D366",
+      fontFamily: theme.font.display,
+      fontSize: 14,
+      fontWeight: 800,
+      cursor: busy ? "wait" : "pointer",
+      opacity: busy ? 0.7 : 1,
+    }}
+  >
+    {busy ? "Preparing…" : "🖼 Send as image"}
+  </button>
+</div>
+
         </div>
       </div>
       <style>{`
