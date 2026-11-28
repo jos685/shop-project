@@ -9,25 +9,29 @@ export interface CustomItem {
   active: boolean;
 }
 
-// ── Cart ──
+// The product as fetched from the `products` table.
+export interface LocalProduct {
+  id: string;
+  name: string;
+  sku: string;
+  price: number;
+  unit: string;
+  image_url: string | null;
+  batch_label?: string | null;
+  expiry_date?: string | null;
+  attributes?:
+    | { Size?: string; Color?: string; [k: string]: string | undefined }
+    | null;
+}
+
+// A product allocated to this shop.
 export interface LocalAlloc {
   id: string;
   allocated: number;
   remaining: number;
   product_id: string;
-  product: {
-    id: string;
-    name: string;
-    sku: string;
-    price: number;
-    unit: string;
-    image_url: string | null;
-    batch_label?: string | null;
-    expiry_date?: string | null;
-    attributes?:
-      | { Size?: string; Color?: string; [k: string]: string | undefined }
-      | null;
-  };
+  pin_rank: number | null;    
+  product: LocalProduct;
 }
 
 export interface ListedCartItem {
@@ -38,6 +42,7 @@ export interface ListedCartItem {
   sellPrice: number;
   discount: number;
 }
+
 
 export interface UnlistedCartItem {
   kind: "unlisted";

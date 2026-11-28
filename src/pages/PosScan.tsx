@@ -16,10 +16,12 @@ import SaleDock from "../components/SaleDock";
 import AddToast from "../components/AddToast";
 import type { CartItem, ListedCartItem, CustomItem } from "../types/pos";
 import { cartItemName, cartItemImage } from "../types/pos";
+import type {  LocalAlloc } from "../types/pos";
 import CenterModal from "../components/CenterModal";
 import ReceiptSuccessScreen from "../components/ReceiptSuccessScreen";
 import { useBusinessInfo } from "../lib/useBusinessInfo"
-
+import { usePinnedProducts } from "../lib/usePinnedProducts";
+import { PinContextMenu } from "../components/PinContextMenu";
 
 type Step         = "scan" | "verify" | "success";
 type PayMethod    = "cash" | "mpesa" | "split" | "credit";
@@ -180,16 +182,7 @@ function useWindowWidth() {
   return w;
 }
 
-interface LocalProduct {
-  id: string; name: string; sku: string; price: number; unit: string;
-  image_url: string | null;
-  batch_label?: string | null; 
-  expiry_date?: string | null; 
-  attributes?: { Size?: string; Color?: string; [key: string]: string | undefined } | null;  
-}
-interface LocalAlloc {
-  id: string; allocated: number; remaining: number; product_id: string; product: LocalProduct;
-}
+
 interface LocalAgent {
   id: string; pin: string; active: boolean; agent_id: string;
   name: string; agent_code: string; avatar: string;
@@ -1826,7 +1819,7 @@ function AuthModal({
                   {/* 3. Customer Phone */}
                   <div>
                     <label style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", display: "block", marginBottom: 5 }}>
-                      Customer Phone <span style={{ textTransform: "none" }}>(optional — receipt)</span>
+                      Customer Phone <span style={{ textTransform: "none" }}>(optional — send receipt)</span>
                     </label>
                     <input className="ki" type="tel" value={customerPhone}
                       onChange={e => setCustomerPhone(sanitizePhone(e.target.value))}
@@ -2053,12 +2046,14 @@ const formatBackdate = (iso: string) => {
     }
   }, [step]);
 
+
   // scan
   const [mode,           setMode]           = useState<"camera" | "manual">("manual");
   const [cameraActive,   setCameraActive]   = useState(true);
   const [badgeActive,    setBadgeActive]    = useState(false);
   const [searchQuery,    setSearchQuery]    = useState("");
   const [myProducts,     setMyProducts]     = useState<LocalAlloc[]>([]);
+
 
 
   const [customItems, setCustomItems] = useState<CustomItem[]>([]);
@@ -2074,6 +2069,8 @@ const editUnlistedItem = (key: string) => {
   setPayOpen(false);
   setReopenPayAfterEdit(true);
 };
+
+
 
   // cart
   const [cart,           setCart]           = useState<CartItem[]>([]);
@@ -2121,6 +2118,21 @@ const editUnlistedItem = (key: string) => {
   const submittingRef  = useRef(false);
 
 
+  // Pinning products
+  const [pinsOpen, setPinsOpen] = useState<boolean>(() => {
+  if (!shop?.id) return true;
+  return localStorage.getItem(`pos_pins_open_${shop.id}`) !== "0";
+});
+
+const togglePins = () => {
+  setPinsOpen(prev => {
+    const next = !prev;
+    if (shop?.id) {
+      localStorage.setItem(`pos_pins_open_${shop.id}`, next ? "1" : "0");
+    }
+    return next;
+  });
+};
 
   const startPinLock = useCallback((until: number) => {
     if (pinLockRef.current) clearInterval(pinLockRef.current);
@@ -2263,6 +2275,24 @@ useEffect(() => {
   const [stockRefreshing, setStockRefreshing] = useState(false);
   const firstStockFetchDone = useRef(false);
 
+  // Context menu state
+  const [ctxMenu, setCtxMenu] = useState<{
+    open: boolean; x: number; y: number;
+    alloc: LocalAlloc | null;
+  }>({ open: false, x: 0, y: 0, alloc: null });
+
+  const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressFired = useRef(false);
+
+  const cacheKey = shop ? `pos_cache_${shop.id}` : null;
+    
+  const { pinProduct, unpinProduct, pinBusy, pinnedCount, MAX_PINS } =
+  usePinnedProducts(
+    shop?.id, isOnline, myProducts,
+    updater => setMyProducts(prev => updater(prev)),
+    cacheKey, (msg) => showToast(msg),
+  );
+
   // ── camera sync ───────────────────────────────────────────────────────
   useEffect(() => {
     setCameraActive(canScan && mode === "camera" && step === "scan" && !addingProduct);
@@ -2274,7 +2304,7 @@ useEffect(() => {
 
   // ── fetch agents + stock ──────────────────────────────────────────────
   // Cache keys — scoped per shop so different shops don't share data.
-  const cacheKey = shop ? `pos_cache_${shop.id}` : null;
+  
 
   // Load from cache first so the UI is immediately populated when offline.
    // Load from cache first so the UI is immediately populated when offline.
@@ -2321,7 +2351,7 @@ useEffect(() => {
           .select("id, pin, active, agent_id, agent_name, agent_code, agent_avatar")
           .eq("shop_id", shop.id).eq("active", true),
         supabase.from("shop_allocations")
-          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+          .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, pin_rank")
           .eq("shop_id", shop.id),
         supabase.rpc("get_shop_commission", { p_owner_id: shop.owner_id }),
         supabase.from("profiles").select("business_name, enable_expiry_tracking").eq("id", shop.owner_id).single(), 
@@ -2359,6 +2389,7 @@ useEffect(() => {
             id: a.id, allocated: a.allocated,
             remaining: Math.max(0, a.remaining ?? 0),
             product_id: a.product_id,
+            pin_rank: a.pin_rank ?? null,
             product: {
               id:    a.product_id,
               name:  p.name  || a.product_name  || "—",
@@ -2369,6 +2400,7 @@ useEffect(() => {
               batch_label: p.batch_label || null,  
               expiry_date: p.expiry_date || null, 
               attributes: p.attributes || null,
+              
             },
           };
         });
@@ -2516,7 +2548,7 @@ const refreshProducts = useCallback(async () => {
   try {
     const { data: allocsData, error } = await supabase
       .from("shop_allocations")
-      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, pin_rank")
       .eq("shop_id", shop.id);
 
     if (error) {
@@ -2543,6 +2575,7 @@ const refreshProducts = useCallback(async () => {
           allocated: a.allocated,
           remaining: Math.max(0, a.remaining ?? 0),
           product_id: a.product_id,
+          pin_rank: a.pin_rank ?? null,
           product: {
             id:    a.product_id,
             name:  p.name  || a.product_name  || "—",
@@ -2593,7 +2626,7 @@ const refreshProducts = useCallback(async () => {
     if (!isOnline) return null;
 
     const { data } = await supabase.from("shop_allocations")
-      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit")
+      .select("id, allocated, remaining, product_id, product_name, product_sku, product_price, product_unit, pin_rank")
       .eq("shop_id", shop.id).eq("product_sku", sku.trim().toUpperCase()).single();
 
     if (!data?.product_id) return null;
@@ -2603,6 +2636,7 @@ const refreshProducts = useCallback(async () => {
       id: data.id, allocated: data.allocated,
       remaining: Math.max(0, data.remaining ?? 0),
       product_id: data.product_id,
+      pin_rank: null,
       product: {
         id:    data.product_id,
         name:  prod?.name  || data.product_name  || "—",
@@ -2680,9 +2714,26 @@ const refreshProducts = useCallback(async () => {
 // grid catches up a frame or two later.
 const deferredQuery = useDeferredValue(searchQuery);
 
+
+const searchActive = deferredQuery.trim().length > 0;
+
+// Pinned items, in pin_rank order
+const pinnedProducts = useMemo(() => {
+  return myProducts
+    .filter(p => p.pin_rank != null && p.remaining > 0)
+    .sort((a, b) => (a.pin_rank! - b.pin_rank!));
+}, [myProducts]);
+
+// Everything else, alphabetical — but when searching, search ALL
 const filteredProducts = useMemo(() => {
-  const base = [...myProducts].sort((a, b) => a.product.name.localeCompare(b.product.name));
   const q = deferredQuery.trim();
+  const source = q
+    ? myProducts                          // search across pinned + unpinned
+    : myProducts.filter(p => p.pin_rank == null); // grid excludes pinned
+
+  const base = [...source].sort((a, b) =>
+    a.product.name.localeCompare(b.product.name)
+  );
   if (!q) return base;
   return base.filter(a => fuzzyMatch(q, a.product.name) || fuzzyMatch(q, a.product.sku));
 }, [myProducts, deferredQuery]);
@@ -2693,6 +2744,44 @@ const exactSkuMatch = useMemo(() => {
   if (!q) return null;
   return myProducts.find(a => a.product.sku.toUpperCase() === q) ?? null;
 }, [myProducts, searchQuery]);
+
+const openCtxMenu = (alloc: LocalAlloc, x: number, y: number) => {
+  setCtxMenu({ open: true, x, y, alloc });
+};
+
+const handleTileContextMenu = (e: React.MouseEvent, alloc: LocalAlloc) => {
+  e.preventDefault();
+  e.stopPropagation();
+  openCtxMenu(alloc, e.clientX, e.clientY);
+};
+
+const handleTilePointerDown = (e: React.PointerEvent, alloc: LocalAlloc) => {
+  // Only long-press on touch
+  if (e.pointerType !== "touch") return;
+  longPressFired.current = false;
+  longPressTimer.current = setTimeout(() => {
+    longPressFired.current = true;
+    // Vibrate if supported — tactile confirmation
+    if (navigator.vibrate) navigator.vibrate(30);
+    openCtxMenu(alloc, e.clientX, e.clientY);
+  }, 500); // 500ms long-press
+};
+
+const handleTilePointerUp = () => {
+  if (longPressTimer.current) {
+    clearTimeout(longPressTimer.current);
+    longPressTimer.current = null;
+  }
+};
+
+const handleTileClick = (alloc: LocalAlloc) => {
+  // If long-press already fired, swallow the click
+  if (longPressFired.current) {
+    longPressFired.current = false;
+    return;
+  }
+  handleProductTap(alloc);
+};
 
   // ── cart ops ──────────────────────────────────────────────────────────
   const handleAddToCart = () => {
@@ -3754,7 +3843,224 @@ const renderScanStep = () => (
           </div>
         ) : (
           
-  <div style={isDesktop ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
+          <div style={isDesktop ? { flex: 1, minHeight: 0, display: "flex", flexDirection: "column" } : undefined}>
+
+           {!searchActive && pinnedProducts.length > 0 && (
+  <div
+    style={{
+      marginBottom: pinsOpen ? 14 : 8,
+      // Sticky only when collapsed — a thin header can afford it,
+      // a full strip cannot.
+      ...(pinsOpen
+        ? {}
+        : {
+            position: "sticky",
+            top: 0,
+            zIndex: 5,
+            background: theme.bg.base,
+            paddingTop: 4,
+            paddingBottom: 4,
+            marginLeft: -2,
+            marginRight: -2,
+          }),
+    }}
+  >
+    {/* Header — always visible, tap to toggle */}
+    <button
+      onClick={togglePins}
+      aria-expanded={pinsOpen}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        width: "100%",
+        background: "transparent",
+        border: "none",
+        padding: 0,
+        cursor: "pointer",
+        textAlign: "left",
+        marginBottom: pinsOpen ? 8 : 0,
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 10,
+          fontFamily: theme.font.mono,
+          color: "#fbbf24",
+          textTransform: "uppercase",
+          letterSpacing: "0.07em",
+          fontWeight: 700,
+        }}
+      >
+        <span>⭐ Pinned · {pinnedProducts.length}/{MAX_PINS}</span>
+        {!pinsOpen && (
+          <span
+            style={{
+              textTransform: "none",
+              letterSpacing: 0,
+              fontWeight: 500,
+              color: theme.text.muted,
+              fontSize: 9,
+            }}
+          >
+            — tap to expand
+          </span>
+        )}
+      </div>
+
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 6,
+          fontSize: 9,
+          fontFamily: theme.font.mono,
+          color: theme.text.muted,
+        }}
+      >
+        {pinsOpen && <span>Long-press to unpin</span>}
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            border: `1px solid ${theme.border.default}`,
+            background: "rgba(251,191,36,0.06)",
+            color: "#fbbf24",
+            fontSize: 9,
+            transform: pinsOpen ? "rotate(0deg)" : "rotate(-90deg)",
+            transition: "transform 0.18s ease",
+          }}
+        >
+          ▼
+        </span>
+      </div>
+    </button>
+
+    {/* Horizontal scroll strip — only when expanded */}
+    {pinsOpen && (
+      <div
+        className="pin-strip"
+        style={{
+          display: "flex",
+          gap: 8,
+          overflowX: "auto",
+          overflowY: "hidden",
+          paddingBottom: 4,
+          scrollSnapType: "x proximity",
+          WebkitOverflowScrolling: "touch",
+        }}
+      >
+        {pinnedProducts.map(alloc => (
+          <button
+            key={alloc.id}
+            onClick={() => handleTileClick(alloc)}
+            onContextMenu={e => handleTileContextMenu(e, alloc)}
+            onPointerDown={e => handleTilePointerDown(e, alloc)}
+            onPointerUp={handleTilePointerUp}
+            onPointerCancel={handleTilePointerUp}
+            style={{
+              flexShrink: 0,
+              width: isDesktop ? 220 : 160,
+              scrollSnapAlign: "start",
+              padding: "8px 10px",
+              border: "1.5px solid rgba(251,191,36,0.45)",
+              borderRadius: 11,
+              background:
+                "linear-gradient(135deg,rgba(251,191,36,0.08),rgba(251,191,36,0.02))",
+              cursor: "pointer",
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              textAlign: "left",
+              boxSizing: "border-box",
+              position: "relative",
+            }}
+          >
+            <span
+              style={{
+                position: "absolute",
+                top: 4,
+                right: 6,
+                fontSize: 11,
+                zIndex: 2,
+              }}
+            >
+              ⭐
+            </span>
+            <ProductImage
+              imageUrl={alloc.product.image_url}
+              productName={alloc.product.name}
+              size={30}
+            />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div
+                style={{
+                  fontSize: 13,
+                  fontWeight: 600,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {alloc.product.name}
+              </div>
+              <div
+                style={{
+                  fontSize: 10,
+                  fontFamily: theme.font.mono,
+                  color: theme.text.muted,
+                }}
+              >
+                {fmt(alloc.product.price)}
+              </div>
+            </div>
+            <div
+              style={{
+                background: "rgba(251,191,36,0.12)",
+                border: "1px solid rgba(251,191,36,0.35)",
+                borderRadius: 8,
+                padding: "4px 8px",
+                textAlign: "center",
+                minWidth: 40,
+              }}
+            >
+              <div
+                style={{
+                  fontSize: 13,
+                  fontFamily: theme.font.mono,
+                  fontWeight: 800,
+                  color: "#fbbf24",
+                  lineHeight: 1,
+                }}
+              >
+                {alloc.remaining}
+              </div>
+              <div
+                style={{
+                  fontSize: 8,
+                  fontFamily: theme.font.mono,
+                  color: "#fbbf24",
+                  opacity: 0.8,
+                  marginTop: 1,
+                }}
+              >
+                {alloc.product.unit}
+              </div>
+            </div>
+          </button>
+        ))}
+      </div>
+    )}
+  </div>
+)}
+
     <div style={{ fontSize: 10, fontFamily: theme.font.mono, color: theme.text.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
              <span>
                   {searchQuery.trim()
@@ -3819,7 +4125,12 @@ const renderScanStep = () => (
         : "linear-gradient(135deg,rgba(255,255,255,0.04),rgba(255,255,255,0.02))";
 
   return (
-    <button key={alloc.id} onClick={() => handleProductTap(alloc)}
+    <button key={alloc.id}
+      onClick={() => handleTileClick(alloc)}
+      onContextMenu={e => handleTileContextMenu(e, alloc)}
+      onPointerDown={e => handleTilePointerDown(e, alloc)}
+      onPointerUp={handleTilePointerUp}
+      onPointerCancel={handleTilePointerUp} 
   style={{
     padding: "8px 10px",
     border: `${isCritical || isOOS ? 1.5 : 1}px solid ${borderColor}`,
@@ -3829,9 +4140,9 @@ const renderScanStep = () => (
     display: "flex", alignItems: "center", gap: 10, textAlign: "left",
     transition: "border-color 0.15s",
     opacity: isOOS ? 0.65 : 1,
-    width: "100%",          // 👈 Add this
-    boxSizing: "border-box",// 👈 Add this
-    overflow: "hidden",     // 👈 Add this
+    width: "100%",          
+    boxSizing: "border-box",
+    overflow: "hidden",     
   }}
   onMouseEnter={e => (e.currentTarget.style.borderColor = isCritical || isOOS ? "rgba(248,113,113,0.95)" : "rgba(6,182,212,0.3)")}
   onMouseLeave={e => (e.currentTarget.style.borderColor = borderColor)}>
@@ -4113,6 +4424,8 @@ const renderVerifyStep = () => (
         .abtn:disabled { opacity:0.45;cursor:not-allowed; }
         .pin-digit { width:${isMobile ? "46px" : "52px"};height:${isMobile ? "58px" : "64px"};border:2px solid ${theme.border.default};border-radius:12px;display:flex;align-items:center;justify-content:center;font-family:'DM Mono',monospace;font-size:26px;font-weight:700;transition:all 0.15s; }
         .pin-digit.filled { border-color:${theme.accent.cyan}80;background:${theme.accent.cyan}14; }
+        .pin-strip::-webkit-scrollbar { height: 0; display: none; }
+        .pin-strip { scrollbar-width: none; -ms-overflow-style: none; }
         .back-btn:hover { background:rgba(255,255,255,0.08) !important; }
         .cart-row:hover { background:rgba(255,255,255,0.03) !important; }
         .num-btn:active:not(:disabled) { background:rgba(6,182,212,0.18) !important; transform:scale(0.92); }
@@ -4123,6 +4436,17 @@ const renderVerifyStep = () => (
           0%, 100% { opacity: 0.45; }
           50%      { opacity: 0.9; }
         }
+
+        /* Kill number-input spinners — they cause accidental value changes on scroll */
+          input[type="number"]::-webkit-outer-spin-button,
+          input[type="number"]::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+          }
+          input[type="number"] {
+            -moz-appearance: textfield;   /* Firefox */
+            appearance: textfield;
+          }
         .stock-skel { animation: stockShimmer 1.6s ease-in-out infinite; }
       `}</style>
 
@@ -5275,6 +5599,27 @@ const renderVerifyStep = () => (
           onOpenBackdate={() => setBackdateOpen(true)}
         />
       )}
+
+      <PinContextMenu
+        open={ctxMenu.open}
+        x={ctxMenu.x}
+        y={ctxMenu.y}
+        isPinned={ctxMenu.alloc?.pin_rank != null}
+        productName={ctxMenu.alloc?.product.name ?? ""}
+        theme={theme}
+        isMobile={isMobile}
+        pinBusy={pinBusy}
+        pinCapReached={pinnedCount >= MAX_PINS}
+        onPin={() => {
+          if (ctxMenu.alloc) pinProduct(ctxMenu.alloc.id);
+          setCtxMenu(m => ({ ...m, open: false }));
+        }}
+        onUnpin={() => {
+          if (ctxMenu.alloc) unpinProduct(ctxMenu.alloc.id);
+          setCtxMenu(m => ({ ...m, open: false }));
+        }}
+        onClose={() => setCtxMenu(m => ({ ...m, open: false }))}
+      />
 
     </div>
   );

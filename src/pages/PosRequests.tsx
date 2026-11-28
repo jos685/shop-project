@@ -1590,11 +1590,10 @@ const applyExpDatePreset = (preset: "today" | "week" | "month" | "year" | "custo
     resetPinLockout();
   };
 
-  const handleDeleteUnpaid = async (agent: ShopAgent) => {
+   const handleDeleteUnpaid = async (agent: ShopAgent) => {
     if (!deleteGroup || !shop) return;
     if (!isOnline) { setDeleteError("Deletion requires an internet connection."); return; }
 
-    // Which sales are we sending?
     const saleIds = deleteMode === "all"
       ? deleteGroup.sales.map(s => s.id)
       : deleteGroup.sales
@@ -1605,32 +1604,21 @@ const applyExpDatePreset = (preset: "today" | "week" | "month" | "year" | "custo
 
     setDeleteProcessing(true);
     try {
-      const { data, error } = await supabase.rpc("delete_credit_sales", {
-        p_shop_id:         shop.id,
-        p_owner_id:        shop.owner_id,
-        p_credit_sale_ids: saleIds,
-        p_include_paid:    deleteMode === "all",
-        p_actor_name:      agent.agent.name,
-        p_actor_code:      agent.agent.agent_id,
-      });
+      // CHANGED: Instead of deleting, we mark them as "deletion_requested"
+      const { error } = await supabase
+        .from("shop_credit_sales")
+        .update({ 
+          deletion_requested_at: new Date().toISOString(),
+          deletion_requested_by: agent.agent.name
+        })
+        .in("id", saleIds);
 
-      if (error) {
-        console.error("delete_credit_sales error:", error);
-        setDeleteError(error.message || "Failed to delete. Try again.");
-        setDeleteProcessing(false);
-        return;
-      }
-
-      const deleted = (data as any)?.deleted ?? 0;
-      if (deleted === 0) {
-        setDeleteError("Nothing was deleted — the sales may have changed. Refresh and try again.");
-        setDeleteProcessing(false);
-        return;
-      }
+      if (error) throw error;
 
       resetDeleteModal();
       setExpandedCustomerKey(null);
       fetchCreditSales();
+      // Optional: Show a success message like "Deletion request sent to owner"
     } catch (e: any) {
       setDeleteError(e?.message || "Unknown error");
       setDeleteProcessing(false);
